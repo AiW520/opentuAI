@@ -1143,9 +1143,9 @@ export default defineConfig({
   root: __dirname,
   cacheDir: '../../node_modules/.vite/apps/web',
 
-  // 使用相对路径，源站始终可用，CDN 加速由 SW 层处理
+  // 在 CI 中使用绝对路径，避免相对路径问题；生产环境使用相对路径，源站始终可用，CDN 加速由 SW 层处理
   // SW 的 handleStaticRequest: cache → CDN → 源站回退
-  base: process.env.VITE_BASE_URL || './',
+  base: process.env.CI ? '/' : (process.env.VITE_BASE_URL || './'),
 
   define: {
     'import.meta.env.VITE_APP_VERSION': JSON.stringify(appVersion),
@@ -1189,8 +1189,7 @@ export default defineConfig({
       brotliSize: true,
     }),
     deferEntryAssetsPlugin(),
-    rewriteEntryAssetsToCDNPlugin(),
-    rewriteManifestAssetsToCDNPlugin(),
+    ...(process.env.CI ? [] : [rewriteEntryAssetsToCDNPlugin(), rewriteManifestAssetsToCDNPlugin()]),
     precacheManifestPlugin(),
     idlePrefetchManifestPlugin(),
   ],

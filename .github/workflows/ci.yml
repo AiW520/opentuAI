@@ -107,6 +107,10 @@ jobs:
       - name: Install Playwright Chromium
         run: pnpm exec playwright install chromium
 
+      # 构建 Web 应用（visual 测试需要 preview 服务）
+      - name: Build Web
+        run: pnpm exec nx build web
+
       - name: Run macOS Visual Regression Tests
         run: pnpm run e2e:visual
 
@@ -141,6 +145,10 @@ jobs:
       # 安装所有浏览器用于完整测试
       - name: Install Playwright Browsers
         run: npx playwright install --with-deps
+
+      # 构建 Web 应用（preview 模式服务需要）
+      - name: Build Web
+        run: pnpm exec nx build web
 
       # 运行完整功能测试
       - name: Run Full E2E Tests

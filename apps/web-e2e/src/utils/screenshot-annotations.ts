@@ -184,8 +184,7 @@ function createArrowElement(annotation: ArrowAnnotation): string {
   };
   
   const arrow = arrows[direction];
-  const isHorizontal = direction === 'left' || direction === 'right';
-  
+
   // 根据方向调整位置
   let transform = '';
   if (direction === 'left') {
@@ -394,7 +393,7 @@ export async function circleOnElement(
 export async function highlightElement(
   locator: Locator,
   label?: string,
-  padding: number = 4,
+  padding = 4,
   color?: string,
   labelPosition?: 'top' | 'bottom' | 'left' | 'right'
 ): Promise<HighlightAnnotation | null> {

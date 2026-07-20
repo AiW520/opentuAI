@@ -1,0 +1,10 @@
+sandbox_mode = "danger-full-access"
+[mcp_servers.playwright]
+command = "npx"
+args = [
+    "@playwright/mcp@latest",
+    "--extension",
+]
+
+[mcp_servers.playwright.env]
+PLAYWRIGHT_MCP_EXTENSION_TOKEN = "AmImzHbwTz_szDIm2jDAKeJSRoRXpUHQ1VEIrS3_ehc"

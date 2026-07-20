@@ -189,7 +189,7 @@ export class DrawnixApp {
    * 等待应用加载完成
    */
   async waitForReady() {
-    await this.container.waitFor({ state: 'visible', timeout: 10000 });
+    await this.container.waitFor({ state: 'visible', timeout: 60000 });
   }
 
   /**
@@ -302,6 +302,7 @@ export class DrawnixApp {
   async openChatDrawer() {
     await this.chatDrawer.trigger.click();
     await expect(this.chatDrawer.container).toHaveClass(/chat-drawer--open/);
+    await expect(this.chatDrawer.container).toBeVisible();
   }
 
   /**

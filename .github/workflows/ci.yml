@@ -77,17 +77,6 @@ jobs:
           name: smoke-test-results
           path: apps/web-e2e/test-results/
 
-      # PR 时运行视觉回归测试
-      - name: Run Visual Regression Tests
-        run: pnpm run e2e:visual
-        
-      - name: Upload Visual Test Report
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: visual-diff-report
-          path: apps/web-e2e/playwright-report/
-
       - name: Check Bundle Size
         run: pnpm run size
 
@@ -125,10 +114,6 @@ jobs:
       - name: Run Full E2E Tests
         run: pnpm run e2e:features
 
-      # 运行视觉回归测试
-      - name: Run Visual Tests
-        run: pnpm run e2e:visual
-
       # 运行手册生成测试
       - name: Run Manual Generation Tests
         run: pnpm run e2e:manual
@@ -159,3 +144,33 @@ jobs:
         with:
           name: user-manual
           path: docs/user-manual/
+
+  # 截图基线由 macOS 生成，必须在相同平台执行，避免跨系统字体渲染误报。
+  visual-regression:
+    runs-on: macos-14
+    env:
+      NODE_OPTIONS: "--max-old-space-size=8192"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: pnpm/action-setup@v4
+      - run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright Chromium
+        run: pnpm exec playwright install chromium
+
+      - name: Run macOS Visual Regression Tests
+        run: pnpm run e2e:visual
+
+      - name: Upload Visual Test Report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-diff-report-macos
+          path: |
+            apps/web-e2e/playwright-report/
+            apps/web-e2e/test-results/

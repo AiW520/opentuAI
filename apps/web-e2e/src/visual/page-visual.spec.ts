@@ -96,11 +96,8 @@ test.describe('@visual 页面级视觉回归', () => {
     await app.waitForStable(1500);
     
     // 打开聊天抽屉
-    const chatTrigger = app.chatDrawer.trigger;
-    if (await chatTrigger.isVisible()) {
-      await chatTrigger.click();
-      await page.waitForTimeout(500);
-    }
+    await app.openChatDrawer();
+    await page.waitForTimeout(500);
     
     await expect(page).toHaveScreenshot('page-chat-drawer-open.png', {
       maxDiffPixelRatio: 0.10,
@@ -163,11 +160,8 @@ test.describe('@visual 页面级视觉回归', () => {
     }
     
     // 打开聊天抽屉
-    const chatTrigger = app.chatDrawer.trigger;
-    if (await chatTrigger.isVisible()) {
-      await chatTrigger.click();
-      await page.waitForTimeout(300);
-    }
+    await app.openChatDrawer();
+    await page.waitForTimeout(300);
     
     await expect(page).toHaveScreenshot('page-multi-panel.png', {
       maxDiffPixelRatio: 0.10,

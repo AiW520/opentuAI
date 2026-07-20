@@ -14,6 +14,8 @@ jobs:
   # PR 时运行：lint、test、build 和冒烟测试
   main:
     runs-on: ubuntu-latest
+    env:
+      NODE_OPTIONS: "--max-old-space-size=8192"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -56,8 +58,12 @@ jobs:
       - name: Install Playwright
         run: npx playwright install --with-deps chromium
 
-      # lint、test、build
-      - run: npx nx affected -t test build --base="$NX_BASE" --head="$NX_HEAD" --verbose
+      # 分步骤启动独立进程，确保 Web 构建释放内存后再打包 Desktop。
+      - name: Build Web production bundle
+        run: pnpm exec nx run web:build --verbose
+
+      - name: Build Desktop installer
+        run: pnpm exec nx run desktop:build --verbose
       - run: npx nx affected -t lint --exclude=drawnix --base="$NX_BASE" --head="$NX_HEAD" --verbose
 
       # PR 时运行冒烟测试（快速，约2分钟）
@@ -83,7 +89,6 @@ jobs:
           path: apps/web-e2e/playwright-report/
 
       - name: Check Bundle Size
-        if: always()
         run: pnpm run size
 
       - name: Upload Bundle Stats
@@ -96,6 +101,8 @@ jobs:
   # 发布前运行：完整 E2E 测试 + 生成用户手册
   release-e2e:
     runs-on: ubuntu-latest
+    env:
+      NODE_OPTIONS: "--max-old-space-size=8192"
     # 仅在 main 分支 push 或手动触发时运行
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:

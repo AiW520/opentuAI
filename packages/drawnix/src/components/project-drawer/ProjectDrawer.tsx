@@ -1691,6 +1691,7 @@ export const ProjectDrawer: React.FC<ProjectDrawerProps> = ({
               variant="outline"
               size="small"
               icon={<FolderAddIcon />}
+              data-testid="project-create-folder"
               onClick={() => handleCreateFolder()}
             >
               新建目录

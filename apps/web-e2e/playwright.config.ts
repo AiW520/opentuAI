@@ -19,7 +19,7 @@ export default defineConfig({
   ...nxE2EPreset(__filename, { testDir: './src' }),
   
   /* 测试超时设置 */
-  timeout: 60000,
+  timeout: 120000,
   expect: {
     timeout: 10000,
     toHaveScreenshot: {
@@ -47,6 +47,9 @@ export default defineConfig({
     /* 视频录制 */
     video: 'retain-on-failure',
   },
+
+  /* CI 资源有限，串行运行避免多个冷启动页面争抢 Vite 编译资源。 */
+  workers: process.env.CI ? 1 : undefined,
   
   /* Run your local dev server before starting the tests */
   webServer: {

@@ -3,7 +3,14 @@
  * 功能测试 - 基于实际页面元素和状态
  * 仅 3 次页面加载，覆盖所有核心功能
  */
+import type { Page } from '@playwright/test';
+
 import { test, expect } from '../fixtures/test-base';
+
+async function openReadyApp(page: Page) {
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await expect(page.locator('.drawnix')).toBeVisible({ timeout: 60000 });
+}
 
 test.describe('@feature 功能测试', () => {
   /**
@@ -11,9 +18,7 @@ test.describe('@feature 功能测试', () => {
    * AI输入栏、模型选择、灵感板、绘图工具
    */
   test('主画布：AI输入、绘图工具', async ({ page }) => {
-    await page.goto('/');
-    const drawnix = page.locator('.drawnix');
-    await expect(drawnix).toBeVisible({ timeout: 10000 });
+    await openReadyApp(page);
     await page.waitForTimeout(2000);
 
     // === AI 输入栏功能（必须通过）===
@@ -105,9 +110,7 @@ test.describe('@feature 功能测试', () => {
    * 测试2：弹窗抽屉组件
    */
   test('弹窗抽屉：设置、项目管理', async ({ page }) => {
-    await page.goto('/');
-    const drawnix = page.locator('.drawnix');
-    await expect(drawnix).toBeVisible({ timeout: 10000 });
+    await openReadyApp(page);
     await page.waitForTimeout(1500);
 
     // === 项目抽屉 ===
@@ -131,9 +134,10 @@ test.describe('@feature 功能测试', () => {
     const newBoardBtn = page.getByRole('button', { name: '新建画板' });
     await expect(newBoardBtn).toBeVisible();
 
-    // 新建文件夹按钮（必须通过）
-    const newFolderBtn = page.getByRole('button', { name: '新建文件夹' });
+    // 新建目录按钮（必须通过）
+    const newFolderBtn = page.getByTestId('project-create-folder');
     await expect(newFolderBtn).toBeVisible();
+    await expect(newFolderBtn).toHaveText('新建目录');
 
     // 导入导出按钮（必须通过）
     const importBtn = page.getByRole('button', { name: '导入' });
@@ -177,9 +181,7 @@ test.describe('@feature 功能测试', () => {
    * 测试3：素材库功能
    */
   test('素材库：打开关闭', async ({ page }) => {
-    await page.goto('/');
-    const drawnix = page.locator('.drawnix');
-    await expect(drawnix).toBeVisible({ timeout: 10000 });
+    await openReadyApp(page);
     await page.waitForTimeout(1500);
 
     // 素材库按钮（必须通过）

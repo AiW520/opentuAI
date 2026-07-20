@@ -23,7 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag || github.ref_name }}
+          fetch-depth: 0
       - name: Validate release tag, version and signing secrets
         id: release_meta
         shell: bash
@@ -44,7 +44,10 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]] || { echo "非法发布标签: $RELEASE_TAG" >&2; exit 1; }
+          git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" >/dev/null || { echo "发布标签不存在: $RELEASE_TAG" >&2; exit 1; }
+          git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
           git rev-parse --verify "$RELEASE_TAG^{commit}" >/dev/null
+          git checkout --detach "$RELEASE_TAG"
           node scripts/sync-desktop-version.js --tag="$RELEASE_TAG" --check
           for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID WINDOWS_CERTIFICATE WINDOWS_CERTIFICATE_PASSWORD TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD TAURI_UPDATER_PUBLIC_KEY; do
             [[ -n "${!name:-}" ]] || { echo "正式发布缺少 GitHub Secret: $name" >&2; exit 1; }

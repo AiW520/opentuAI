@@ -31,6 +31,10 @@ export default defineConfig({
         find: /^\.\.\/web\/src\/(.+)$/,
         replacement: path.resolve(webSrcPath, '$1'),
       },
+      {
+        find: '@web',
+        replacement: webSrcPath,
+      },
     ],
     dedupe: ['react', 'react-dom'],
   },

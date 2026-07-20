@@ -2,7 +2,17 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "outDir": "../../dist/out-tsc",
-    "types": ["vite/client"]
+    "types": ["vite/client"],
+    "baseUrl": ".",
+    "paths": {
+      "@drawnix/drawnix": ["../../packages/drawnix/src/index.ts"],
+      "@drawnix/drawnix/runtime": ["../../packages/drawnix/src/runtime.ts"],
+      "@aitu/utils": ["../../packages/utils/src/index.ts"],
+      "tdesign-react": ["../../packages/drawnix/src/utils/tdesign.ts"],
+      "@plait-board/react-board": ["../../packages/react-board/src/index.ts"],
+      "@plait-board/react-text": ["../../packages/react-text/src/index.ts"],
+      "@web/*": ["../../apps/web/src/*"]
+    }
   },
   "include": ["src/**/*.ts", "src/**/*.tsx"],
   "exclude": ["jest.config.ts", "src/**/*.spec.ts", "src/**/*.test.ts"]

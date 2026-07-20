@@ -68,7 +68,7 @@ async function bootstrap() {
 
   updateBootProgress(60);
 
-  import('../web/src/app/bootstrap')
+  import('@web/app/bootstrap')
     .then(() => {
       updateBootProgress(100);
 

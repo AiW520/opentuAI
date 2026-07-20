@@ -184,8 +184,7 @@ function createArrowElement(annotation: ArrowAnnotation): string {
   };
   
   const arrow = arrows[direction];
-  const isHorizontal = direction === 'left' || direction === 'right';
-  
+
   // 根据方向调整位置
   let transform = '';
   if (direction === 'left') {

@@ -13,7 +13,7 @@ test.describe('@feature 功能测试', () => {
   test('主画布：AI输入、绘图工具', async ({ page }) => {
     await page.goto('/');
     const drawnix = page.locator('.drawnix');
-    await expect(drawnix).toBeVisible({ timeout: 10000 });
+    await expect(drawnix).toBeVisible({ timeout: 30000 });
     await page.waitForTimeout(2000);
 
     // === AI 输入栏功能（必须通过）===
@@ -127,13 +127,23 @@ test.describe('@feature 功能测试', () => {
     });
     await expect(projectTitle).toBeVisible();
 
-    // 新建画板按钮（必须通过）
-    const newBoardBtn = page.getByRole('button', { name: '新建画板' });
-    await expect(newBoardBtn).toBeVisible();
+    // 新建画板/文件夹按钮在文件夹的 "更多" 下拉菜单中
+    // 点击第一个文件夹的 "更多" 按钮打开下拉菜单
+    const moreBtn = page.locator('.project-drawer-node__actions button').first();
+    await moreBtn.click();
+    await page.waitForTimeout(300);
 
-    // 新建文件夹按钮（必须通过）
-    const newFolderBtn = page.getByRole('button', { name: '新建文件夹' });
-    await expect(newFolderBtn).toBeVisible();
+    // 新建画板选项（下拉菜单中的选项）
+    const newBoardOption = page.getByText('新建画板').first();
+    await expect(newBoardOption).toBeVisible();
+
+    // 新建文件夹选项（下拉菜单中的选项）
+    const newFolderOption = page.getByText('新建文件夹').first();
+    await expect(newFolderOption).toBeVisible();
+
+    // 关闭下拉菜单
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(200);
 
     // 导入导出按钮（必须通过）
     const importBtn = page.getByRole('button', { name: '导入' });

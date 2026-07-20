@@ -13,7 +13,10 @@
     "noFallthroughCasesInSwitch": true,
     "resolveJsonModule": true,
     "outDir": "../../dist/apps/desktop",
-    "types": ["vite/client"]
+    "types": ["vite/client"],
+    "paths": {
+      "../web/src/*": ["../../apps/web/src/*"]
+    }
   },
   "include": ["src/**/*.ts", "src/**/*.tsx", "vite-env.d.ts"],
   "references": [

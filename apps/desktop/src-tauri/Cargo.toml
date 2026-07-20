@@ -1,6 +1,6 @@
 [package]
 name = "opentu"
-version = "0.1.0"
+version = "1.2.6"
 description = "Opentu Desktop - AI 画布工作区"
 authors = ["Opentu Team"]
 edition = "2021"

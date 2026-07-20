@@ -26,6 +26,13 @@ Tauri commands that read, write, move, import, or copy local files must either:
 
 Plain renderer-provided arbitrary paths must not be enough for destructive or exfiltrating operations. The implementation can use short-lived in-memory grants keyed by path plus operation type.
 
+Read-only commands are part of the same trust boundary. `read_local_file` and equivalent helpers must require media-root membership or a read grant, reject oversized full reads, and prefer the asset protocol or bounded transfer path for large media.
+
+### Bound native URL downloads
+Renderer-requested native downloads must accept only explicitly supported HTTP(S) URLs, resolve and reject loopback, link-local, private, multicast, and otherwise non-public targets unless the product has a documented local-network feature. Redirect destinations must be revalidated.
+
+Downloads must use connection and total/request timeouts, enforce a configured maximum using both `Content-Length` and streamed byte counts, remove partial files on failure, and avoid buffering the full response in memory.
+
 ### Keep custom protocol constrained to media root
 `opentu-asset` remains the runtime display protocol, but it must only serve canonical files under the configured media root. Large file responses must be range-friendly. Full responses above the bounded threshold should either stream safely or return a clear failure that UI can avoid.
 
@@ -88,6 +95,7 @@ Official GPT Image requests should not add unsupported default `response_format`
 
 ## Validation
 - Unit tests for path grant validation and denied arbitrary paths.
+- Unit tests for denied private-network downloads, redirect revalidation, timeout, response-size limits, and partial-file cleanup.
 - Rust tests for protocol range/full response behavior and media-root escape attempts.
 - Vitest coverage for local asset reference conversion into AI requests.
 - Manual desktop smoke test for upload, preview, select-as-reference, generate, export, and delete.

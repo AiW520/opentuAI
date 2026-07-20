@@ -3,12 +3,12 @@
   <h3>开图 · 以画布为核心的 AI 应用平台</h3>
   <p>连接多模型生成、工具、素材与知识流，让 AI 任务在同一工作区持续执行。</p>
   <p>
-    <a href="https://github.com/ljquan/aitu/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License"></a>
+    <a href="https://github.com/tuziapi/opentu/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License"></a>
     <a href="https://opentu.ai"><img src="https://img.shields.io/badge/demo-online-brightgreen.svg" alt="Demo"></a>
   </p>
   <p>
     <a href="https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fljquan%2Faitu&project-name=aitu&repository-name=aitu"><img src="https://vercel.com/button" alt="Deploy with Vercel"></a>
-    <a href="https://app.netlify.com/start/deploy?repository=https://github.com/ljquan/aitu"><img src="https://www.netlify.com/img/deploy/button.svg" alt="Deploy to Netlify"></a>
+    <a href="https://app.netlify.com/start/deploy?repository=https://github.com/tuziapi/opentu"><img src="https://www.netlify.com/img/deploy/button.svg" alt="Deploy to Netlify"></a>
   </p>
 </div>
 
@@ -44,30 +44,30 @@
 
 | 平台 | 架构 | 下载链接 |
 |------|------|---------|
-| Windows | x64 | [Opentu-windows-x86_64-setup.exe](https://github.com/AITU-Copilot/opentu/releases/latest/download/Opentu-windows-x86_64-setup.exe) / [.msi](https://github.com/AITU-Copilot/opentu/releases/latest/download/Opentu-windows-x86_64.msi) |
-| macOS | Apple Silicon | [Opentu-macos-aarch64.dmg](https://github.com/AITU-Copilot/opentu/releases/latest/download/Opentu-macos-aarch64.dmg) |
-| macOS | Intel | [Opentu-macos-x86_64.dmg](https://github.com/AITU-Copilot/opentu/releases/latest/download/Opentu-macos-x86_64.dmg) |
-| Linux | x86_64 AppImage | [Opentu-linux-x86_64.AppImage](https://github.com/AITU-Copilot/opentu/releases/latest/download/Opentu-linux-x86_64.AppImage) |
-| Linux | x86_64 deb | [Opentu-linux-x86_64.deb](https://github.com/AITU-Copilot/opentu/releases/latest/download/Opentu-linux-x86_64.deb) |
-| Linux | aarch64 AppImage | [Opentu-linux-aarch64.AppImage](https://github.com/AITU-Copilot/opentu/releases/latest/download/Opentu-linux-aarch64.AppImage) |
-| Linux | aarch64 deb | [Opentu-linux-aarch64.deb](https://github.com/AITU-Copilot/opentu/releases/latest/download/Opentu-linux-aarch64.deb) |
+| Windows | x64 | [Opentu-windows-x86_64-setup.exe](https://github.com/tuziapi/opentu/releases/latest/download/Opentu-windows-x86_64-setup.exe) / [.msi](https://github.com/tuziapi/opentu/releases/latest/download/Opentu-windows-x86_64.msi) |
+| macOS | Apple Silicon | [Opentu-macos-aarch64.dmg](https://github.com/tuziapi/opentu/releases/latest/download/Opentu-macos-aarch64.dmg) |
+| macOS | Intel | [Opentu-macos-x86_64.dmg](https://github.com/tuziapi/opentu/releases/latest/download/Opentu-macos-x86_64.dmg) |
+| Linux | x86_64 AppImage | [Opentu-linux-x86_64.AppImage](https://github.com/tuziapi/opentu/releases/latest/download/Opentu-linux-x86_64.AppImage) |
+| Linux | x86_64 deb | [Opentu-linux-x86_64.deb](https://github.com/tuziapi/opentu/releases/latest/download/Opentu-linux-x86_64.deb) |
+| Linux | aarch64 AppImage | [Opentu-linux-aarch64.AppImage](https://github.com/tuziapi/opentu/releases/latest/download/Opentu-linux-aarch64.AppImage) |
+| Linux | aarch64 deb | [Opentu-linux-aarch64.deb](https://github.com/tuziapi/opentu/releases/latest/download/Opentu-linux-aarch64.deb) |
 
 **macOS / Linux 一键安装（推荐）：**
 
 ```bash
-curl -fsSL https://github.com/AITU-Copilot/opentu/releases/latest/download/install_opentu.sh | bash
+curl -fsSL https://github.com/tuziapi/opentu/releases/latest/download/install_opentu.sh | bash
 ```
 
 或指定版本：
 
 ```bash
-curl -fsSL https://github.com/AITU-Copilot/opentu/releases/download/v1.1.9/install_opentu.sh | OPENTU_TAG=v1.1.9 bash
+curl -fsSL https://github.com/tuziapi/opentu/releases/download/v1.1.9/install_opentu.sh | OPENTU_TAG=v1.1.9 bash
 ```
 
 > Linux AppImage 启动需要 `libfuse2` 与 `libwebkit2gtk-4.1`，多数发行版默认未安装。
 > macOS 未签名包首次启动可能被 Gatekeeper 拦截，可右键 → 打开，或执行 `xattr -dr com.apple.quarantine /Applications/Opentu.app`。
 
-**访问所有版本：** [GitHub Releases](https://github.com/AITU-Copilot/opentu/releases)
+**访问所有版本：** [GitHub Releases](https://github.com/tuziapi/opentu/releases)
 
 ### 安装路径设置
 

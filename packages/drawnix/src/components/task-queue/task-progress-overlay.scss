@@ -94,6 +94,16 @@
   }
 }
 
+.opentu-desktop .task-progress-overlay__backdrop {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.opentu-desktop .task-progress-overlay__dots {
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+
 // 视频任务的特殊样式
 .task-progress-overlay--video {
   --task-progress-accent: #5a4fcf;

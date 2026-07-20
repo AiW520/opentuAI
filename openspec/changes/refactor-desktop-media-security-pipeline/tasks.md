@@ -1,9 +1,10 @@
 ## 1. Desktop Security Boundary
-- [ ] 1.1 Audit renderer-callable Tauri commands and classify them as read, write, move, delete, import, protocol, or dialog.
+- [x] 1.1 Audit renderer-callable Tauri commands and classify them as read, write, move, delete, import, protocol, or dialog.
 - [x] 1.2 Add short-lived dialog-backed path grants for file open/import and save operations.
-- [x] 1.3 Reject arbitrary renderer-provided paths unless they are under the canonical media root or covered by a valid grant.
+- [x] 1.3 Reject arbitrary renderer-provided paths unless they are under the canonical media root or covered by a valid grant, including `read_local_file` and other read-only commands.
 - [x] 1.4 Remove unused or overly broad desktop permissions and plugin registrations.
-- [ ] 1.5 Tighten desktop CSP and document any required exceptions.
+- [ ] 1.5 Tighten desktop CSP and document remaining `unsafe-inline` / `unsafe-eval` compatibility exceptions before formal release.
+- [x] 1.6 Restrict native URL downloads to validated public HTTP(S) targets with redirect revalidation, timeouts, streamed size limits, and partial-file cleanup.
 
 ## 2. Media Library Import And Preview
 - [x] 2.1 Prefer native desktop picker for desktop media-library imports.
@@ -37,7 +38,9 @@
 - [ ] 5.3 Keep response parsing compatible with `data[].url`, `data[].b64_json`, and provider gateway variants.
 
 ## 6. Verification
-- [ ] 6.1 Add Rust tests for denied arbitrary paths, media-root escape attempts, and granted import/save paths.
+- [x] 6.1 Add Rust tests for denied arbitrary paths, media-root escape attempts, and granted import/save paths.
+- [x] 6.1.1 Add a regression test proving `read_local_file` rejects ungranted files outside the media root and enforces a bounded read limit.
+- [x] 6.1.2 Add regression tests for private-network URL rejection, redirect target validation, timeout, download size limits, and cleanup after failure.
 - [x] 6.2 Add Rust tests for large `opentu-asset` range requests and non-range behavior.
 - [x] 6.3 Add Vitest tests for desktop/local asset URLs used as image references.
 - [x] 6.4 Run targeted Vitest and Cargo tests.

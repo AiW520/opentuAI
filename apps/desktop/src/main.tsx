@@ -1,6 +1,7 @@
 import '../../web/src/utils/permissions-policy-fix';
 import { isTauriEnvironment } from './utils/tauri-api';
 import { initializeVirtualUrlInterceptor } from './utils/virtual-url-interceptor';
+import { initializeDesktopUpdater } from './utils/desktop-updater';
 
 declare const __APP_VERSION__: string;
 
@@ -97,6 +98,9 @@ async function bootstrap() {
 
       if (isTauriEnvironment()) {
         initializeVirtualUrlInterceptor();
+        window.setTimeout(() => {
+          void initializeDesktopUpdater();
+        }, 3000);
       }
 
       setTimeout(hideBootScreen, 200);

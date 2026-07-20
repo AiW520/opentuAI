@@ -5,6 +5,7 @@ The desktop app has enough structure to continue toward delivery, but the curren
 
 ## What Changes
 - Add a desktop runtime boundary that constrains local file operations to user-approved paths and removes unnecessary runtime permissions.
+- Bound native URL downloads by scheme, resolved network target, timeout, redirect policy, and maximum response size.
 - Replace large local media round-trips with bounded, stream-oriented or range-friendly paths.
 - Replace JSON-number-array desktop file writes with a bounded binary transfer path while keeping the old invoke API only as a compatibility fallback.
 - Define a cross-platform desktop asset URL strategy instead of relying on Windows-only `http://<scheme>.localhost` behavior.

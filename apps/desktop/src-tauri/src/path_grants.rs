@@ -123,8 +123,15 @@ pub fn canonical_write_file(path: &Path) -> Result<PathBuf, String> {
     if path.as_os_str().is_empty() {
         return Err("Save path cannot be empty".to_string());
     }
-    if path.exists() && path.is_dir() {
-        return Err("Save path cannot be a directory".to_string());
+    if path.exists() {
+        let metadata = std::fs::symlink_metadata(path)
+            .map_err(|e| format!("Save path is not accessible: {}", e))?;
+        if metadata.file_type().is_symlink() {
+            return Err("Save path cannot be a symbolic link".to_string());
+        }
+        if metadata.is_dir() {
+            return Err("Save path cannot be a directory".to_string());
+        }
     }
 
     let parent = path
@@ -184,5 +191,123 @@ mod tests {
         assert!(store.allows_write_file(&target, &root.canonicalize().unwrap()));
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn read_grant_allows_only_exact_file() {
+        let root = temp_root("read-grant");
+        let media_root = root.join("media");
+        std::fs::create_dir_all(&media_root).unwrap();
+        let granted = root.join("granted.txt");
+        let other = root.join("other.txt");
+        std::fs::write(&granted, b"granted").unwrap();
+        std::fs::write(&other, b"other").unwrap();
+
+        let mut store = PathGrantStore::default();
+        store.grant_read_file(&granted).unwrap();
+
+        assert!(store.allows_read_file(&granted, &media_root.canonicalize().unwrap()));
+        assert!(!store.allows_read_file(&other, &media_root.canonicalize().unwrap()));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn media_root_read_does_not_need_grant_and_symlink_escape_is_denied() {
+        let root = temp_root("read-media-root");
+        let media_root = root.join("media");
+        std::fs::create_dir_all(&media_root).unwrap();
+        let media_file = media_root.join("inside.txt");
+        std::fs::write(&media_file, b"inside").unwrap();
+        let outside = root.join("outside.txt");
+        std::fs::write(&outside, b"outside").unwrap();
+
+        let mut store = PathGrantStore::default();
+        let canonical_root = media_root.canonicalize().unwrap();
+        assert!(store.allows_read_file(&media_file, &canonical_root));
+        assert!(!store.allows_read_file(&outside, &canonical_root));
+
+        #[cfg(unix)]
+        {
+            let link = media_root.join("escape.txt");
+            std::os::unix::fs::symlink(&outside, &link).unwrap();
+            assert!(!store.allows_read_file(&link, &canonical_root));
+        }
+
+        #[cfg(windows)]
+        {
+            let link = media_root.join("escape.txt");
+            if std::os::windows::fs::symlink_file(&outside, &link).is_ok() {
+                assert!(!store.allows_read_file(&link, &canonical_root));
+            }
+        }
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn expired_read_grant_is_rejected() {
+        let root = temp_root("expired-read-grant");
+        let file = root.join("granted.txt");
+        let media_root = root.join("media");
+        std::fs::create_dir_all(&media_root).unwrap();
+        std::fs::write(&file, b"granted").unwrap();
+        let canonical_file = file.canonicalize().unwrap();
+
+        let mut store = PathGrantStore::default();
+        store.grants.push(PathGrant {
+            kind: GrantKind::ReadFile,
+            path: canonical_file,
+            expires_at: Instant::now() - Duration::from_secs(1),
+        });
+
+        assert!(!store.allows_read_file(&file, &media_root.canonicalize().unwrap()));
+        assert!(store.grants.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_path_rejects_final_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let root = temp_root("opentu-write-symlink");
+        let outside = root.join("outside.txt");
+        let link = root.join("link.txt");
+        std::fs::write(&outside, b"outside").unwrap();
+        symlink(&outside, &link).unwrap();
+
+        assert!(canonical_write_file(&link).is_err());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn write_path_rejects_final_symlink_when_supported() {
+        use std::os::windows::fs::symlink_file;
+
+        let root = temp_root("opentu-write-symlink");
+        let outside = root.join("outside.txt");
+        let link = root.join("link.txt");
+        std::fs::write(&outside, b"outside").unwrap();
+        if symlink_file(&outside, &link).is_ok() {
+            assert!(canonical_write_file(&link).is_err());
+        }
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn temp_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "opentu-path-grant-test-{}-{}-{}",
+            name,
+            std::process::id(),
+            chrono::Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_else(|| chrono::Utc::now().timestamp_millis())
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        root
     }
 }

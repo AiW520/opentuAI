@@ -290,6 +290,7 @@
 
 .image-generation-anchor__stack-slot--ready {
   border-color: rgba(249, 208, 120, 0.96);
+  background-color: #fff3cf;
   background: radial-gradient(
       circle at 24% 18%,
       rgba(255, 255, 255, 0.84),
@@ -299,7 +300,8 @@
       180deg,
       rgba(255, 250, 237, 0.96),
       rgba(255, 243, 207, 0.98)
-    );
+    ),
+    #fff3cf;
   box-shadow: 0 12px 28px rgba(245, 158, 11, 0.12),
     0 1px 0 rgba(255, 255, 255, 0.78) inset;
 }
@@ -313,12 +315,14 @@
 
 .image-generation-anchor__stack-slot--failed {
   border-color: rgba(252, 165, 165, 0.9);
+  background-color: #fee2e2;
   background: linear-gradient(
       180deg,
       rgba(254, 226, 226, 0.72),
       rgba(254, 205, 211, 0.8)
     ),
-    linear-gradient(180deg, rgba(255, 247, 223, 0.68), rgba(255, 236, 186, 0.7));
+    linear-gradient(180deg, rgba(255, 247, 223, 0.68), rgba(255, 236, 186, 0.7)),
+    #fee2e2;
   box-shadow: 0 10px 24px rgba(220, 38, 38, 0.08),
     0 1px 0 rgba(255, 255, 255, 0.74) inset;
 }
@@ -759,6 +763,7 @@
 .image-generation-anchor--phase-generating
   .image-generation-anchor__stack-slot {
   border-color: rgba(245, 158, 11, 0.56);
+  background-color: #fbdc92;
   background: radial-gradient(
       circle at 28% 20%,
       rgba(255, 248, 220, 0.9),
@@ -768,7 +773,8 @@
       180deg,
       rgba(255, 239, 191, 0.94),
       rgba(251, 221, 146, 0.96)
-    );
+    ),
+    #fbdc92;
 }
 
 .image-generation-anchor--phase-submitted
@@ -1101,17 +1107,37 @@
 @keyframes image-generation-anchor-card-pulse {
   0%,
   100% {
-    border-color: rgba(233, 197, 106, 0.32);
+    border-color: rgba(217, 119, 6, 0.72);
     box-shadow: 0 16px 36px rgba(15, 23, 42, 0.08),
       0 2px 6px rgba(255, 255, 255, 0.72) inset;
   }
 
   50% {
-    border-color: rgba(245, 158, 11, 0.46);
+    border-color: rgba(180, 83, 9, 0.82);
     box-shadow: 0 0 0 1px rgba(255, 213, 128, 0.26),
       0 0 24px rgba(255, 218, 121, 0.18), 0 22px 48px rgba(245, 158, 11, 0.16),
       0 2px 6px rgba(255, 255, 255, 0.76) inset;
   }
+}
+
+// Tauri 桌面端的 SVG foreignObject 在 WKWebView/WebKitGTK 中对多层滤镜、
+// mask 和 backdrop-filter 的合成并不稳定。桌面端仅保留实体背景与轻量动画，
+// 可见性不依赖这些高级效果，同时减少批量任务的 GPU 合成层。
+.opentu-desktop .image-generation-anchor {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.opentu-desktop .image-generation-anchor__stack-slot-status {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.opentu-desktop .image-generation-anchor__surface-image,
+.opentu-desktop .image-generation-anchor__stack-slot::before {
+  -webkit-mask-image: none;
+  mask-image: none;
+  filter: none;
 }
 
 @keyframes image-generation-anchor-slot-shimmer {

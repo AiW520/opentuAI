@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" class="opentu-desktop">
   <head>
     <meta charset="utf-8" />
     <title>Opentu 开图</title>
@@ -7,6 +7,13 @@
     <meta name="app-version" content="%__APP_VERSION__" />
     <style>
       :root {
+        color-scheme: light;
+        --td-bg-color-page: #f7f8fa;
+        --td-bg-color-container: #ffffff;
+        --td-text-color-primary: #1f2937;
+        --td-text-color-secondary: #6b7280;
+        --td-border-level-1-color: #e5e7eb;
+        --td-border-level-2-color: #d1d5db;
         --app-boot-bg: radial-gradient(circle at top, rgba(90, 79, 207, 0.14), transparent 38%),
           linear-gradient(180deg, #fff8ef 0%, #ffffff 58%, #f8f9ff 100%);
         --app-boot-text: #2d3436;
@@ -14,6 +21,9 @@
         --app-boot-accent: #f39c12;
         --app-boot-accent-soft: rgba(243, 156, 18, 0.14);
         --app-boot-shadow: 0 20px 60px rgba(45, 52, 54, 0.08);
+      }
+      :root.opentu-desktop {
+        color-scheme: light;
       }
       #app-boot-loading {
         position: fixed; inset: 0; z-index: 9999;

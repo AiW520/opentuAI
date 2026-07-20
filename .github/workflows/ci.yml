@@ -45,6 +45,13 @@ jobs:
         working-directory: apps/desktop/src-tauri
         run: cargo test --lib
 
+      - name: Desktop TypeScript Check
+        run: pnpm exec tsc -p apps/desktop/tsconfig.app.json --noEmit
+
+      - name: macOS Task Visibility Regression
+        working-directory: packages/drawnix
+        run: pnpm exec vitest run src/components/image-generation-anchor/image-generation-anchor.styles.test.ts --config vitest.config.ts
+
       # 安装 Playwright 浏览器和依赖
       - name: Install Playwright
         run: npx playwright install --with-deps chromium

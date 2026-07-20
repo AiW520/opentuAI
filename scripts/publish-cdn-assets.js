@@ -150,7 +150,7 @@ function generateNpmPackageJson(version) {
     homepage: 'https://opentu.ai',
     repository: {
       type: 'git',
-      url: 'https://github.com/ljquan/aitu.git'
+      url: 'https://github.com/tuziapi/opentu.git'
     },
     license: 'MIT',
     author: 'ljquan',

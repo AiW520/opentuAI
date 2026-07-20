@@ -23,6 +23,13 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
         .setup(|app| {
+            if option_env!("OPENTU_UPDATER_ENABLED") == Some("1") {
+                app.handle()
+                    .plugin(tauri_plugin_store::Builder::default().build())?;
+                app.handle().plugin(tauri_plugin_process::init())?;
+                app.handle()
+                    .plugin(tauri_plugin_updater::Builder::new().build())?;
+            }
             let db = Database::new(app.handle())?;
             app.manage(AppState {
                 db: Mutex::new(db),

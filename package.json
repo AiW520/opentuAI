@@ -1,16 +1,16 @@
 {
   "name": "@aitu/source",
-  "version": "0.9.9",
+  "version": "1.2.6",
   "license": "MIT",
   "packageManager": "pnpm@10.21.0",
   "description": "Opentu - An open-source whiteboard tool with AI-powered image/video creation, mind mapping, flowcharts, and freehand drawing",
   "homepage": "https://opentu.ai",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ljquan/aitu.git"
+    "url": "https://github.com/tuziapi/opentu.git"
   },
   "bugs": {
-    "url": "https://github.com/ljquan/aitu/issues"
+    "url": "https://github.com/tuziapi/opentu/issues"
   },
   "keywords": [
     "whiteboard",
@@ -73,6 +73,8 @@
     "check:cycles": "node scripts/check-cycles.js",
     "check:cycles:types": "node scripts/check-cycles.js --include-types",
     "verify:startup": "node scripts/validate-startup-bundle.js",
+    "desktop:version:sync": "node scripts/sync-desktop-version.js",
+    "desktop:version:check": "node scripts/sync-desktop-version.js --check",
     "deploy:upload": "node scripts/upload-and-deploy.js",
     "deploy:nginx": "node scripts/upload-nginx-config.js"
   },

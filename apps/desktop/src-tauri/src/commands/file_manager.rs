@@ -7,7 +7,7 @@ use tauri::State;
 
 use crate::database::Database;
 use crate::media_dirs;
-use crate::path_grants::canonical_existing_file;
+use crate::path_grants::{canonical_existing_file, canonical_write_file};
 use crate::AppState;
 
 #[derive(Debug, serde::Serialize)]
@@ -194,7 +194,12 @@ fn move_file_to_media_internal(
     let file_size = fs::metadata(source_path)
         .map_err(|error| format!("无法读取源文件: {}", error))?
         .len();
-    let target_path = resolve_target_path(db, source_path, file_type, conflict_strategy)?;
+    let target_path = canonical_write_file(&resolve_target_path(
+        db,
+        source_path,
+        file_type,
+        conflict_strategy,
+    )?)?;
     ensure_parent_dir(&target_path)?;
 
     if let Err(error) = fs::rename(source_path, &target_path) {
@@ -220,7 +225,12 @@ fn copy_file_to_media_internal(
     let file_size = fs::metadata(source_path)
         .map_err(|error| format!("无法读取源文件: {}", error))?
         .len();
-    let target_path = resolve_target_path(db, source_path, file_type, conflict_strategy)?;
+    let target_path = canonical_write_file(&resolve_target_path(
+        db,
+        source_path,
+        file_type,
+        conflict_strategy,
+    )?)?;
     ensure_parent_dir(&target_path)?;
     copy_file_internal(source_path, &target_path)?;
 
@@ -260,10 +270,11 @@ fn ensure_parent_dir(path: &Path) -> Result<(), String> {
 }
 
 fn copy_file_internal(source: &Path, target: &Path) -> Result<(), String> {
+    let target = canonical_write_file(target)?;
     let mut source_file =
         File::open(source).map_err(|error| format!("无法打开源文件: {}", error))?;
     let mut target_file =
-        File::create(target).map_err(|error| format!("无法创建目标文件: {}", error))?;
+        File::create(&target).map_err(|error| format!("无法创建目标文件: {}", error))?;
     io::copy(&mut source_file, &mut target_file)
         .map_err(|error| format!("复制文件失败: {}", error))?;
     Ok(())

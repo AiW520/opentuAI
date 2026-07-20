@@ -6,7 +6,9 @@ use sha2::{Digest, Sha256};
 use std::borrow::Cow;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use tauri::{Manager, State};
 
 #[tauri::command]
@@ -25,7 +27,7 @@ pub fn save_file(
     ));
     fs::create_dir_all(&media_dir).map_err(|e| e.to_string())?;
 
-    let file_path = media_dir.join(sanitize_file_name(&file_name)?);
+    let file_path = canonical_write_file(&media_dir.join(sanitize_file_name(&file_name)?))?;
     fs::write(&file_path, &buffer).map_err(|e| e.to_string())?;
 
     Ok(file_path.to_string_lossy().to_string())
@@ -202,8 +204,7 @@ pub fn write_file_to_path(
     save_path: String,
     buffer: Vec<u8>,
 ) -> Result<(), String> {
-    let path = PathBuf::from(save_path);
-    ensure_write_allowed(&state, &path)?;
+    let path = ensure_write_allowed(&state, Path::new(&save_path))?;
     validate_save_path(&path)?;
     fs::write(&path, buffer).map_err(|e| format!("无法写入文件: {}", e))
 }
@@ -215,8 +216,7 @@ pub fn write_file_chunk_to_path(
     buffer: Vec<u8>,
     append: bool,
 ) -> Result<(), String> {
-    let path = PathBuf::from(save_path);
-    ensure_write_allowed(&state, &path)?;
+    let path = ensure_write_allowed(&state, Path::new(&save_path))?;
     validate_save_path(&path)?;
 
     let mut file = OpenOptions::new()
@@ -239,41 +239,21 @@ pub async fn download_url_to_path(
     url: String,
     save_path: String,
 ) -> Result<(), String> {
-    let path = PathBuf::from(save_path);
-    ensure_write_allowed(&state, &path)?;
+    let path = ensure_write_allowed(&state, Path::new(&save_path))?;
     validate_save_path(&path)?;
-    let parsed_url = reqwest::Url::parse(&url).map_err(|e| format!("无效下载地址: {}", e))?;
-    if !matches!(parsed_url.scheme(), "http" | "https") {
-        return Err("仅支持下载 HTTP/HTTPS 资源".to_string());
+    if path.exists() {
+        return Err("下载目标文件已存在，请重新选择保存位置".to_string());
     }
-
-    let mut response = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::limited(10))
-        .build()
-        .map_err(|e| format!("无法初始化下载器: {}", e))?
-        .get(parsed_url)
-        .header(
-            reqwest::header::USER_AGENT,
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Opentu Desktop",
-        )
-        .send()
-        .await
-        .map_err(|e| format!("下载失败: {}", e))?;
+    let parsed_url = parse_download_url(&url)?;
+    let mut response = send_validated_download_request(parsed_url).await?;
 
     if !response.status().is_success() {
         return Err(format!("下载失败: HTTP {}", response.status()));
     }
+    reject_oversized_content_length(&response)?;
 
-    let mut file = File::create(&path).map_err(|e| format!("无法写入文件: {}", e))?;
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|e| format!("读取下载内容失败: {}", e))?
-    {
-        file.write_all(&chunk)
-            .map_err(|e| format!("写入下载内容失败: {}", e))?;
-    }
-    file.flush().map_err(|e| format!("保存文件失败: {}", e))
+    stream_response_to_file(&mut response, &path, None).await?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -283,10 +263,7 @@ pub async fn download_url_to_media_file(
     file_type: String,
     fallback_extension: Option<String>,
 ) -> Result<AssetImportResult, String> {
-    let parsed_url = reqwest::Url::parse(&url).map_err(|e| format!("无效下载地址: {}", e))?;
-    if !matches!(parsed_url.scheme(), "http" | "https") {
-        return Err("仅支持下载 HTTP/HTTPS 资源".to_string());
-    }
+    let parsed_url = parse_download_url(&url)?;
 
     let normalized_file_type = normalize_media_type(&file_type);
     let media_root = {
@@ -296,23 +273,12 @@ pub async fn download_url_to_media_file(
     let media_dir = media_root.join(media_dirs::media_subdir(&normalized_file_type));
     fs::create_dir_all(&media_dir).map_err(|e| format!("无法创建媒体目录: {}", e))?;
 
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::limited(10))
-        .build()
-        .map_err(|e| format!("无法初始化下载器: {}", e))?;
-    let mut response = client
-        .get(parsed_url.clone())
-        .header(
-            reqwest::header::USER_AGENT,
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Opentu Desktop",
-        )
-        .send()
-        .await
-        .map_err(|e| format!("下载失败: {}", e))?;
+    let mut response = send_validated_download_request(parsed_url.clone()).await?;
 
     if !response.status().is_success() {
         return Err(format!("下载失败: HTTP {}", response.status()));
     }
+    reject_oversized_content_length(&response)?;
 
     let content_type = response
         .headers()
@@ -341,31 +307,14 @@ pub async fn download_url_to_media_file(
         std::process::id()
     );
     let temp_path = media_dir.join(temp_name);
-    let mut temp_file = File::create(&temp_path).map_err(|e| format!("无法创建下载文件: {}", e))?;
-    let mut hasher = Sha256::new();
-    let mut size = 0_u64;
-
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|e| format!("读取下载内容失败: {}", e))?
-    {
-        hasher.update(&chunk);
-        size += chunk.len() as u64;
-        temp_file
-            .write_all(&chunk)
-            .map_err(|e| format!("写入下载内容失败: {}", e))?;
-    }
-    temp_file
-        .flush()
-        .map_err(|e| format!("保存下载文件失败: {}", e))?;
+    let (size, content_hash) =
+        stream_response_to_file(&mut response, &temp_path, Some(Sha256::new())).await?;
 
     if size == 0 {
         let _ = fs::remove_file(&temp_path);
         return Err("下载内容为空".to_string());
     }
 
-    let content_hash = bytes_to_hex(&hasher.finalize());
     let file_name = format!("content-{}.{}", content_hash, extension);
     let final_path = media_dir.join(sanitize_file_name(&file_name)?);
 
@@ -394,8 +343,7 @@ pub fn copy_media_file_to_path(
     source: String,
     save_path: String,
 ) -> Result<(), String> {
-    let target_path = PathBuf::from(save_path);
-    ensure_write_allowed(&state, &target_path)?;
+    let target_path = ensure_write_allowed(&state, Path::new(&save_path))?;
     validate_save_path(&target_path)?;
 
     let media_root = {
@@ -459,16 +407,9 @@ pub fn get_cached_media_file(
 }
 
 #[tauri::command]
-pub fn read_local_file(base64_path: String) -> Result<String, String> {
-    let path = base64_path;
-    let path = Path::new(&path);
-
-    if !path.exists() {
-        return Err(format!("文件不存在: {}", path.to_string_lossy()));
-    }
-
-    let data = fs::read(path).map_err(|e| format!("读取文件失败: {}", e))?;
-    Ok(general_purpose::STANDARD.encode(&data))
+pub fn read_local_file(state: State<'_, AppState>, base64_path: String) -> Result<String, String> {
+    let path = ensure_read_allowed(&state, Path::new(&base64_path))?;
+    read_file_as_base64(&path, MAX_BASE64_READ_BYTES)
 }
 
 #[tauri::command]
@@ -646,12 +587,12 @@ fn canonical_media_root(state: &State<'_, AppState>) -> Result<PathBuf, String> 
         .map_err(|e| format!("媒体目录不可访问: {}", e))
 }
 
-fn ensure_write_allowed(state: &State<'_, AppState>, path: &Path) -> Result<(), String> {
+fn ensure_write_allowed(state: &State<'_, AppState>, path: &Path) -> Result<PathBuf, String> {
     let media_root = canonical_media_root(state)?;
     let canonical_path = canonical_write_file(path)?;
     let mut grants = state.path_grants.lock().map_err(|e| e.to_string())?;
     if grants.allows_write_file(&canonical_path, &media_root) {
-        return Ok(());
+        return Ok(canonical_path);
     }
     Err("保存路径未经过用户授权".to_string())
 }
@@ -817,6 +758,263 @@ fn bytes_to_hex(bytes: &[u8]) -> String {
         output.push_str(&format!("{:02x}", byte));
     }
     output
+}
+
+fn parse_download_url(value: &str) -> Result<reqwest::Url, String> {
+    let url = reqwest::Url::parse(value).map_err(|e| format!("无效下载地址: {}", e))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err("仅支持下载 HTTP/HTTPS 资源".to_string());
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("下载地址不能包含用户名或密码".to_string());
+    }
+    if url.host_str().is_none() {
+        return Err("下载地址缺少主机名".to_string());
+    }
+    Ok(url)
+}
+
+async fn resolve_public_download_addrs(url: &reqwest::Url) -> Result<Vec<SocketAddr>, String> {
+    let host = url
+        .host_str()
+        .ok_or_else(|| "下载地址缺少主机名".to_string())?
+        .to_string();
+    if matches!(
+        host.trim_end_matches('.').to_ascii_lowercase().as_str(),
+        "localhost" | "localhost.localdomain"
+    ) {
+        return Err("禁止访问本机下载目标".to_string());
+    }
+    let port = url
+        .port_or_known_default()
+        .ok_or_else(|| "下载地址端口无效".to_string())?;
+    let lookup_host = host.clone();
+    let addrs = tauri::async_runtime::spawn_blocking(move || {
+        (lookup_host.as_str(), port)
+            .to_socket_addrs()
+            .map(|values| values.collect::<Vec<_>>())
+    })
+    .await
+    .map_err(|e| format!("解析下载地址失败: {}", e))?
+    .map_err(|e| format!("解析下载地址失败: {}", e))?;
+
+    if addrs.is_empty() {
+        return Err("下载地址没有可用的网络目标".to_string());
+    }
+    if let Some(denied) = addrs.iter().find(|addr| !is_public_download_ip(addr.ip())) {
+        return Err(format!("禁止访问非公网下载目标: {}", denied.ip()));
+    }
+    Ok(addrs)
+}
+
+fn is_public_download_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => is_public_ipv4(ip),
+        IpAddr::V6(ip) => is_public_ipv6(ip),
+    }
+}
+
+fn is_public_ipv4(ip: Ipv4Addr) -> bool {
+    let [a, b, c, _] = ip.octets();
+    !(a == 0
+        || a == 10
+        || a == 127
+        || (a == 100 && (64..=127).contains(&b))
+        || (a == 169 && b == 254)
+        || (a == 172 && (16..=31).contains(&b))
+        || (a == 192 && b == 0 && c == 0)
+        || (a == 192 && b == 0 && c == 2)
+        || (a == 192 && b == 88 && c == 99)
+        || (a == 192 && b == 168)
+        || (a == 198 && (b == 18 || b == 19))
+        || (a == 198 && b == 51 && c == 100)
+        || (a == 203 && b == 0 && c == 113)
+        || a >= 224)
+}
+
+fn is_public_ipv6(ip: Ipv6Addr) -> bool {
+    if let Some(ipv4) = ip.to_ipv4() {
+        return is_public_ipv4(ipv4);
+    }
+    let segments = ip.segments();
+    !(ip.is_unspecified()
+        || ip.is_loopback()
+        || ip.is_multicast()
+        || (segments[0] & 0xfe00) == 0xfc00
+        || (segments[0] & 0xffc0) == 0xfe80
+        || (segments[0] & 0xffc0) == 0xfec0
+        || (segments[0] == 0x0064 && segments[1] == 0xff9b)
+        || (segments[0] == 0x2001 && segments[1] <= 0x01ff)
+        || (segments[0] == 0x2001 && segments[1] == 0x0db8)
+        || segments[0] == 0x2002
+        || (segments[0] == 0x0100 && segments[1..].iter().all(|value| *value == 0))
+        || (segments[0] & 0xfffe) == 0x3ffe)
+}
+
+fn build_download_client(host: &str, addrs: &[SocketAddr]) -> Result<reqwest::Client, String> {
+    build_download_client_with_timeouts(
+        host,
+        addrs,
+        DOWNLOAD_CONNECT_TIMEOUT,
+        DOWNLOAD_REQUEST_TIMEOUT,
+    )
+}
+
+fn build_download_client_with_timeouts(
+    host: &str,
+    addrs: &[SocketAddr],
+    connect_timeout: Duration,
+    request_timeout: Duration,
+) -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
+        .connect_timeout(connect_timeout)
+        .timeout(request_timeout)
+        .resolve_to_addrs(host, addrs)
+        .build()
+        .map_err(|e| format!("无法初始化下载器: {}", e))
+}
+
+async fn send_validated_download_request(
+    mut url: reqwest::Url,
+) -> Result<reqwest::Response, String> {
+    for redirect_count in 0..=MAX_DOWNLOAD_REDIRECTS {
+        let addrs = resolve_public_download_addrs(&url).await?;
+        let host = url
+            .host_str()
+            .ok_or_else(|| "下载地址缺少主机名".to_string())?;
+        let response = build_download_client(host, &addrs)?
+            .get(url.clone())
+            .header(reqwest::header::USER_AGENT, DOWNLOAD_USER_AGENT)
+            .send()
+            .await
+            .map_err(|e| format!("下载失败: {}", e))?;
+
+        if !response.status().is_redirection() {
+            return Ok(response);
+        }
+        if redirect_count == MAX_DOWNLOAD_REDIRECTS {
+            return Err(format!("下载重定向超过 {} 次", MAX_DOWNLOAD_REDIRECTS));
+        }
+        url = redirect_download_url(&response)?;
+    }
+    Err("下载重定向处理失败".to_string())
+}
+
+fn redirect_download_url(response: &reqwest::Response) -> Result<reqwest::Url, String> {
+    let location = response
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .ok_or_else(|| "下载重定向缺少 Location".to_string())?
+        .to_str()
+        .map_err(|_| "下载重定向 Location 无效".to_string())?;
+    resolve_redirect_url(response.url(), location)
+}
+
+fn resolve_redirect_url(base: &reqwest::Url, location: &str) -> Result<reqwest::Url, String> {
+    let url = base
+        .join(location)
+        .map_err(|e| format!("下载重定向地址无效: {}", e))?;
+    parse_download_url(url.as_str())
+}
+
+fn reject_oversized_content_length(response: &reqwest::Response) -> Result<(), String> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_DOWNLOAD_BYTES)
+    {
+        return Err(format!(
+            "下载内容超过 {} MB 限制",
+            MAX_DOWNLOAD_BYTES / 1024 / 1024
+        ));
+    }
+    Ok(())
+}
+
+async fn stream_response_to_file(
+    response: &mut reqwest::Response,
+    path: &Path,
+    mut hasher: Option<Sha256>,
+) -> Result<(u64, String), String> {
+    let mut file = File::create(path).map_err(|e| format!("无法创建下载文件: {}", e))?;
+    let mut cleanup = PartialFileGuard::new(path.to_path_buf());
+    let mut size = 0_u64;
+
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| format!("读取下载内容失败: {}", e))?
+    {
+        size = checked_download_size(size, chunk.len())?;
+        if let Some(hasher) = hasher.as_mut() {
+            hasher.update(&chunk);
+        }
+        file.write_all(&chunk)
+            .map_err(|e| format!("写入下载内容失败: {}", e))?;
+    }
+    file.flush()
+        .map_err(|e| format!("保存下载文件失败: {}", e))?;
+    cleanup.keep();
+
+    let content_hash = hasher
+        .map(|hasher| bytes_to_hex(&hasher.finalize()))
+        .unwrap_or_default();
+    Ok((size, content_hash))
+}
+
+fn checked_download_size(current: u64, chunk_bytes: usize) -> Result<u64, String> {
+    let next = current
+        .checked_add(chunk_bytes as u64)
+        .ok_or_else(|| "下载内容大小溢出".to_string())?;
+    if next > MAX_DOWNLOAD_BYTES {
+        return Err(format!(
+            "下载内容超过 {} MB 限制",
+            MAX_DOWNLOAD_BYTES / 1024 / 1024
+        ));
+    }
+    Ok(next)
+}
+
+fn read_file_as_base64(path: &Path, max_bytes: u64) -> Result<String, String> {
+    let metadata = fs::metadata(path).map_err(|e| format!("读取文件信息失败: {}", e))?;
+    if metadata.len() > max_bytes {
+        return Err(format!("文件超过 {} MB 读取限制", max_bytes / 1024 / 1024));
+    }
+
+    let file = File::open(path).map_err(|e| format!("读取文件失败: {}", e))?;
+    let mut reader = file.take(max_bytes);
+    let mut data = Vec::with_capacity(metadata.len() as usize);
+    reader
+        .read_to_end(&mut data)
+        .map_err(|e| format!("读取文件失败: {}", e))?;
+    if data.len() as u64 != metadata.len() {
+        return Err("读取文件时大小发生变化，请重试".to_string());
+    }
+    Ok(general_purpose::STANDARD.encode(data))
+}
+
+struct PartialFileGuard {
+    path: PathBuf,
+    keep: bool,
+}
+
+impl PartialFileGuard {
+    fn new(path: PathBuf) -> Self {
+        Self { path, keep: false }
+    }
+
+    fn keep(&mut self) {
+        self.keep = true;
+    }
+}
+
+impl Drop for PartialFileGuard {
+    fn drop(&mut self) {
+        if !self.keep {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
 }
 
 fn resolve_extension(
@@ -1406,6 +1604,12 @@ fn get_media_subdir(file_type: &str) -> &str {
 }
 
 const COPY_BUFFER_BYTES: usize = 128 * 1024;
+const MAX_BASE64_READ_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_DOWNLOAD_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_DOWNLOAD_REDIRECTS: usize = 10;
+const DOWNLOAD_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const DOWNLOAD_REQUEST_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+const DOWNLOAD_USER_AGENT: &str = concat!("Opentu Desktop/", env!("CARGO_PKG_VERSION"));
 const MAX_RANGE_BYTES: u64 = 1024 * 1024;
 const MAX_FULL_RESPONSE_BYTES: u64 = 32 * 1024 * 1024;
 
@@ -1489,6 +1693,124 @@ mod tests {
         assert_eq!(sanitize_file_name("CON").unwrap(), "_CON");
         assert_eq!(sanitize_file_name("aux.txt").unwrap(), "_aux.txt");
         assert_eq!(sanitize_file_name("LPT1.png").unwrap(), "_LPT1.png");
+    }
+
+    #[test]
+    fn download_url_accepts_only_http_without_credentials() {
+        assert!(parse_download_url("https://example.com/file.png").is_ok());
+        assert!(parse_download_url("file:///etc/passwd").is_err());
+        assert!(parse_download_url("https://user:secret@example.com/file.png").is_err());
+    }
+
+    #[test]
+    fn localhost_download_target_is_rejected_before_dns_lookup() {
+        let url = reqwest::Url::parse("http://localhost/file.png").unwrap();
+        let error =
+            tauri::async_runtime::block_on(resolve_public_download_addrs(&url)).unwrap_err();
+        assert!(error.contains("本机"));
+    }
+
+    #[test]
+    fn private_and_special_network_addresses_are_denied() {
+        for ip in [
+            "127.0.0.1",
+            "10.0.0.1",
+            "100.64.0.1",
+            "169.254.169.254",
+            "172.16.0.1",
+            "192.168.1.1",
+            "224.0.0.1",
+            "::1",
+            "fe80::1",
+            "fc00::1",
+            "ff02::1",
+            "::ffff:127.0.0.1",
+            "2001:db8::1",
+        ] {
+            assert!(!is_public_download_ip(ip.parse().unwrap()), "{ip}");
+        }
+        assert!(is_public_download_ip("8.8.8.8".parse().unwrap()));
+        assert!(is_public_download_ip(
+            "2606:4700:4700::1111".parse().unwrap()
+        ));
+    }
+
+    #[test]
+    fn redirect_target_is_reparsed_and_private_target_can_be_rejected() {
+        let base = reqwest::Url::parse("https://example.com/file").unwrap();
+        let url = resolve_redirect_url(&base, "http://127.0.0.1/admin").unwrap();
+        assert_eq!(url.as_str(), "http://127.0.0.1/admin");
+        let ip: IpAddr = url.host_str().unwrap().parse().unwrap();
+        assert!(!is_public_download_ip(ip));
+    }
+
+    #[test]
+    fn streamed_download_size_limit_is_enforced() {
+        assert_eq!(
+            checked_download_size(MAX_DOWNLOAD_BYTES - 1, 1).unwrap(),
+            MAX_DOWNLOAD_BYTES
+        );
+        assert!(checked_download_size(MAX_DOWNLOAD_BYTES, 1).is_err());
+    }
+
+    #[test]
+    fn failed_download_guard_removes_partial_file() {
+        let root = temp_media_root("partial-download-cleanup");
+        let path = root.join("partial.tmp");
+        {
+            std::fs::write(&path, b"partial").unwrap();
+            let _guard = PartialFileGuard::new(path.clone());
+        }
+        assert!(!path.exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn bounded_base64_read_rejects_oversized_file() {
+        let root = temp_media_root("bounded-base64-read");
+        let path = root.join("large.bin");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(9).unwrap();
+        assert!(read_file_as_base64(&path, 8).is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn download_request_timeout_is_enforced() {
+        use std::io::{Read as _, Write as _};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(1)));
+                let mut request = [0_u8; 1024];
+                let _ = stream.read(&mut request);
+                std::thread::sleep(Duration::from_millis(200));
+                let _ = stream.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                );
+            }
+        });
+
+        tauri::async_runtime::block_on(async {
+            let client = build_download_client_with_timeouts(
+                "example.test",
+                &[addr],
+                Duration::from_secs(1),
+                Duration::from_millis(40),
+            )
+            .unwrap();
+            let error = client
+                .get(format!("http://example.test:{}/", addr.port()))
+                .send()
+                .await
+                .unwrap_err();
+            assert!(error.is_timeout());
+        });
+
+        server.join().unwrap();
     }
 
     #[test]

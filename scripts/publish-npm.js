@@ -102,10 +102,10 @@ function generateNpmPackageJson(version) {
     homepage: 'https://opentu.ai',
     repository: {
       type: 'git',
-      url: 'https://github.com/ljquan/aitu.git'
+      url: 'https://github.com/tuziapi/opentu.git'
     },
     bugs: {
-      url: 'https://github.com/ljquan/aitu/issues'
+      url: 'https://github.com/tuziapi/opentu/issues'
     },
     license: 'MIT',
     author: 'ljquan',
@@ -169,7 +169,7 @@ npx http-server ./node_modules/${CONFIG.packageName}
 
 ## 源代码
 
-GitHub: [https://github.com/ljquan/aitu](https://github.com/ljquan/aitu)
+GitHub: [https://github.com/tuziapi/opentu](https://github.com/tuziapi/opentu)
 
 ## 许可证
 

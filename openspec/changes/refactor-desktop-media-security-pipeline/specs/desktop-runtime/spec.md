@@ -28,6 +28,26 @@ The desktop runtime SHALL expose only permissions required by implemented deskto
 - **THEN** unused process and filesystem permissions SHALL NOT be enabled
 - **AND** opener permissions SHALL be scoped to the minimum required URL/path patterns
 
+### Requirement: Desktop Native Downloads Must Be Bounded And Public-Target Only
+The desktop runtime SHALL stream renderer-requested native downloads with bounded time and size, and SHALL reject non-public network targets unless a separately specified local-network capability authorizes them.
+
+#### Scenario: Download resolves to a private network target
+- **GIVEN** a renderer-requested URL resolves to loopback, link-local, private, multicast, or another denied address range
+- **WHEN** the native download command validates the request or a redirect destination
+- **THEN** the command SHALL reject the download before sending sensitive local-network traffic
+
+#### Scenario: Download exceeds configured limit
+- **GIVEN** a remote response declares or streams more bytes than the configured desktop download limit
+- **WHEN** the native download command processes the response
+- **THEN** the command SHALL stop writing further bytes
+- **AND** it SHALL remove the incomplete output file
+- **AND** it SHALL NOT buffer the full response in memory
+
+#### Scenario: Download stalls or times out
+- **WHEN** connection or response progress exceeds the configured timeout
+- **THEN** the command SHALL abort the request
+- **AND** it SHALL clean up any incomplete output file
+
 ### Requirement: Desktop CSP Must Reduce Renderer Blast Radius
 The desktop app SHALL use a content security policy that avoids broad script execution and unnecessary network wildcards.
 

@@ -4,7 +4,7 @@ set -euo pipefail
 # 当脚本作为 Release Asset 上传时，CI 会把 DEFAULT_REPO 替换为实际发布仓库。
 # 通过 raw.githubusercontent.com 直接拉取的版本会保留这里的占位默认值，
 # 用户可以用 OPENTU_REPO=用户名/仓库名 显式覆盖。
-DEFAULT_REPO="AITU-Copilot/opentu"
+DEFAULT_REPO="tuziapi/opentu"
 REPO="${OPENTU_REPO:-$DEFAULT_REPO}"
 TAG="${OPENTU_TAG:-latest}"
 TMP_DIR="$(mktemp -d)"
@@ -66,6 +66,21 @@ if ! curl -fL "$DOWNLOAD_URL" -o "$TMP_DIR/$FILE"; then
   exit 1
 fi
 
+CHECKSUM_URL="${DOWNLOAD_URL}.sha256"
+if curl -fsSL "$CHECKSUM_URL" -o "$TMP_DIR/$FILE.sha256"; then
+  if command -v shasum >/dev/null 2>&1; then
+    (cd "$TMP_DIR" && shasum -a 256 -c "$FILE.sha256")
+  elif command -v sha256sum >/dev/null 2>&1; then
+    (cd "$TMP_DIR" && sha256sum -c "$FILE.sha256")
+  else
+    echo "未找到 SHA-256 校验工具，停止安装。" >&2
+    exit 1
+  fi
+else
+  echo "正式发布资产缺少 SHA-256 校验文件: $CHECKSUM_URL" >&2
+  exit 1
+fi
+
 case "$(echo "$FILE" | tr '[:upper:]' '[:lower:]')" in
   *.dmg)
     MOUNT_DIR="$(mktemp -d)"
@@ -83,12 +98,8 @@ case "$(echo "$FILE" | tr '[:upper:]' '[:lower:]')" in
     rm -rf "$dest_dir/$app_name"
     ditto "$app_path" "$dest_dir/$app_name"
     hdiutil detach "$MOUNT_DIR" -quiet || true
-    xattr -dr com.apple.quarantine "$dest_dir/$app_name" 2>/dev/null || true
     echo "已安装到 $dest_dir/$app_name"
-    echo ""
-    echo "如果首次启动被 Gatekeeper 拦截，可以："
-    echo "  - 右键应用 → 打开 → 在弹窗里再次点击「打开」"
-    echo "  - 或执行: xattr -dr com.apple.quarantine \"$dest_dir/$app_name\""
+    echo "应用已通过发布签名与完整性校验；若 macOS 拒绝启动，请停止使用并反馈 Release 信息。"
     ;;
   *.appimage)
     install_root="$HOME/.local/share/opentu"

@@ -1,11 +1,16 @@
 name: Desktop Build & Release
-run-name: "Desktop Release: ${{ github.ref_name }}"
+run-name: "Desktop Release: ${{ inputs.tag || github.ref_name }}"
 
 on:
   push:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发布的语义化标签（例如 v1.2.6，必须已存在）"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -13,14 +18,47 @@ permissions:
 jobs:
   create-release:
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.release_meta.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
-      - name: Create release
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+      - name: Validate release tag, version and signing secrets
+        id: release_meta
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+          OPENTU_UPDATER_ENABLED: "1"
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]] || { echo "非法发布标签: $RELEASE_TAG" >&2; exit 1; }
+          git rev-parse --verify "$RELEASE_TAG^{commit}" >/dev/null
+          node scripts/sync-desktop-version.js --tag="$RELEASE_TAG" --check
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID WINDOWS_CERTIFICATE WINDOWS_CERTIFICATE_PASSWORD TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD TAURI_UPDATER_PUBLIC_KEY; do
+            [[ -n "${!name:-}" ]] || { echo "正式发布缺少 GitHub Secret: $name" >&2; exit 1; }
+          done
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+      - name: Create draft release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.release_meta.outputs.tag }}
         run: |
-          gh release create "${{ github.ref_name }}" \
-            --title "Opentu Desktop ${{ github.ref_name }}" \
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" \
+            --draft \
+            --verify-tag \
+            --title "Opentu Desktop $TAG" \
             --notes "## 安装方式
 
           ### macOS / Linux 一键安装
@@ -34,7 +72,7 @@ jobs:
           或指定版本：
 
           \`\`\`bash
-          curl -fsSL https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/install_opentu.sh | OPENTU_TAG=${{ github.ref_name }} bash
+          curl -fsSL https://github.com/${{ github.repository }}/releases/download/$TAG/install_opentu.sh | OPENTU_TAG=$TAG bash
           \`\`\`
 
           也可以从 raw 拉脚本（必须显式指定 \`OPENTU_REPO\`）：
@@ -47,11 +85,7 @@ jobs:
 
           下载下方 Assets 中的 \`Opentu-windows-x86_64-setup.exe\`（NSIS）或 \`Opentu-windows-x86_64.msi\`，双击安装即可。
 
-          ### macOS 未签名包打开方式
-
-          如果第一次打开时被系统拦截：
-          1. 对应用点右键，选择\"打开\"，在弹窗里确认\"打开\"
-          2. 或在终端执行：\`xattr -dr com.apple.quarantine \"/Applications/Opentu.app\"\`
+          macOS 安装包已使用 Developer ID 签名并通过 Apple 公证；Windows 安装包已使用 Authenticode 签名。请同时下载对应的 \`.sha256\` 文件验证完整性。
 
           ### Linux AppImage 系统依赖
 
@@ -120,6 +154,22 @@ jobs:
       CARGO_TERM_COLOR: "always"
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.create-release.outputs.tag }}
+      - name: Import Apple signing certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          CERTIFICATE_PATH="$RUNNER_TEMP/opentu-signing.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/opentu-signing.keychain-db"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 -D > "$CERTIFICATE_PATH"
+          security create-keychain -p "$RUNNER_TEMP" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$RUNNER_TEMP" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -k "$RUNNER_TEMP" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
       - name: Install imagemagick
         run: brew install imagemagick
       - name: Fix PNG icons to RGBA format
@@ -157,14 +207,24 @@ jobs:
       - name: Build Desktop
         working-directory: apps/desktop
         env:
-          APPLE_SIGNING_IDENTITY: "-"
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+          OPENTU_UPDATER_ENABLED: "1"
           CI: true
           RUST_BACKTRACE: "1"
           NODE_OPTIONS: "--max-old-space-size=8192"
         run: |
+          node ../../scripts/prepare-tauri-release-config.js --output=src-tauri/tauri.release.conf.json
           attempt=1
           max=2
-          until pnpm tauri build --target ${{ matrix.target }} --verbose 2>&1; do
+          until pnpm tauri build --config src-tauri/tauri.release.conf.json --target ${{ matrix.target }} --verbose 2>&1; do
             if [ $attempt -ge $max ]; then
               echo "tauri build failed after $max attempts" >&2
               exit 1
@@ -176,7 +236,7 @@ jobs:
       - name: Upload assets
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.create-release.outputs.tag }}
           ARCH: ${{ matrix.arch }}
           TARGET: ${{ matrix.target }}
         run: |
@@ -184,10 +244,22 @@ jobs:
           echo "Checking bundle directory: $BUNDLE"
           ls -la $BUNDLE
           if [ -d "$BUNDLE/dmg" ]; then
-            find "$BUNDLE/dmg" -name "*.dmg" -exec sh -c 'cp "$1" "Opentu-macos-${ARCH}.dmg" && gh release upload "$TAG" "Opentu-macos-${ARCH}.dmg" --clobber' _ {} \;
+            find "$BUNDLE/dmg" -name "*.dmg" -exec sh -c 'cp "$1" "Opentu-macos-${ARCH}.dmg"' _ {} \;
+            app_path="$(find "$BUNDLE/macos" -maxdepth 1 -name '*.app' -type d | head -n 1)"
+            [[ -n "$app_path" ]] || { echo "缺少 macOS app bundle" >&2; exit 1; }
+            codesign --verify --deep --strict --verbose=2 "$app_path"
+            spctl --assess --type execute --verbose=4 "$app_path"
+            xcrun stapler validate "$app_path"
+            hdiutil verify "Opentu-macos-${ARCH}.dmg"
+            shasum -a 256 "Opentu-macos-${ARCH}.dmg" > "Opentu-macos-${ARCH}.dmg.sha256"
+            gh release upload "$TAG" "Opentu-macos-${ARCH}.dmg" "Opentu-macos-${ARCH}.dmg.sha256" --clobber
           fi
           if [ -d "$BUNDLE/macos" ]; then
-            find "$BUNDLE/macos" -name "*.tar.gz" -exec sh -c 'cp "$1" "Opentu-macos-${ARCH}.tar.gz" && gh release upload "$TAG" "Opentu-macos-${ARCH}.tar.gz" --clobber' _ {} \;
+            updater_archive="$(find "$BUNDLE/macos" -name "*.app.tar.gz" -type f | head -n 1)"
+            [[ -n "$updater_archive" && -f "$updater_archive.sig" ]] || { echo "缺少 macOS 更新资产或签名" >&2; exit 1; }
+            cp "$updater_archive" "Opentu-macos-${ARCH}.app.tar.gz"
+            cp "$updater_archive.sig" "Opentu-macos-${ARCH}.app.tar.gz.sig"
+            gh release upload "$TAG" "Opentu-macos-${ARCH}.app.tar.gz" "Opentu-macos-${ARCH}.app.tar.gz.sig" --clobber
           fi
 
   build-windows:
@@ -201,6 +273,8 @@ jobs:
       CARGO_TERM_COLOR: "always"
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.create-release.outputs.tag }}
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
@@ -230,12 +304,20 @@ jobs:
         working-directory: apps/desktop
         shell: bash
         env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+          OPENTU_UPDATER_ENABLED: "1"
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          OPENTU_WINDOWS_SIGN_COMMAND: "powershell -NoProfile -ExecutionPolicy Bypass -File ../../scripts/sign-windows-binary.ps1 %1"
           CI: true
           NODE_OPTIONS: "--max-old-space-size=8192"
         run: |
+          node ../../scripts/prepare-tauri-release-config.js --output=src-tauri/tauri.release.conf.json
           attempt=1
           max=2
-          until pnpm tauri build --verbose 2>&1; do
+          until pnpm tauri build --config src-tauri/tauri.release.conf.json --verbose 2>&1; do
             if [ $attempt -ge $max ]; then
               echo "tauri build failed after $max attempts" >&2
               exit 1
@@ -247,24 +329,45 @@ jobs:
       - name: Upload assets
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.create-release.outputs.tag }}
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         shell: pwsh
         run: |
+          $certPath = Join-Path $env:RUNNER_TEMP "opentu-signing.pfx"
+          [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+          $signtool = (Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Filter signtool.exe -Recurse | Sort-Object FullName -Descending | Select-Object -First 1).FullName
+          if (-not $signtool) { throw "未找到 signtool.exe" }
           $bundle = "apps/desktop/src-tauri/target/release/bundle"
           Write-Host "Checking bundle directory: $bundle"
           Get-ChildItem -Path $bundle -Recurse
           if (Test-Path "$bundle/msi") {
             Get-ChildItem "$bundle/msi/*.msi" | ForEach-Object {
               Copy-Item $_.FullName "Opentu-windows-x86_64.msi"
-              gh release upload $env:TAG "Opentu-windows-x86_64.msi" --clobber
+              & $signtool sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /f $certPath /p $env:WINDOWS_CERTIFICATE_PASSWORD "Opentu-windows-x86_64.msi"
+              if ($LASTEXITCODE -ne 0) { throw "MSI Authenticode 签名失败" }
+              & $signtool verify /pa /all "Opentu-windows-x86_64.msi"
+              if ($LASTEXITCODE -ne 0) { throw "MSI Authenticode 验证失败" }
+              (Get-FileHash "Opentu-windows-x86_64.msi" -Algorithm SHA256).Hash.ToLower() + "  Opentu-windows-x86_64.msi" | Set-Content -NoNewline "Opentu-windows-x86_64.msi.sha256"
+              gh release upload $env:TAG "Opentu-windows-x86_64.msi" "Opentu-windows-x86_64.msi.sha256" --clobber
             }
           }
           if (Test-Path "$bundle/nsis") {
             Get-ChildItem "$bundle/nsis/*-setup.exe" | ForEach-Object {
               Copy-Item $_.FullName "Opentu-windows-x86_64-setup.exe"
-              gh release upload $env:TAG "Opentu-windows-x86_64-setup.exe" --clobber
+              & $signtool sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /f $certPath /p $env:WINDOWS_CERTIFICATE_PASSWORD "Opentu-windows-x86_64-setup.exe"
+              if ($LASTEXITCODE -ne 0) { throw "NSIS Authenticode 签名失败" }
+              & $signtool verify /pa /all "Opentu-windows-x86_64-setup.exe"
+              if ($LASTEXITCODE -ne 0) { throw "NSIS Authenticode 验证失败" }
+              (Get-FileHash "Opentu-windows-x86_64-setup.exe" -Algorithm SHA256).Hash.ToLower() + "  Opentu-windows-x86_64-setup.exe" | Set-Content -NoNewline "Opentu-windows-x86_64-setup.exe.sha256"
+              gh release upload $env:TAG "Opentu-windows-x86_64-setup.exe" "Opentu-windows-x86_64-setup.exe.sha256" --clobber
             }
           }
+          $updater = Get-ChildItem $bundle -Recurse -Filter *.nsis.zip | Select-Object -First 1
+          if (-not $updater -or -not (Test-Path "$($updater.FullName).sig")) { throw "缺少 Windows 更新资产或签名" }
+          Copy-Item $updater.FullName "Opentu-windows-x86_64.nsis.zip"
+          Copy-Item "$($updater.FullName).sig" "Opentu-windows-x86_64.nsis.zip.sig"
+          gh release upload $env:TAG "Opentu-windows-x86_64.nsis.zip" "Opentu-windows-x86_64.nsis.zip.sig" --clobber
 
   build-linux:
     needs: create-release
@@ -287,6 +390,8 @@ jobs:
       CARGO_TERM_COLOR: "always"
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.create-release.outputs.tag }}
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -326,13 +431,18 @@ jobs:
       - name: Build Desktop
         working-directory: apps/desktop
         env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+          OPENTU_UPDATER_ENABLED: "1"
           CI: true
           RUST_BACKTRACE: "1"
           NODE_OPTIONS: "--max-old-space-size=8192"
         run: |
+          node ../../scripts/prepare-tauri-release-config.js --output=src-tauri/tauri.release.conf.json
           attempt=1
           max=2
-          until pnpm tauri build --target ${{ matrix.target }} --verbose 2>&1; do
+          until pnpm tauri build --config src-tauri/tauri.release.conf.json --target ${{ matrix.target }} --verbose 2>&1; do
             if [ $attempt -ge $max ]; then
               echo "tauri build failed after $max attempts" >&2
               exit 1
@@ -344,7 +454,7 @@ jobs:
       - name: Upload assets
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.create-release.outputs.tag }}
           ARCH: ${{ matrix.arch }}
           TARGET: ${{ matrix.target }}
         run: |
@@ -352,26 +462,73 @@ jobs:
           echo "Checking bundle directory: $BUNDLE"
           ls -la $BUNDLE
           if [ -d "$BUNDLE/appimage" ]; then
-            find "$BUNDLE/appimage" -name "*.AppImage" -exec sh -c 'cp "$1" "Opentu-linux-${ARCH}.AppImage" && gh release upload "$TAG" "Opentu-linux-${ARCH}.AppImage" --clobber' _ {} \;
+            find "$BUNDLE/appimage" -name "*.AppImage" -exec sh -c 'cp "$1" "Opentu-linux-${ARCH}.AppImage"' _ {} \;
+            updater_signature="$(find "$BUNDLE/appimage" -name '*.AppImage.sig' -type f | head -n 1)"
+            [[ -n "$updater_signature" ]] || { echo "缺少 Linux 更新签名" >&2; exit 1; }
+            cp "$updater_signature" "Opentu-linux-${ARCH}.AppImage.sig"
+            sha256sum "Opentu-linux-${ARCH}.AppImage" > "Opentu-linux-${ARCH}.AppImage.sha256"
+            gh release upload "$TAG" "Opentu-linux-${ARCH}.AppImage" "Opentu-linux-${ARCH}.AppImage.sig" "Opentu-linux-${ARCH}.AppImage.sha256" --clobber
           fi
           if [ -d "$BUNDLE/deb" ]; then
-            find "$BUNDLE/deb" -name "*.deb" -exec sh -c 'cp "$1" "Opentu-linux-${ARCH}.deb" && gh release upload "$TAG" "Opentu-linux-${ARCH}.deb" --clobber' _ {} \;
+            find "$BUNDLE/deb" -name "*.deb" -exec sh -c 'cp "$1" "Opentu-linux-${ARCH}.deb"' _ {} \;
+            sha256sum "Opentu-linux-${ARCH}.deb" > "Opentu-linux-${ARCH}.deb.sha256"
+            gh release upload "$TAG" "Opentu-linux-${ARCH}.deb" "Opentu-linux-${ARCH}.deb.sha256" --clobber
           fi
           if [ -d "$BUNDLE/rpm" ]; then
-            find "$BUNDLE/rpm" -name "*.rpm" -exec sh -c 'cp "$1" "Opentu-linux-${ARCH}.rpm" && gh release upload "$TAG" "Opentu-linux-${ARCH}.rpm" --clobber' _ {} \;
+            find "$BUNDLE/rpm" -name "*.rpm" -exec sh -c 'cp "$1" "Opentu-linux-${ARCH}.rpm"' _ {} \;
+            sha256sum "Opentu-linux-${ARCH}.rpm" > "Opentu-linux-${ARCH}.rpm.sha256"
+            gh release upload "$TAG" "Opentu-linux-${ARCH}.rpm" "Opentu-linux-${ARCH}.rpm.sha256" --clobber
           fi
 
   upload-install-script:
-    needs: [build-macos, build-windows, build-linux]
+    needs: [create-release, build-macos, build-windows, build-linux]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.create-release.outputs.tag }}
       - name: Rewrite default repo and upload install script
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.create-release.outputs.tag }}
         run: |
           # 把脚本里的 DEFAULT_REPO 替换成实际发布仓库，确保用户从 Release Asset 下载的脚本默认指向正确仓库
           sed -i "s|^DEFAULT_REPO=.*|DEFAULT_REPO=\"${REPO}\"|" scripts/install_opentu.sh
           gh release upload "$TAG" scripts/install_opentu.sh --clobber
+
+  publish-release:
+    needs: [create-release, build-macos, build-windows, build-linux, upload-install-script]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.create-release.outputs.tag }}
+      - name: Verify complete assets and publish draft
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.create-release.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir release-assets
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir release-assets
+          RELEASE_TAG="$TAG" node scripts/generate-updater-manifest.js --assets-dir=release-assets
+          gh release upload "$TAG" release-assets/latest.json --repo "$GITHUB_REPOSITORY" --clobber
+          assets="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+          required=(
+            Opentu-macos-aarch64.dmg Opentu-macos-aarch64.dmg.sha256
+            Opentu-macos-aarch64.app.tar.gz Opentu-macos-aarch64.app.tar.gz.sig
+            Opentu-macos-x86_64.dmg Opentu-macos-x86_64.dmg.sha256
+            Opentu-macos-x86_64.app.tar.gz Opentu-macos-x86_64.app.tar.gz.sig
+            Opentu-windows-x86_64-setup.exe Opentu-windows-x86_64-setup.exe.sha256
+            Opentu-windows-x86_64.msi Opentu-windows-x86_64.msi.sha256
+            Opentu-windows-x86_64.nsis.zip Opentu-windows-x86_64.nsis.zip.sig
+            Opentu-linux-x86_64.AppImage Opentu-linux-x86_64.AppImage.sig Opentu-linux-x86_64.AppImage.sha256
+            Opentu-linux-aarch64.AppImage Opentu-linux-aarch64.AppImage.sig Opentu-linux-aarch64.AppImage.sha256
+            install_opentu.sh latest.json
+          )
+          for asset in "${required[@]}"; do
+            grep -Fxq "$asset" <<<"$assets" || { echo "缺少正式发布资产: $asset" >&2; exit 1; }
+          done
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest

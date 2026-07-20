@@ -3,12 +3,12 @@
   <h3>Canvas-first AI Application Platform</h3>
   <p>Connect models, tools, assets, and knowledge flows so AI work keeps running in one workspace.</p>
   <p>
-    <a href="https://github.com/ljquan/aitu/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License"></a>
+    <a href="https://github.com/tuziapi/opentu/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License"></a>
     <a href="https://opentu.ai"><img src="https://img.shields.io/badge/demo-online-brightgreen.svg" alt="Demo"></a>
   </p>
   <p>
     <a href="https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fljquan%2Faitu&project-name=aitu&repository-name=aitu"><img src="https://vercel.com/button" alt="Deploy with Vercel"></a>
-    <a href="https://app.netlify.com/start/deploy?repository=https://github.com/ljquan/aitu"><img src="https://www.netlify.com/img/deploy/button.svg" alt="Deploy to Netlify"></a>
+    <a href="https://app.netlify.com/start/deploy?repository=https://github.com/tuziapi/opentu"><img src="https://www.netlify.com/img/deploy/button.svg" alt="Deploy to Netlify"></a>
   </p>
 </div>
 

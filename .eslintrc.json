@@ -10,7 +10,13 @@
           "error",
           {
             "enforceBuildableLibDependency": true,
-            "allow": ["tdesign-react", "tdesign-react/*"],
+            "allow": [
+              "tdesign-react",
+              "tdesign-react/*",
+              "@drawnix/drawnix/core-types",
+              "@drawnix/drawnix/workflow-types"
+            ],
+            "checkDynamicDependenciesExceptions": ["@aitu/utils"],
             "depConstraints": [
               {
                 "sourceTag": "*",

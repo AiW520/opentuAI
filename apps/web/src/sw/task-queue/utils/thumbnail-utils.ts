@@ -56,7 +56,7 @@ function getThumbnailCacheKey(originalUrl: string, size: ThumbnailSize): string 
       // 已经是完整 URL，直接使用
     } catch {
       // 不是完整 URL，使用 self.location.origin 作为 base
-      url = new URL(originalUrl, self.location.origin);
+      url = new URL(originalUrl, globalThis.location.origin);
     }
     // 确保移除可能存在的 thumbnail 参数
     url.searchParams.delete('thumbnail');
@@ -341,7 +341,7 @@ async function requestVideoThumbnailFromMainThread(url: string, _blob: Blob, max
  */
 export function getThumbnailUrl(originalUrl: string, size: ThumbnailSize = 'small'): string {
   try {
-    const url = new URL(originalUrl, self.location.origin);
+    const url = new URL(originalUrl, globalThis.location.origin);
     url.searchParams.set('thumbnail', size);
     return url.toString();
   } catch {

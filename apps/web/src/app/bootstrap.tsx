@@ -3,6 +3,7 @@ import * as ReactDOM from 'react-dom/client';
 import App from './app';
 import { ErrorBoundary } from './ErrorBoundary';
 import { initCrashLogger } from '../crash-logger';
+// eslint-disable-next-line @nx/enforce-module-boundaries -- 备份核心仍由 Web 静态资源共享，待迁移到独立共享包后移除。
 import {
   initWebVitals,
   initPageReport,
@@ -16,10 +17,12 @@ import {
   swChannelClient,
   safeReload,
 } from '@drawnix/drawnix/runtime';
+// eslint-disable-next-line @nx/enforce-module-boundaries -- 同上，仅放行 Drawnix 正式入口。
 import {
   getAnalyticsReleaseContext,
   registerAnalyticsSuperProperties,
 } from '@drawnix/drawnix';
+import { generateVideoThumbnailFromBlob } from '@aitu/utils';
 import { initSWConsoleCapture } from '../utils/sw-console-capture';
 
 const isLocalDev =
@@ -632,8 +635,6 @@ if (shouldUseServiceWorker) {
 
     swChannelClient.registerVideoThumbnailHandler(async (url, maxSize) => {
       try {
-        const { generateVideoThumbnailFromBlob } = await import('@aitu/utils');
-
         let videoBlob: Blob | null = null;
 
         // 1. 尝试从缓存获取视频 blob

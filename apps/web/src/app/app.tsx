@@ -6,6 +6,7 @@ import {
   lazy,
   Suspense,
 } from 'react';
+// eslint-disable-next-line @nx/enforce-module-boundaries -- 备份核心仍由 Web 静态资源共享，待迁移到独立共享包后移除。
 import {
   WorkspaceService,
   migrateToWorkspace,
@@ -30,6 +31,7 @@ import { ErrorFallbackUI, safeModeReload, goToDebug } from './ErrorBoundary';
 import { collectAndDownloadErrorLog } from '../utils/error-log-exporter';
 
 const Drawnix = lazy(() =>
+  // eslint-disable-next-line @nx/enforce-module-boundaries -- 同上，仅放行 Drawnix 正式入口。
   import('@drawnix/drawnix').then((module) => ({
     default: module.Drawnix,
   }))
@@ -92,7 +94,7 @@ function getBoardIdFromUrl(): string | null {
  */
 function updateBoardIdInUrl(
   boardId: string | null,
-  replace: boolean = false
+  replace = false
 ): void {
   const url = new URL(window.location.href);
   if (boardId) {
@@ -525,7 +527,7 @@ export function App() {
 
   // Handle board switching
   const handleBoardSwitch = useCallback(
-    async (board: Board, skipUrlUpdate: boolean = false) => {
+    async (board: Board, skipUrlUpdate = false) => {
       try {
         // 立即更新 URL 和 sessionStorage，确保刷新页面时能恢复到正确的画板
         // 必须在任何异步操作之前执行，避免刷新时丢失画板选择

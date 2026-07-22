@@ -6,6 +6,7 @@
  * - log/info: 仅在调试模式开启时捕获（用于调试分析）
  */
 
+// eslint-disable-next-line @nx/enforce-module-boundaries -- 备份核心仍由 Web 静态资源共享，待迁移到独立共享包后移除。
 import { swChannelClient } from '@drawnix/drawnix/runtime';
 
 let isInitialized = false;

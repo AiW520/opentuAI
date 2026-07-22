@@ -18,6 +18,8 @@
     "paths": {
       "@drawnix/drawnix": ["packages/drawnix/src/index.ts"],
       "@drawnix/drawnix/runtime": ["packages/drawnix/src/runtime.ts"],
+      "@drawnix/drawnix/core-types": ["packages/drawnix/src/types/shared/core.types.ts"],
+      "@drawnix/drawnix/workflow-types": ["packages/drawnix/src/services/workflow-engine/types.ts"],
       "@aitu/utils": ["packages/utils/src/index.ts"],
       "tdesign-react": ["packages/drawnix/src/utils/tdesign.ts"],
       "@plait-board/react-board": ["packages/react-board/src/index.ts"],

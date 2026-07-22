@@ -23,9 +23,9 @@ import {
   TaskError,
   TaskExecutionPhase,
   TaskInvocationRouteSnapshot,
-} from '../../../../../packages/drawnix/src/types/shared/core.types';
+} from '@drawnix/drawnix/core-types';
 
-export * from '../../../../../packages/drawnix/src/types/shared/core.types';
+export * from '@drawnix/drawnix/core-types';
 
 // ============================================================================
 // Task Config

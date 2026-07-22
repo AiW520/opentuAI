@@ -5,6 +5,7 @@
 
 import type { ErrorInfo } from 'react';
 import { getDiagnosticData } from '../crash-logger';
+// eslint-disable-next-line @nx/enforce-module-boundaries -- 备份核心仍由 Web 静态资源共享，待迁移到独立共享包后移除。
 import { crashRecoveryService, unifiedLogService } from '@drawnix/drawnix/runtime';
 
 export interface ErrorLogData {

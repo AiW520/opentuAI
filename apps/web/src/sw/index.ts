@@ -2722,7 +2722,7 @@ async function prewarmAllIdlePrefetchGroupsForUpdateReady(): Promise<void> {
   let iteration = 0;
   let orderedGroups: string[] | null = null;
 
-  while (true) {
+  for (;;) {
     if (!orderedGroups) {
       const manifest = await getIdlePrefetchManifest();
       if (!manifest) {
@@ -6094,9 +6094,8 @@ function cleanupStaleRequests(): void {
 }
 
 async function handleImageRequest(request: Request): Promise<Response> {
-  try {
-    // 生成唯一的请求ID用于追踪
-    const requestId = Math.random().toString(36).substring(2, 10);
+  // 生成唯一的请求ID用于追踪
+  const requestId = Math.random().toString(36).substring(2, 10);
 
     // console.log(`Service Worker [${requestId}]: Intercepting image request at ${new Date().toISOString()}:`, request.url);
 
@@ -6281,9 +6280,6 @@ async function handleImageRequest(request: Request): Promise<Response> {
         return createTimeoutResponse(request.url, requestId);
       }
       throw timeoutError;
-    }
-  } catch (error) {
-    throw error;
   }
 }
 

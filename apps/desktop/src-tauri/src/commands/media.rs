@@ -1095,26 +1095,33 @@ fn resolve_extension(
 }
 
 fn extension_from_mime(mime_type: &str, file_type: &str) -> &'static str {
-    match mime_type.to_ascii_lowercase().as_str() {
-        "image/jpeg" => "jpg",
-        "image/png" => "png",
-        "image/gif" => "gif",
-        "image/webp" => "webp",
-        "image/svg+xml" => "svg",
-        "video/mp4" => "mp4",
-        "video/webm" => "webm",
-        "video/quicktime" => "mov",
-        "video/x-m4v" => "m4v",
-        "audio/mpeg" => "mp3",
-        "audio/wav" => "wav",
-        "audio/ogg" => "ogg",
-        "audio/mp4" => "m4a",
-        "audio/aac" => "aac",
-        "audio/flac" => "flac",
-        "application/zip" => "zip",
+    match extension_from_known_mime(mime_type) {
+        Some(extension) => extension,
         _ if file_type == "video" => "mp4",
         _ if file_type == "audio" => "mp3",
         _ => "png",
+    }
+}
+
+fn extension_from_known_mime(mime_type: &str) -> Option<&'static str> {
+    match mime_type.to_ascii_lowercase().as_str() {
+        "image/jpeg" => Some("jpg"),
+        "image/png" => Some("png"),
+        "image/gif" => Some("gif"),
+        "image/webp" => Some("webp"),
+        "image/svg+xml" => Some("svg"),
+        "video/mp4" => Some("mp4"),
+        "video/webm" => Some("webm"),
+        "video/quicktime" => Some("mov"),
+        "video/x-m4v" => Some("m4v"),
+        "audio/mpeg" => Some("mp3"),
+        "audio/wav" => Some("wav"),
+        "audio/ogg" => Some("ogg"),
+        "audio/mp4" => Some("m4a"),
+        "audio/aac" => Some("aac"),
+        "audio/flac" => Some("flac"),
+        "application/zip" => Some("zip"),
+        _ => None,
     }
 }
 
@@ -1124,7 +1131,9 @@ fn resolve_download_extension(
     file_type: &str,
     fallback_extension: Option<&str>,
 ) -> String {
-    extension_from_url_path(url.path())
+    extension_from_known_mime(mime_type)
+        .map(str::to_string)
+        .or_else(|| extension_from_url_path(url.path()))
         .or_else(|| fallback_extension.and_then(sanitize_extension))
         .unwrap_or_else(|| extension_from_mime(mime_type, file_type).to_string())
 }
@@ -1794,6 +1803,35 @@ mod tests {
     }
 
     #[test]
+    fn downloaded_webp_uses_http_mime_over_png_fallback_and_serves_matching_mime() {
+        let root = temp_media_root("webp-mime");
+        let image_dir = root.join("images");
+        std::fs::create_dir_all(&image_dir).unwrap();
+        let url = reqwest::Url::parse("https://example.com/generated?id=123").unwrap();
+
+        let extension = resolve_download_extension(&url, "image/webp", "image", Some("png"));
+        assert_eq!(extension, "webp");
+
+        let file_path = image_dir.join(format!("content-test.{extension}"));
+        let webp = b"RIFF\x1c\x00\x00\x00WEBPVP8L\x0f\x00\x00\x00\x2f\x01\x40\x00\x00\x07\x10\xfd\x8f\xfe\x07\x22\xa2\xff\x01\x00";
+        std::fs::write(&file_path, webp).unwrap();
+        let response = serve_opentu_asset_from_root(
+            &root,
+            asset_request(tauri::http::Method::GET, &file_path, None),
+        )
+        .unwrap();
+
+        assert_eq!(response.status(), tauri::http::StatusCode::OK);
+        assert_eq!(
+            response.headers().get(tauri::http::header::CONTENT_TYPE),
+            Some(&tauri::http::HeaderValue::from_static("image/webp"))
+        );
+        assert_eq!(response.body().as_ref(), webp);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn localhost_download_target_is_rejected_before_dns_lookup() {
         let url = reqwest::Url::parse("http://localhost/file.png").unwrap();
         let error =
@@ -2147,6 +2185,7 @@ mod tests {
         let file_path = root.join("large.png");
         let file = std::fs::OpenOptions::new()
             .create(true)
+            .truncate(true)
             .write(true)
             .open(&file_path)
             .unwrap();

@@ -3,7 +3,7 @@
  * 素材库详情面板组件
  */
 
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import { Button, Dialog, Input, MessagePlugin } from 'tdesign-react';
 import {
   Download,
@@ -12,6 +12,7 @@ import {
   CheckCircle,
   Copy,
   UserRound,
+  FileWarning,
 } from 'lucide-react';
 import { copyToClipboard } from '../../utils/runtime-helpers';
 import { formatDate, formatFileSize } from '../../utils/asset-utils';
@@ -105,7 +106,12 @@ export function MediaLibraryInspector({
   const [subjectName, setSubjectName] = useState('');
   const [subjectPrompt, setSubjectPrompt] = useState('');
   const [isSavingSubject, setIsSavingSubject] = useState(false);
+  const [previewFailed, setPreviewFailed] = useState(false);
   const { board } = useDrawnix();
+
+  useEffect(() => {
+    setPreviewFailed(false);
+  }, [asset?.id]);
 
   // 获取实际文件大小（支持从缓存获取）
   const displaySize = useAssetSize(asset?.id, asset?.url, asset?.size);
@@ -387,6 +393,7 @@ export function MediaLibraryInspector({
               src={normalizedAssetUrl}
               controls
               className="media-library-inspector__audio"
+              onError={() => setPreviewFailed(true)}
             />
           </div>
         ) : asset.type === 'IMAGE' ? (
@@ -401,6 +408,8 @@ export function MediaLibraryInspector({
                 className="media-library-inspector__image"
                 showSkeleton={false}
                 eager
+                onLoadFailure={() => setPreviewFailed(true)}
+                fallback={<div />}
               />
             }
             showSkeleton={false}
@@ -418,8 +427,15 @@ export function MediaLibraryInspector({
             videoProps={{
               controls: true,
               preload: 'metadata',
+              onError: () => setPreviewFailed(true),
             }}
           />
+        )}
+        {previewFailed && (
+          <div className="media-library-inspector__preview-error" role="status">
+            <FileWarning size={20} />
+            <span>本地素材不可用或文件已损坏</span>
+          </div>
         )}
       </div>
 

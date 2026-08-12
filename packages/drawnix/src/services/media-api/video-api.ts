@@ -27,9 +27,11 @@ import {
 } from '../video-binding-utils';
 import { prepareVideoReferenceImageBlob } from '../video-reference-image-utils';
 import { prepareReferenceImageForMultipart } from '../reference-image-form-data';
+import { mapWithConcurrency } from '../../utils/map-with-concurrency';
 
 const DURATION_IN_MODEL_PREFIX = 'sora-2-';
 const PROVIDER_ERROR_PREVIEW_LIMIT = 1000;
+const REFERENCE_IMAGE_PREPARE_CONCURRENCY = 3;
 const durationEncodedInModel = (model?: string | null) =>
   Boolean(model && model.startsWith(DURATION_IN_MODEL_PREFIX));
 
@@ -208,20 +210,26 @@ export async function submitVideoGeneration(
 
   // 处理参考图片（体积控制在 1MB 内，与图片生成一致）
   if (params.referenceImages && params.referenceImages.length > 0) {
-    for (let i = 0; i < params.referenceImages.length; i++) {
-      const refImage = params.referenceImages[i];
-      if (!refImage) {
-        continue;
+    const references = params.referenceImages
+      .map((value, index) => ({ value, index }))
+      .filter((item): item is { value: string; index: number } => Boolean(item.value));
+    const preparedReferences = await mapWithConcurrency(
+      references,
+      REFERENCE_IMAGE_PREPARE_CONCURRENCY,
+      async ({ value, index }) => {
+        const prepared = await prepareReferenceImageForMultipart(value, {
+          filename: `reference-${index + 1}.png`,
+          fetcher: fetchFn,
+          signal,
+        });
+        return {
+          ...prepared,
+          blob: await prepareVideoReferenceImageBlob(prepared.blob, params.size),
+        };
       }
-      const prepared = await prepareReferenceImageForMultipart(refImage, {
-        filename: `reference-${i + 1}.png`,
-        fetcher: fetchFn,
-        signal,
-      });
-      const blob = await prepareVideoReferenceImageBlob(
-        prepared.blob,
-        params.size
-      );
+    );
+    for (const prepared of preparedReferences) {
+      const blob = prepared.blob;
       formData.append('input_reference', blob, prepared.filename);
     }
   }

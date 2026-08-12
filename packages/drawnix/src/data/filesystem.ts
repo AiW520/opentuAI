@@ -5,9 +5,9 @@ import {
   supported as nativeFileSystemSupported,
 } from 'browser-fs-access';
 import { MIME_TYPES } from '../constants';
+import { writeDesktopBinaryFile } from '../utils/desktop-binary-writer';
 
 type FILE_EXTENSION = Exclude<keyof typeof MIME_TYPES, 'binary'>;
-const DESKTOP_WRITE_CHUNK_BYTES = 1024 * 1024;
 
 function getErrorName(error: unknown): string {
   if (error && typeof error === 'object' && 'name' in error) {
@@ -76,68 +76,11 @@ async function pickDesktopSavePath(fileName: string): Promise<string | null> {
   });
 }
 
-async function writeDesktopChunk(
-  savePath: string,
-  buffer: Uint8Array,
-  append: boolean
-): Promise<void> {
-  await tauriInvoke<void>('write_file_chunk_to_path', {
-    savePath,
-    buffer: Array.from(buffer),
-    append,
-  });
-}
-
-async function writeDesktopChunkSplit(
-  savePath: string,
-  buffer: Uint8Array,
-  initialAppend: boolean
-): Promise<boolean> {
-  let append = initialAppend;
-  for (
-    let offset = 0;
-    offset < buffer.byteLength;
-    offset += DESKTOP_WRITE_CHUNK_BYTES
-  ) {
-    await writeDesktopChunk(
-      savePath,
-      buffer.subarray(offset, offset + DESKTOP_WRITE_CHUNK_BYTES),
-      append
-    );
-    append = true;
-  }
-  return append;
-}
-
 async function writeBlobToDesktopPath(
   savePath: string,
   blob: Blob
 ): Promise<void> {
-  if (blob.stream) {
-    const reader = blob.stream().getReader();
-    let append = false;
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (!value || value.byteLength === 0) continue;
-        append = await writeDesktopChunkSplit(savePath, value, append);
-      }
-      if (!append) {
-        await writeDesktopChunk(savePath, new Uint8Array(), false);
-      }
-    } finally {
-      reader.releaseLock();
-    }
-    return;
-  }
-
-  const bytes = new Uint8Array(await blob.arrayBuffer());
-  if (bytes.byteLength === 0) {
-    await writeDesktopChunk(savePath, bytes, false);
-    return;
-  }
-  await writeDesktopChunkSplit(savePath, bytes, false);
+  await writeDesktopBinaryFile(savePath, blob);
 }
 
 export const fileOpen = <M extends boolean | undefined = false>(opts: {

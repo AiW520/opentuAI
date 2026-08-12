@@ -25,8 +25,7 @@ import {
 } from './audio-id3';
 import { isDesktopAssetUrl } from './desktop-asset-url';
 import { isVirtualMediaUrl } from './virtual-media-url';
-
-const DESKTOP_WRITE_CHUNK_BYTES = 1024 * 1024;
+import { writeDesktopBinaryFile } from './desktop-binary-writer';
 
 export interface SmartDownloadResult {
   openedCount: number;
@@ -247,52 +246,8 @@ async function copyMediaUrlToDesktopPath(
   });
 }
 
-async function writeBytesToDesktopPath(
-  path: string,
-  bytes: Uint8Array,
-  append: boolean
-): Promise<void> {
-  await tauriInvoke<void>('write_file_chunk_to_path', {
-    savePath: path,
-    buffer: Array.from(bytes),
-    append,
-  });
-}
-
 async function writeBlobToDesktopPath(path: string, blob: Blob): Promise<void> {
-  if (blob.stream) {
-    const reader = blob.stream().getReader();
-    let append = false;
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (!value || value.byteLength === 0) continue;
-        await writeBytesToDesktopPath(path, value, append);
-        append = true;
-      }
-      if (!append) {
-        await writeBytesToDesktopPath(path, new Uint8Array(), false);
-      }
-    } finally {
-      reader.releaseLock();
-    }
-    return;
-  }
-
-  const arrayBuffer = await blob.arrayBuffer();
-  const bytes = new Uint8Array(arrayBuffer);
-  for (
-    let offset = 0;
-    offset < bytes.byteLength;
-    offset += DESKTOP_WRITE_CHUNK_BYTES
-  ) {
-    await writeBytesToDesktopPath(
-      path,
-      bytes.subarray(offset, offset + DESKTOP_WRITE_CHUNK_BYTES),
-      offset > 0
-    );
-  }
+  await writeDesktopBinaryFile(path, blob);
 }
 
 async function saveUrlToDesktopPath(

@@ -1,6 +1,7 @@
 import { IDBFactory } from 'fake-indexeddb';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  clearTransientMediaParams,
   taskStorageWriter,
   type SWTask,
 } from '../media-executor/task-storage-writer';
@@ -55,6 +56,23 @@ async function saveFromAnotherTab(task: SWTask): Promise<void> {
 }
 
 describe('task-storage-writer image attempt guards', () => {
+  it('removes request-only media payloads while preserving recovery metadata', () => {
+    expect(
+      clearTransientMediaParams({
+        prompt: '画一只兔子',
+        submissionRequestId: 'request-current',
+        referenceImages: ['data:image/png;base64,large'],
+        inputReference: 'data:image/png;base64,legacy',
+        maskImage: 'data:image/png;base64,mask',
+        model: 'gpt-image-2',
+      })
+    ).toEqual({
+      prompt: '画一只兔子',
+      submissionRequestId: 'request-current',
+      model: 'gpt-image-2',
+    });
+  });
+
   beforeEach(() => {
     taskStorageWriter.close();
     taskStorageWriter.resumeWrites();
@@ -468,5 +486,32 @@ describe('task-storage-writer image attempt guards', () => {
       progress: 100,
       result: { url: 'https://example.com/current.png' },
     });
+  });
+
+  it('clears durable reference payloads after the remote submission is accepted', async () => {
+    const task = createImageTask('request-current');
+    task.params.referenceImages = ['data:image/png;base64,large'];
+    task.params.maskImage = 'data:image/png;base64,mask';
+    await taskStorageWriter.saveTask(task);
+
+    expect(
+      await taskStorageWriter.updateRemoteId(
+        task.id,
+        'provider-task-1',
+        undefined,
+        'request-current'
+      )
+    ).toBe(true);
+
+    expect(await taskStorageWriter.getTask(task.id)).toMatchObject({
+      remoteId: 'provider-task-1',
+      params: {
+        prompt: '画一只兔子',
+        submissionRequestId: 'request-current',
+      },
+    });
+    const stored = await taskStorageWriter.getTask(task.id);
+    expect(stored?.params.referenceImages).toBeUndefined();
+    expect(stored?.params.maskImage).toBeUndefined();
   });
 });

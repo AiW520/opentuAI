@@ -6,6 +6,7 @@
     "core:default",
     "opener:default",
     "dialog:default",
+    "fs:allow-write-file",
     "updater:default",
     "process:allow-restart",
     "core:window:default",

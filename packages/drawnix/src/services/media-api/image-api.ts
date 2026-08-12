@@ -28,7 +28,10 @@ import {
   readProviderResponseText,
 } from '../provider-routing/provider-transport';
 import { IMAGE_GENERATION_TIMEOUT_MS } from '../../constants/TASK_CONSTANTS';
-import { appendReferenceImageToFormData } from '../reference-image-form-data';
+import { prepareReferenceImageForMultipart } from '../reference-image-form-data';
+import { mapWithConcurrency } from '../../utils/map-with-concurrency';
+
+const REFERENCE_IMAGE_PREPARE_CONCURRENCY = 3;
 
 // 重新导出工具函数，方便外部使用
 export { isAsyncImageModel, aspectRatioToSize };
@@ -229,29 +232,30 @@ export async function generateImageAsync(
 
   // 处理参考图片：需要转换为 Blob
   if (params.referenceImages && params.referenceImages.length > 0) {
-    for (let i = 0; i < params.referenceImages.length; i++) {
-      const refImage = params.referenceImages[i];
-      if (!refImage) {
-        continue;
-      }
-      await appendReferenceImageToFormData(
-        formData,
-        'input_reference',
-        refImage,
-        {
-          filename: `reference-${i + 1}.png`,
+    const references = params.referenceImages
+      .map((value, index) => ({ value, index }))
+      .filter((item): item is { value: string; index: number } => Boolean(item.value));
+    const preparedReferences = await mapWithConcurrency(
+      references,
+      REFERENCE_IMAGE_PREPARE_CONCURRENCY,
+      ({ value, index }) =>
+        prepareReferenceImageForMultipart(value, {
+          filename: `reference-${index + 1}.png`,
           fetcher: fetchFn,
           signal,
-        }
-      );
+        })
+    );
+    for (const prepared of preparedReferences) {
+      formData.append('input_reference', prepared.blob, prepared.filename);
     }
   }
   if (params.maskImage) {
-    await appendReferenceImageToFormData(formData, 'mask', params.maskImage, {
+    const preparedMask = await prepareReferenceImageForMultipart(params.maskImage, {
       filename: 'mask.png',
       fetcher: fetchFn,
       signal,
     });
+    formData.append('mask', preparedMask.blob, preparedMask.filename);
   }
 
   onProgress?.(5);

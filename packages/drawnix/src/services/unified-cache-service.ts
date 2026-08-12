@@ -18,6 +18,7 @@ import {
   normalizeVirtualMediaUrl,
 } from '../utils/virtual-media-url';
 import { convertLocalFilePathToAssetUrl } from '../utils/desktop-asset-url';
+import { writeDesktopBinaryFile } from '../utils/desktop-binary-writer';
 import type {
   CacheWarning,
   CacheWarningReasonCode,
@@ -802,7 +803,7 @@ class UnifiedCacheService {
       this.notifyListeners();
 
       // 异步检查是否需要 LRU 淘汰
-      this.evictLRU().catch(() => {});
+      this.evictLRU().catch(() => undefined);
 
       // console.log('[UnifiedCache] Image metadata updated:', url);
     } catch (error) {
@@ -1246,7 +1247,7 @@ class UnifiedCacheService {
       this.notifyListeners();
 
       // 异步检查是否需要 LRU 淘汰
-      this.evictLRU().catch(() => {});
+      this.evictLRU().catch(() => undefined);
 
       // console.log('[UnifiedCache] Image cached manually:', url);
       return true;
@@ -1577,7 +1578,7 @@ class UnifiedCacheService {
       };
       await this.putItem(item);
       this.cachedUrls.add(url);
-      this.evictLRU().catch(() => {});
+      this.evictLRU().catch(() => undefined);
     } finally {
       this.endCacheWrite();
     }
@@ -1826,51 +1827,7 @@ class UnifiedCacheService {
   }
 
   private async writeBlobToTauriPath(path: string, blob: Blob): Promise<void> {
-    const writeChunk = async (buffer: Uint8Array, append: boolean) => {
-      await (window as any).__TAURI_INTERNALS__.invoke(
-        'write_file_chunk_to_path',
-        {
-          savePath: path,
-          buffer: Array.from(buffer),
-          append,
-        }
-      );
-    };
-
-    if (blob.stream) {
-      const reader = blob.stream().getReader();
-      let append = false;
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          if (!value || value.byteLength === 0) continue;
-          await writeChunk(value, append);
-          append = true;
-        }
-        if (!append) {
-          await writeChunk(new Uint8Array(), false);
-        }
-      } finally {
-        reader.releaseLock();
-      }
-      return;
-    }
-
-    const arrayBuffer = await blob.arrayBuffer();
-    const uint8Array = new Uint8Array(arrayBuffer);
-    const chunkSize = 1024 * 1024;
-    if (uint8Array.byteLength === 0) {
-      await writeChunk(new Uint8Array(), false);
-      return;
-    }
-
-    for (let offset = 0; offset < uint8Array.byteLength; offset += chunkSize) {
-      await writeChunk(
-        uint8Array.subarray(offset, offset + chunkSize),
-        offset > 0
-      );
-    }
+    await writeDesktopBinaryFile(path, blob);
   }
 
   /**

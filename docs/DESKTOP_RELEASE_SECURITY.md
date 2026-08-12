@@ -35,7 +35,7 @@
 
 工作流会在创建 Draft Release 前校验全部 Secrets。任何签名配置缺失都会终止正式发布；普通本地构建仍可用于开发，但不具备正式发布或自动更新能力。
 
-当前 Renderer 依赖仍包含动态 `Function`/运行时样式能力，因此 CSP 暂时保留 `script-src 'unsafe-eval'` 与 `style-src 'unsafe-inline'` 兼容项。正式对外发布前需完成相关依赖清理或提供经过三平台运行验证的最小例外说明；不得进一步扩大到任意 HTTP 脚本或无限制远程源。
+生产桌面 CSP 的脚本策略仅允许 `script-src 'self'`，不再允许内联脚本或动态求值。`style-src 'unsafe-inline'` 暂时作为最小兼容例外保留，因为启动页、React 组件和画布运行时仍会写入内联样式；该例外只覆盖样式，不允许任意 HTTP 脚本或无限制远程源。
 
 发布完成前必须验证：
 

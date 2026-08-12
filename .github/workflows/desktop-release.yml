@@ -1,14 +1,14 @@
 name: Desktop Build & Release
-run-name: "Desktop Release: ${{ inputs.tag || github.ref_name }}"
+run-name: 'Desktop Release: ${{ inputs.tag || github.ref_name }}'
 
 on:
   push:
     tags:
-      - "v*"
+      - 'v*'
   workflow_dispatch:
     inputs:
       tag:
-        description: "要发布的语义化标签（例如 v1.2.6，必须已存在）"
+        description: '要发布的语义化标签（例如 v1.2.6，必须已存在）'
         required: true
         type: string
 
@@ -40,7 +40,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
-          OPENTU_UPDATER_ENABLED: "1"
+          OPENTU_UPDATER_ENABLED: '1'
         run: |
           set -euo pipefail
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]] || { echo "非法发布标签: $RELEASE_TAG" >&2; exit 1; }
@@ -58,43 +58,42 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.release_meta.outputs.tag }}
         run: |
-          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" \
-            --draft \
-            --verify-tag \
-            --title "Opentu Desktop $TAG" \
-            --notes "## 安装方式
+          set -euo pipefail
+          notes_file="$RUNNER_TEMP/opentu-release-notes.md"
+          cat > "$notes_file" <<'RELEASE_NOTES'
+          ## 安装方式
 
           ### macOS / Linux 一键安装
 
           推荐从 Release Asset 拉取脚本（脚本内置仓库地址，最稳定）：
 
-          \`\`\`bash
+          ```bash
           curl -fsSL https://github.com/${{ github.repository }}/releases/latest/download/install_opentu.sh | bash
-          \`\`\`
+          ```
 
           或指定版本：
 
-          \`\`\`bash
-          curl -fsSL https://github.com/${{ github.repository }}/releases/download/$TAG/install_opentu.sh | OPENTU_TAG=$TAG bash
-          \`\`\`
+          ```bash
+          curl -fsSL https://github.com/${{ github.repository }}/releases/download/${{ steps.release_meta.outputs.tag }}/install_opentu.sh | OPENTU_TAG=${{ steps.release_meta.outputs.tag }} bash
+          ```
 
-          也可以从 raw 拉脚本（必须显式指定 \`OPENTU_REPO\`）：
+          也可以从 raw 拉脚本（必须显式指定 `OPENTU_REPO`）：
 
-          \`\`\`bash
-          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install_opentu.sh | OPENTU_REPO=${{ github.repository }} OPENTU_TAG=${{ github.ref_name }} bash
-          \`\`\`
+          ```bash
+          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install_opentu.sh | OPENTU_REPO=${{ github.repository }} OPENTU_TAG=${{ steps.release_meta.outputs.tag }} bash
+          ```
 
           ### Windows
 
-          下载下方 Assets 中的 \`Opentu-windows-x86_64-setup.exe\`（NSIS）或 \`Opentu-windows-x86_64.msi\`，双击安装即可。
+          下载下方 Assets 中的 `Opentu-windows-x86_64-setup.exe`（NSIS）或 `Opentu-windows-x86_64.msi`，双击安装即可。
 
-          macOS 安装包已使用 Developer ID 签名并通过 Apple 公证；Windows 安装包已使用 Authenticode 签名。请同时下载对应的 \`.sha256\` 文件验证完整性。
+          macOS 安装包已使用 Developer ID 签名并通过 Apple 公证；Windows 安装包已使用 Authenticode 签名。请同时下载对应的 `.sha256` 文件验证完整性。
 
           ### Linux AppImage 系统依赖
 
           AppImage 启动需要：
-          - \`libfuse2\`（Ubuntu/Debian: \`sudo apt install libfuse2\`）
-          - \`libwebkit2gtk-4.1\`（Ubuntu 22.04+ 默认仓库提供）
+          - `libfuse2`（Ubuntu/Debian: `sudo apt install libfuse2`）
+          - `libwebkit2gtk-4.1`（Ubuntu 22.04+ 默认仓库提供）
 
           ---
 
@@ -134,7 +133,22 @@ jobs:
           2. 在文件资源管理器中打开该路径
           3. 进入对应的「图片」、「视频」或「音频」文件夹即可找到生成的文件
           4. 也可在应用的素材库面板中直接预览和管理生成的资源
-          "
+          RELEASE_NOTES
+
+          if release_json="$(gh release view "$TAG" --json isDraft 2>/dev/null)"; then
+            is_draft="$(jq -r '.isDraft' <<<"$release_json")"
+            [[ "$is_draft" == "true" ]] || {
+              echo "同标签 Release 已公开，拒绝覆盖: $TAG" >&2
+              exit 1
+            }
+            echo "复用同标签草稿 Release: $TAG"
+          else
+            gh release create "$TAG" \
+              --draft \
+              --verify-tag \
+              --title "Opentu Desktop $TAG" \
+              --notes-file "$notes_file"
+          fi
 
   build-macos:
     needs: create-release
@@ -150,11 +164,11 @@ jobs:
             runner: macos-14
     runs-on: ${{ matrix.runner }}
     env:
-      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
-      CARGO_NET_RETRY: "5"
-      CARGO_HTTP_TIMEOUT: "300"
-      CARGO_HTTP_MULTIPLEXING: "false"
-      CARGO_TERM_COLOR: "always"
+      CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+      CARGO_NET_RETRY: '5'
+      CARGO_HTTP_TIMEOUT: '300'
+      CARGO_HTTP_MULTIPLEXING: 'false'
+      CARGO_TERM_COLOR: 'always'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -173,16 +187,9 @@ jobs:
           security import "$CERTIFICATE_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
           security set-key-partition-list -S apple-tool:,apple: -k "$RUNNER_TEMP" "$KEYCHAIN_PATH"
           security list-keychains -d user -s "$KEYCHAIN_PATH"
-      - name: Install imagemagick
-        run: brew install imagemagick
-      - name: Fix PNG icons to RGBA format
-        run: |
-          convert apps/desktop/src-tauri/icons/32x32.png -alpha on apps/desktop/src-tauri/icons/32x32.png
-          convert apps/desktop/src-tauri/icons/128x128.png -alpha on apps/desktop/src-tauri/icons/128x128.png
-          convert apps/desktop/src-tauri/icons/128x128@2x.png -alpha on apps/desktop/src-tauri/icons/128x128@2x.png
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: '20'
       - uses: pnpm/action-setup@v4
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -191,7 +198,7 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: swatinem/rust-cache@v2
         with:
-          workspaces: "apps/desktop/src-tauri -> target"
+          workspaces: 'apps/desktop/src-tauri -> target'
           key: ${{ matrix.target }}
       - name: Pre-fetch cargo dependencies with retry
         working-directory: apps/desktop/src-tauri
@@ -219,10 +226,10 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
-          OPENTU_UPDATER_ENABLED: "1"
+          OPENTU_UPDATER_ENABLED: '1'
           CI: true
-          RUST_BACKTRACE: "1"
-          NODE_OPTIONS: "--max-old-space-size=8192"
+          RUST_BACKTRACE: '1'
+          NODE_OPTIONS: '--max-old-space-size=8192'
         run: |
           node ../../scripts/prepare-tauri-release-config.js --output=src-tauri/tauri.release.conf.json
           attempt=1
@@ -269,25 +276,25 @@ jobs:
     needs: create-release
     runs-on: windows-latest
     env:
-      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
-      CARGO_NET_RETRY: "5"
-      CARGO_HTTP_TIMEOUT: "300"
-      CARGO_HTTP_MULTIPLEXING: "false"
-      CARGO_TERM_COLOR: "always"
+      CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+      CARGO_NET_RETRY: '5'
+      CARGO_HTTP_TIMEOUT: '300'
+      CARGO_HTTP_MULTIPLEXING: 'false'
+      CARGO_TERM_COLOR: 'always'
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.create-release.outputs.tag }}
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: '20'
       - uses: pnpm/action-setup@v4
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
       - uses: dtolnay/rust-toolchain@stable
       - uses: swatinem/rust-cache@v2
         with:
-          workspaces: "apps/desktop/src-tauri -> target"
+          workspaces: 'apps/desktop/src-tauri -> target'
       - name: Pre-fetch cargo dependencies with retry
         working-directory: apps/desktop/src-tauri
         shell: bash
@@ -310,12 +317,12 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
-          OPENTU_UPDATER_ENABLED: "1"
+          OPENTU_UPDATER_ENABLED: '1'
           WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-          OPENTU_WINDOWS_SIGN_COMMAND: "powershell -NoProfile -ExecutionPolicy Bypass -File ../../scripts/sign-windows-binary.ps1 %1"
+          OPENTU_WINDOWS_SIGN_COMMAND: 'powershell -NoProfile -ExecutionPolicy Bypass -File ../../scripts/sign-windows-binary.ps1 %1'
           CI: true
-          NODE_OPTIONS: "--max-old-space-size=8192"
+          NODE_OPTIONS: '--max-old-space-size=8192'
         run: |
           node ../../scripts/prepare-tauri-release-config.js --output=src-tauri/tauri.release.conf.json
           attempt=1
@@ -386,11 +393,11 @@ jobs:
             runner: ubuntu-22.04-arm
     runs-on: ${{ matrix.runner }}
     env:
-      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
-      CARGO_NET_RETRY: "5"
-      CARGO_HTTP_TIMEOUT: "300"
-      CARGO_HTTP_MULTIPLEXING: "false"
-      CARGO_TERM_COLOR: "always"
+      CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+      CARGO_NET_RETRY: '5'
+      CARGO_HTTP_TIMEOUT: '300'
+      CARGO_HTTP_MULTIPLEXING: 'false'
+      CARGO_TERM_COLOR: 'always'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -398,22 +405,17 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev imagemagick xdg-utils
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev xdg-utils
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: '20'
       - uses: pnpm/action-setup@v4
-      - name: Fix PNG icons to RGBA format
-        run: |
-          convert apps/desktop/src-tauri/icons/32x32.png -alpha on apps/desktop/src-tauri/icons/32x32.png
-          convert apps/desktop/src-tauri/icons/128x128.png -alpha on apps/desktop/src-tauri/icons/128x128.png
-          convert apps/desktop/src-tauri/icons/128x128@2x.png -alpha on apps/desktop/src-tauri/icons/128x128@2x.png
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
       - uses: swatinem/rust-cache@v2
         with:
-          workspaces: "apps/desktop/src-tauri -> target"
+          workspaces: 'apps/desktop/src-tauri -> target'
           key: ${{ matrix.target }}
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -437,10 +439,10 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
-          OPENTU_UPDATER_ENABLED: "1"
+          OPENTU_UPDATER_ENABLED: '1'
           CI: true
-          RUST_BACKTRACE: "1"
-          NODE_OPTIONS: "--max-old-space-size=8192"
+          RUST_BACKTRACE: '1'
+          NODE_OPTIONS: '--max-old-space-size=8192'
         run: |
           node ../../scripts/prepare-tauri-release-config.js --output=src-tauri/tauri.release.conf.json
           attempt=1
@@ -501,7 +503,14 @@ jobs:
           gh release upload "$TAG" scripts/install_opentu.sh --clobber
 
   publish-release:
-    needs: [create-release, build-macos, build-windows, build-linux, upload-install-script]
+    needs:
+      [
+        create-release,
+        build-macos,
+        build-windows,
+        build-linux,
+        upload-install-script,
+      ]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

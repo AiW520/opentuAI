@@ -21,6 +21,8 @@ async function invoke<T>(
   return internals.invoke(command, args);
 }
 
+import { writeFile } from '@tauri-apps/plugin-fs';
+
 // ===== 媒体文件路径管理 =====
 
 /** 获取媒体根目录路径 */
@@ -51,11 +53,12 @@ export async function saveFile(
   buffer: Uint8Array,
   fileType?: string
 ): Promise<string> {
-  return invoke<string>('save_file', {
+  const path = await invoke<string>('get_default_save_path', {
     fileName,
-    buffer: Array.from(buffer),
     fileType: fileType || null,
   });
+  await writeFile(path, buffer);
+  return path;
 }
 
 /** 获取文件路径 */
@@ -280,22 +283,5 @@ export async function saveToLocation(
   savePath: string,
   data: Uint8Array
 ): Promise<void> {
-  const chunkSize = 1024 * 1024;
-  if (data.byteLength === 0) {
-    await invoke<void>('write_file_chunk_to_path', {
-      savePath,
-      buffer: [],
-      append: false,
-    });
-    return;
-  }
-
-  for (let offset = 0; offset < data.byteLength; offset += chunkSize) {
-    const chunk = data.subarray(offset, offset + chunkSize);
-    await invoke<void>('write_file_chunk_to_path', {
-      savePath,
-      buffer: Array.from(chunk),
-      append: offset > 0,
-    });
-  }
+  await writeFile(savePath, data);
 }

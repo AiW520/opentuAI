@@ -105,6 +105,9 @@ const MUSIC_REWRITE_SIMULATED_END_PROGRESS = 95;
 const STRIPPED_TASK_PARAM_KEYS = [
   'referenceImages',
   'uploadedImages',
+  'inputReference',
+  'inputReferences',
+  'maskImage',
   'videoData',
   'audioData',
   'pdfData',
@@ -506,7 +509,13 @@ class TaskQueueService {
   }
 
   private async persistTaskInternal(task: Task): Promise<void> {
-    const persistableTask = await this.restoreStrippedTaskParams(task);
+    const shouldKeepTransientMediaParams =
+      !task.remoteId &&
+      task.status !== TaskStatus.COMPLETED &&
+      task.status !== TaskStatus.CANCELLED;
+    const persistableTask = shouldKeepTransientMediaParams
+      ? await this.restoreStrippedTaskParams(task)
+      : task;
     const swTask = this.convertToSWTask(persistableTask);
     await taskStorageWriter.saveTask(swTask);
     // Invalidate reader cache after write
@@ -3190,6 +3199,9 @@ class TaskQueueService {
       if (
         restoredTask.params?.referenceImages ||
         restoredTask.params?.uploadedImages ||
+        restoredTask.params?.inputReference ||
+        restoredTask.params?.inputReferences ||
+        restoredTask.params?.maskImage ||
         restoredTask.params?.videoData ||
         restoredTask.params?.audioData
       ) {
@@ -3200,6 +3212,9 @@ class TaskQueueService {
             ...restoredTask.params,
             referenceImages: undefined,
             uploadedImages: undefined,
+            inputReference: undefined,
+            inputReferences: undefined,
+            maskImage: undefined,
             videoData: undefined,
             audioData: undefined,
           },
@@ -3375,7 +3390,7 @@ class TaskQueueService {
 
     // 异步批量归档到 IndexedDB（fire-and-forget）
     if (archiveIds.length > 0) {
-      taskStorageWriter.archiveTasks(archiveIds).catch((err) => {});
+      taskStorageWriter.archiveTasks(archiveIds).catch(() => undefined);
       taskStorageReader.invalidateCache();
     }
   }
@@ -3391,6 +3406,9 @@ class TaskQueueService {
     if (
       params.referenceImages ||
       params.uploadedImages ||
+      params.inputReference ||
+      params.inputReferences ||
+      params.maskImage ||
       params.videoData ||
       params.audioData
     ) {
@@ -3401,6 +3419,9 @@ class TaskQueueService {
           ...task.params,
           referenceImages: undefined,
           uploadedImages: undefined,
+          inputReference: undefined,
+          inputReferences: undefined,
+          maskImage: undefined,
           videoData: undefined,
           audioData: undefined,
         },

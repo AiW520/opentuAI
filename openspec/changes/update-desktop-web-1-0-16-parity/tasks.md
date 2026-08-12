@@ -17,24 +17,24 @@
 - [x] 3.1 Keep Service Worker registration disabled in production desktop and provide safe fallbacks for new web calls.
 - [x] 3.2 Make native durable media the desktop recovery source when browser cache entries are missing.
 - [x] 3.3 Ensure local-data clearing does not delete native durable media without explicit user intent.
-- [ ] 3.4 Complete bounded reference-image materialization and remove large durable base64 payloads after submission.
-- [ ] 3.5 Replace large JSON number-array writes with a bounded binary transfer path.
-- [ ] 3.6 Clean up failed native imports and surface local preview failures in the UI.
-- [ ] 3.7 Tighten production desktop CSP and document any remaining compatibility exceptions.
+- [x] 3.4 Complete bounded reference-image materialization and remove large durable base64 payloads after submission.
+- [x] 3.5 Replace large JSON number-array writes with a bounded binary transfer path.
+- [x] 3.6 Clean up failed native imports and surface local preview failures in the UI.
+- [x] 3.7 Tighten production desktop CSP and document any remaining compatibility exceptions.
 
 ## 4. Version And Release
 
-- [ ] 4.1 Synchronize all desktop semantic version files and record the web baseline separately.
-- [ ] 4.2 Preserve updater signing and repository ownership configuration.
-- [ ] 4.3 Make release creation idempotent and pass release notes without shell interpolation.
-- [ ] 4.4 Keep draft, signing, checksums, asset completeness, and platform verification gates intact.
+- [x] 4.1 Synchronize all desktop semantic version files and record the web baseline separately.
+- [x] 4.2 Preserve updater signing and repository ownership configuration.
+- [x] 4.3 Make release creation idempotent and pass release notes without shell interpolation.
+- [x] 4.4 Keep draft, signing, checksums, asset completeness, and platform verification gates intact.
 
 ## 5. Verification
 
 - [x] 5.1 Run OpenSpec strict validation.
 - [x] 5.2 Install dependencies with the locked package manager and lockfile.
-- [ ] 5.3 Run TypeScript checks, lint, focused Vitest, and the broader relevant test suite.
-- [ ] 5.4 Run web and desktop renderer production builds.
+- [x] 5.3 Run TypeScript checks, lint, focused Vitest, and the broader relevant test suite.
+- [x] 5.4 Run web and desktop renderer production builds.
 - [ ] 5.5 Run Rust tests and a Tauri production build where the required toolchain is available.
 - [ ] 5.6 Run desktop smoke tests for import, preview, reference generation, refresh recovery, export, delete, data clearing, and restart recovery.
-- [ ] 5.7 Verify the branch contains no secrets, generated packages, or unrelated user files.
+- [x] 5.7 Verify the branch contains no secrets, generated packages, or unrelated user files.

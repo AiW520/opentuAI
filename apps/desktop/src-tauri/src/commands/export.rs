@@ -1,6 +1,7 @@
 use crate::{media_dirs, AppState};
 use std::path::{Path, PathBuf};
 use tauri::State;
+use tauri_plugin_fs::FsExt;
 use tauri_plugin_dialog::DialogExt;
 
 #[tauri::command]
@@ -34,6 +35,9 @@ pub async fn show_save_dialog(
             .map_err(|e| format!("无法解析授权保存路径: {}", e))?;
         let mut grants = state.path_grants.lock().map_err(|e| e.to_string())?;
         grants.grant_write_file(&path)?;
+        app.fs_scope()
+            .allow_file(&path)
+            .map_err(|e| format!("无法授权二进制写入路径: {}", e))?;
     }
 
     Ok(file_path.map(|p| p.to_string()))

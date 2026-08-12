@@ -16,7 +16,10 @@ import {
   type ResolvedProviderContext,
 } from './provider-routing';
 import { IMAGE_GENERATION_TIMEOUT_MS } from '../constants/TASK_CONSTANTS';
-import { appendReferenceImageToFormData } from './reference-image-form-data';
+import { prepareReferenceImageForMultipart } from './reference-image-form-data';
+import { mapWithConcurrency } from '../utils/map-with-concurrency';
+
+const REFERENCE_IMAGE_PREPARE_CONCURRENCY = 3;
 
 function getFileExtension(url: string): string | null {
   const pathname = url.split('?')[0] || '';
@@ -102,15 +105,15 @@ function getReferenceFileName(
   return field === 'mask' ? 'mask.png' : `reference-${index + 1}.png`;
 }
 
-async function appendReferenceImage(
-  formData: FormData,
+async function prepareReferenceImage(
   field: 'input_reference' | 'mask',
   value: string,
   index: number
-): Promise<void> {
-  await appendReferenceImageToFormData(formData, field, value, {
+): Promise<{ field: 'input_reference' | 'mask'; blob: Blob; filename: string }> {
+  const prepared = await prepareReferenceImageForMultipart(value, {
     filename: getReferenceFileName(field, index),
   });
+  return { field, ...prepared };
 }
 
 class AsyncImageAPIService {
@@ -134,17 +137,25 @@ class AsyncImageAPIService {
       formData.append('size', params.size);
     }
     if (params.referenceImages?.length) {
-      for (const [index, referenceImage] of params.referenceImages.entries()) {
-        await appendReferenceImage(
-          formData,
-          'input_reference',
-          referenceImage,
-          index
-        );
+      const references = params.referenceImages
+        .map((value, index) => ({ value, index }))
+        .filter((item): item is { value: string; index: number } => Boolean(item.value));
+      const preparedReferences = await mapWithConcurrency(
+        references,
+        REFERENCE_IMAGE_PREPARE_CONCURRENCY,
+        ({ value, index }) => prepareReferenceImage('input_reference', value, index)
+      );
+      for (const prepared of preparedReferences) {
+        formData.append(prepared.field, prepared.blob, prepared.filename);
       }
     }
     if (params.maskImage) {
-      await appendReferenceImage(formData, 'mask', params.maskImage, 0);
+      const preparedMask = await prepareReferenceImage('mask', params.maskImage, 0);
+      formData.append(
+        preparedMask.field,
+        preparedMask.blob,
+        preparedMask.filename
+      );
     }
 
     const response = await providerTransport.send(providerContext, {

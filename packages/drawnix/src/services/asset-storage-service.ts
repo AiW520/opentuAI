@@ -52,6 +52,7 @@ interface DesktopAssetImportResult {
   mimeType: string;
   size: number;
   createdAt: number;
+  createdNewFile: boolean;
 }
 
 export interface DesktopPickedMediaFile {
@@ -275,52 +276,80 @@ class AssetStorageService {
       }
     );
 
-    const mimeType = importResult.mimeType || data.mimeType;
-    const mimeValidation = validateMimeType(mimeType);
-    if (!mimeValidation.valid) {
-      throw new ValidationError(mimeValidation.error!);
+    try {
+      const mimeType = importResult.mimeType || data.mimeType;
+      const mimeValidation = validateMimeType(mimeType);
+      if (!mimeValidation.valid) {
+        throw new ValidationError(mimeValidation.error!);
+      }
+
+      const existingAsset = await this.findAssetByContentHash(importResult.contentHash);
+      if (
+        existingAsset &&
+        (existingAsset.filePath || isDesktopAssetUrl(existingAsset.url))
+      ) {
+        if (importResult.createdNewFile) {
+          try {
+            await this.invokeDesktopCommand<void>('cleanup_imported_asset', {
+              localPath: importResult.localPath,
+            });
+          } catch (cleanupError) {
+            console.error(
+              '[AssetStorageService] Failed to clean up duplicate desktop file:',
+              cleanupError
+            );
+          }
+        }
+        return existingAsset;
+      }
+
+      const asset: Asset = {
+        id: generateUUID(),
+        type: data.type,
+        source: data.source,
+        url: convertLocalFilePathToAssetUrl(importResult.localPath),
+        filePath: importResult.localPath,
+        name: data.name || importResult.originalName,
+        mimeType,
+        createdAt: importResult.createdAt || Date.now(),
+        size: importResult.size,
+        contentHash: importResult.contentHash,
+        prompt: data.prompt,
+        modelName: data.modelName,
+        category: data.category,
+        characterMeta: data.characterMeta,
+      };
+
+      const storedAsset = assetToStoredAsset(asset);
+      storedAsset.contentHash = importResult.contentHash;
+      storedAsset.filePath = importResult.localPath;
+      await this.store!.setItem(asset.id, storedAsset);
+
+      analytics.track('asset_upload_success', {
+        assetId: asset.id,
+        type: asset.type,
+        source: asset.source,
+        size: asset.size,
+        mimeType: asset.mimeType,
+        storage: 'desktop-file',
+      });
+
+      return asset;
+    } catch (error) {
+      if (importResult.createdNewFile) {
+        try {
+          await this.invokeDesktopCommand<void>('cleanup_imported_asset', {
+            localPath: importResult.localPath,
+          });
+        } catch (cleanupError) {
+          console.error(
+            '[AssetStorageService] Failed to clean up imported desktop file:',
+            cleanupError
+          );
+        }
+      }
+      throw error;
     }
-
-    const existingAsset = await this.findAssetByContentHash(importResult.contentHash);
-    if (
-      existingAsset &&
-      (existingAsset.filePath || isDesktopAssetUrl(existingAsset.url))
-    ) {
-      return existingAsset;
-    }
-
-    const asset: Asset = {
-      id: generateUUID(),
-      type: data.type,
-      source: data.source,
-      url: convertLocalFilePathToAssetUrl(importResult.localPath),
-      filePath: importResult.localPath,
-      name: data.name || importResult.originalName,
-      mimeType,
-      createdAt: importResult.createdAt || Date.now(),
-      size: importResult.size,
-      contentHash: importResult.contentHash,
-      prompt: data.prompt,
-      modelName: data.modelName,
-      category: data.category,
-      characterMeta: data.characterMeta,
-    };
-
-    const storedAsset = assetToStoredAsset(asset);
-    storedAsset.contentHash = importResult.contentHash;
-    storedAsset.filePath = importResult.localPath;
-    await this.store!.setItem(asset.id, storedAsset);
-
-    analytics.track('asset_upload_success', {
-      assetId: asset.id,
-      type: asset.type,
-      source: asset.source,
-      size: asset.size,
-      mimeType: asset.mimeType,
-      storage: 'desktop-file',
-    });
-
-    return asset;
   }
 
   async pickDesktopMediaFiles(): Promise<DesktopPickedMediaFile[]> {

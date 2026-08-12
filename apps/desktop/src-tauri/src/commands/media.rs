@@ -10,6 +10,9 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tauri::{Manager, State};
+use tauri_plugin_fs::FsExt;
+
+const MAX_JSON_WRITE_BYTES: usize = 1024 * 1024;
 
 #[tauri::command]
 pub fn save_file(
@@ -18,6 +21,7 @@ pub fn save_file(
     buffer: Vec<u8>,
     file_type: Option<String>,
 ) -> Result<String, String> {
+    validate_json_write_size(&buffer)?;
     let media_root = {
         let db = state.db.lock().map_err(|e| e.to_string())?;
         db.media_root.clone()
@@ -193,6 +197,9 @@ pub async fn pick_save_location(
         let state = app.state::<AppState>();
         let mut grants = state.path_grants.lock().map_err(|e| e.to_string())?;
         grants.grant_write_file(&path)?;
+        app.fs_scope()
+            .allow_file(&path)
+            .map_err(|e| format!("无法授权二进制写入路径: {}", e))?;
     }
 
     Ok(file_path.map(|p| p.to_string()))
@@ -204,6 +211,7 @@ pub fn write_file_to_path(
     save_path: String,
     buffer: Vec<u8>,
 ) -> Result<(), String> {
+    validate_json_write_size(&buffer)?;
     let path = ensure_write_allowed(&state, Path::new(&save_path))?;
     validate_save_path(&path)?;
     fs::write(&path, buffer).map_err(|e| format!("无法写入文件: {}", e))
@@ -216,6 +224,7 @@ pub fn write_file_chunk_to_path(
     buffer: Vec<u8>,
     append: bool,
 ) -> Result<(), String> {
+    validate_json_write_size(&buffer)?;
     let path = ensure_write_allowed(&state, Path::new(&save_path))?;
     validate_save_path(&path)?;
 
@@ -318,12 +327,15 @@ pub async fn download_url_to_media_file(
     let file_name = format!("content-{}.{}", content_hash, extension);
     let final_path = media_dir.join(sanitize_file_name(&file_name)?);
 
-    if final_path.exists() {
+    let created_new_file = if final_path.exists() {
         let _ = fs::remove_file(&temp_path);
+        false
     } else if let Err(error) = fs::rename(&temp_path, &final_path) {
         let _ = fs::remove_file(&temp_path);
         return Err(format!("保存媒体文件失败: {}", error));
-    }
+    } else {
+        true
+    };
 
     Ok(AssetImportResult {
         content_hash,
@@ -334,6 +346,7 @@ pub async fn download_url_to_media_file(
         mime_type: content_type,
         size,
         created_at: chrono::Utc::now().timestamp_millis(),
+        created_new_file,
     })
 }
 
@@ -360,6 +373,7 @@ pub fn copy_media_file_to_path(
 
 #[tauri::command]
 pub fn get_default_save_path(
+    app: tauri::AppHandle,
     state: State<AppState>,
     file_name: String,
     file_type: Option<String>,
@@ -373,10 +387,16 @@ pub fn get_default_save_path(
     ));
     fs::create_dir_all(&media_dir).map_err(|e| e.to_string())?;
 
-    Ok(media_dir
-        .join(sanitize_file_name(&file_name)?)
-        .to_string_lossy()
-        .to_string())
+    let path = canonical_write_file(&media_dir.join(sanitize_file_name(&file_name)?))?;
+    state
+        .path_grants
+        .lock()
+        .map_err(|e| e.to_string())?
+        .grant_write_file(&path)?;
+    app.fs_scope()
+        .allow_file(&path)
+        .map_err(|e| format!("无法授权二进制写入路径: {}", e))?;
+    Ok(path.to_string_lossy().to_string())
 }
 
 #[tauri::command]
@@ -472,12 +492,15 @@ pub fn import_local_asset(
     let file_name = format!("content-{}.{}", content_hash, extension);
     let final_path = media_dir.join(sanitize_file_name(&file_name)?);
 
-    if final_path.exists() {
+    let created_new_file = if final_path.exists() {
         let _ = fs::remove_file(&temp_path);
+        false
     } else if let Err(error) = fs::rename(&temp_path, &final_path) {
         let _ = fs::remove_file(&temp_path);
         return Err(format!("保存素材文件失败: {}", error));
-    }
+    } else {
+        true
+    };
 
     Ok(AssetImportResult {
         content_hash,
@@ -488,7 +511,32 @@ pub fn import_local_asset(
         mime_type: detected_mime_type,
         size: metadata.len(),
         created_at: chrono::Utc::now().timestamp_millis(),
+        created_new_file,
     })
+}
+
+#[tauri::command]
+pub fn cleanup_imported_asset(
+    state: State<'_, AppState>,
+    local_path: String,
+) -> Result<(), String> {
+    let media_root = canonical_media_root(&state)?;
+    let path = canonical_existing_file(Path::new(&local_path))?;
+    validate_import_cleanup_target(&path, &media_root)?;
+
+    fs::remove_file(path).map_err(|e| format!("清理导入素材失败: {}", e))
+}
+
+fn validate_import_cleanup_target(path: &Path, media_root: &Path) -> Result<(), String> {
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "无法识别待清理素材文件".to_string())?;
+
+    if !path.starts_with(media_root) || !file_name.starts_with("content-") {
+        return Err("不允许清理该素材文件".to_string());
+    }
+    Ok(())
 }
 
 pub fn handle_opentu_asset_protocol(
@@ -573,6 +621,16 @@ fn validate_save_path(path: &Path) -> Result<(), String> {
         if !parent.as_os_str().is_empty() {
             fs::create_dir_all(parent).map_err(|e| format!("无法创建保存目录: {}", e))?;
         }
+    }
+    Ok(())
+}
+
+fn validate_json_write_size(buffer: &[u8]) -> Result<(), String> {
+    if buffer.len() > MAX_JSON_WRITE_BYTES {
+        return Err(format!(
+            "JSON 数组写入最多支持 {} 字节，请使用桌面二进制写入接口",
+            MAX_JSON_WRITE_BYTES
+        ));
     }
     Ok(())
 }
@@ -1634,6 +1692,7 @@ pub struct AssetImportResult {
     pub mime_type: String,
     pub size: u64,
     pub created_at: i64,
+    pub created_new_file: bool,
 }
 
 #[cfg(test)]
@@ -1693,6 +1752,38 @@ mod tests {
         assert_eq!(sanitize_file_name("CON").unwrap(), "_CON");
         assert_eq!(sanitize_file_name("aux.txt").unwrap(), "_aux.txt");
         assert_eq!(sanitize_file_name("LPT1.png").unwrap(), "_LPT1.png");
+    }
+
+    #[test]
+    fn import_cleanup_target_stays_inside_media_root_and_is_content_addressed() {
+        let root = temp_media_root("import-cleanup-boundary");
+        let media_file = root.join("images/content-abc.png");
+        let arbitrary_file = root.join("images/user-note.txt");
+        let outside_file = root.with_file_name("content-outside.png");
+        std::fs::create_dir_all(media_file.parent().unwrap()).unwrap();
+        std::fs::write(&media_file, b"image").unwrap();
+        std::fs::write(&arbitrary_file, b"note").unwrap();
+        std::fs::write(&outside_file, b"outside").unwrap();
+
+        let canonical_root = root.canonicalize().unwrap();
+        assert!(validate_import_cleanup_target(
+            &media_file.canonicalize().unwrap(),
+            &canonical_root
+        )
+        .is_ok());
+        assert!(validate_import_cleanup_target(
+            &arbitrary_file.canonicalize().unwrap(),
+            &canonical_root
+        )
+        .is_err());
+        assert!(validate_import_cleanup_target(
+            &outside_file.canonicalize().unwrap(),
+            &canonical_root
+        )
+        .is_err());
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_file(&outside_file);
     }
 
     #[test]

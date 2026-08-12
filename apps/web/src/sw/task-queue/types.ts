@@ -8,6 +8,8 @@
  * 核心类型从共享类型模块导入，确保与主线程一致。
  */
 
+/* eslint-disable @nx/enforce-module-boundaries -- the SW bundles shared source types directly. */
+
 // ============================================================================
 // Re-export Core Types from Shared Module
 // ============================================================================
@@ -23,9 +25,9 @@ import {
   TaskError,
   TaskExecutionPhase,
   TaskInvocationRouteSnapshot,
-} from '@drawnix/drawnix/core-types';
+} from '../../../../../packages/drawnix/src/types/shared/core.types';
 
-export * from '@drawnix/drawnix/core-types';
+export * from '../../../../../packages/drawnix/src/types/shared/core.types';
 
 // ============================================================================
 // Task Config

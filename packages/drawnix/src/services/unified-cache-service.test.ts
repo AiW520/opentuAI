@@ -90,6 +90,43 @@ afterAll(() => {
 });
 
 describe('UnifiedCacheService insecure LAN fallback', () => {
+  it('recovers a missing browser cache entry from native desktop media', async () => {
+    vi.stubGlobal('caches', undefined);
+    const invoke = vi.fn(async (command: string) => {
+      if (command === 'get_file_path') {
+        return '/native/media/images/content-native.png';
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+    (window as any).__TAURI_INTERNALS__ = { invoke };
+    const fetchMock = vi.fn(async (url: string) => {
+      expect(url).toContain('opentu-asset');
+      return new Response('native-image', {
+        status: 200,
+        headers: { 'content-type': 'image/png' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      const restored = await unifiedCacheService.getCachedBlob(
+        '/__aitu_cache__/image/content-native.png'
+      );
+
+      expect(await readBlobAsText(restored)).toBe('native-image');
+      expect(invoke).toHaveBeenCalledWith('get_file_path', {
+        fileName: 'content-native.png',
+        fileType: 'image',
+      });
+      expect(invoke).not.toHaveBeenCalledWith(
+        'get_cached_media_file',
+        expect.anything()
+      );
+    } finally {
+      delete (window as any).__TAURI_INTERNALS__;
+    }
+  });
+
   it('persists and reads asset-library media when Cache Storage is unavailable', async () => {
     vi.stubGlobal('caches', undefined);
     const blob = new Blob(['local-image'], { type: 'image/png' });

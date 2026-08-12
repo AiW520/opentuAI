@@ -5,6 +5,7 @@
 
 import { isTauriEnvironment, pickSaveLocation } from './tauri-api';
 import { sanitizeFilename } from '@aitu/utils';
+import { writeFile } from '@tauri-apps/plugin-fs';
 
 /** 图片下载过滤器 */
 const IMAGE_FILTERS = [
@@ -71,24 +72,7 @@ async function writeBytesToPath(
   savePath: string,
   bytes: Uint8Array
 ): Promise<void> {
-  const chunkSize = 1024 * 1024;
-  if (bytes.byteLength === 0) {
-    await invoke<void>('write_file_chunk_to_path', {
-      savePath,
-      buffer: [],
-      append: false,
-    });
-    return;
-  }
-
-  for (let offset = 0; offset < bytes.byteLength; offset += chunkSize) {
-    const chunk = bytes.subarray(offset, offset + chunkSize);
-    await invoke<void>('write_file_chunk_to_path', {
-      savePath,
-      buffer: Array.from(chunk),
-      append: offset > 0,
-    });
-  }
+  await writeFile(savePath, bytes);
 }
 
 async function saveUrlToPath(

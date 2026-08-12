@@ -15,6 +15,26 @@ import type { TaskInvocationRouteSnapshot } from '../../types/task.types';
 // 使用主线程专用数据库
 const DB_NAME = APP_DB_NAME;
 const TASKS_STORE = APP_DB_STORES.TASKS;
+const TRANSIENT_MEDIA_PARAM_KEYS = [
+  'referenceImages',
+  'uploadedImages',
+  'inputReference',
+  'inputReferences',
+  'maskImage',
+  'videoData',
+  'audioData',
+  'pdfData',
+] as const;
+
+export function clearTransientMediaParams(
+  params: SWTask['params']
+): SWTask['params'] {
+  const nextParams = { ...params };
+  for (const key of TRANSIENT_MEDIA_PARAM_KEYS) {
+    delete nextParams[key];
+  }
+  return nextParams;
+}
 
 // 使用与 SW 端一致的字符串字面量类型
 type SWTaskType =
@@ -342,6 +362,9 @@ class TaskStorageWriter {
       (task) => {
         task.status = status;
         task.updatedAt = Date.now();
+        if (status === 'cancelled') {
+          task.params = clearTransientMediaParams(task.params);
+        }
         if (status === 'processing' && !task.startedAt) {
           task.startedAt = Date.now();
         }
@@ -450,6 +473,7 @@ class TaskStorageWriter {
             : result;
 
         task.status = 'completed';
+        task.params = clearTransientMediaParams(task.params);
         task.result = normalizedResult;
         task.error = undefined;
         task.completedAt = Date.now();
@@ -510,6 +534,7 @@ class TaskStorageWriter {
       taskId,
       (task) => {
         task.remoteId = remoteId;
+        task.params = clearTransientMediaParams(task.params);
         if (invocationRoute) {
           task.invocationRoute = invocationRoute;
         }

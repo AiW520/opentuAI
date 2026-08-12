@@ -105,6 +105,23 @@
     flex-shrink: 0;
   }
 
+  &__preview-error {
+    position: absolute;
+    inset: 8px;
+    z-index: 3;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 16px;
+    color: var(--aitu-ui-danger, #b42318);
+    background: var(--aitu-ui-surface, #ffffff);
+    font-size: 12px;
+    line-height: 1.5;
+    text-align: center;
+  }
+
   // ========== 名称区域 ==========
   &__name-section {
     display: flex;

@@ -2,10 +2,9 @@ import '../../web/src/utils/permissions-policy-fix';
 import { isTauriEnvironment } from './utils/tauri-api';
 import { initializeVirtualUrlInterceptor } from './utils/virtual-url-interceptor';
 import { initializeDesktopUpdater } from './utils/desktop-updater';
+import { writeFile } from '@tauri-apps/plugin-fs';
 
 declare const __APP_VERSION__: string;
-
-const DESKTOP_WRITE_CHUNK_BYTES = 1024 * 1024;
 
 // index.html 中的 `%__APP_VERSION__%` 占位符 Vite 不会替换，
 // 这里在引导阶段把构建时注入的版本号写回 meta，供菜单读取。
@@ -45,36 +44,6 @@ function hideBootScreen() {
   }, 360);
 }
 
-async function writeDataToPathInChunks(path: string, data: Uint8Array) {
-  if (data.byteLength === 0) {
-    await (window as any).__TAURI_INTERNALS__.invoke(
-      'write_file_chunk_to_path',
-      {
-        savePath: path,
-        buffer: [],
-        append: false,
-      }
-    );
-    return;
-  }
-
-  for (
-    let offset = 0;
-    offset < data.byteLength;
-    offset += DESKTOP_WRITE_CHUNK_BYTES
-  ) {
-    const chunk = data.subarray(offset, offset + DESKTOP_WRITE_CHUNK_BYTES);
-    await (window as any).__TAURI_INTERNALS__.invoke(
-      'write_file_chunk_to_path',
-      {
-        savePath: path,
-        buffer: Array.from(chunk),
-        append: offset > 0,
-      }
-    );
-  }
-}
-
 if (isTauriEnvironment()) {
   console.log('[Desktop] Early initialize virtual URL interceptor');
   initializeVirtualUrlInterceptor();
@@ -84,9 +53,20 @@ async function bootstrap() {
   updateBootProgress(30);
 
   if (isTauriEnvironment()) {
-    const { setSaveLocationFn } = await import('@drawnix/drawnix');
+    const { setDesktopBinaryWriter, setSaveLocationFn } = await import(
+      '@drawnix/drawnix'
+    );
+    setDesktopBinaryWriter(async (path, payload) => {
+      const data =
+        payload instanceof Blob && typeof payload.stream === 'function'
+          ? payload.stream()
+          : payload instanceof Blob
+          ? new Uint8Array(await payload.arrayBuffer())
+          : payload;
+      await writeFile(path, data);
+    });
     setSaveLocationFn(async (path: string, data: Uint8Array) => {
-      await writeDataToPathInChunks(path, data);
+      await writeFile(path, data);
     });
   }
 

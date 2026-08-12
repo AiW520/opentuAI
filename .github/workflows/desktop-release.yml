@@ -255,11 +255,26 @@ jobs:
           ls -la $BUNDLE
           if [ -d "$BUNDLE/dmg" ]; then
             find "$BUNDLE/dmg" -name "*.dmg" -exec sh -c 'cp "$1" "Opentu-macos-${ARCH}.dmg"' _ {} \;
+            [[ -f "Opentu-macos-${ARCH}.dmg" ]] || { echo "缺少 macOS DMG 产物" >&2; exit 1; }
             app_path="$(find "$BUNDLE/macos" -maxdepth 1 -name '*.app' -type d | head -n 1)"
+            mount_dir=""
+            cleanup_mount() {
+              [[ -n "$mount_dir" ]] || return 0
+              hdiutil detach "$mount_dir" >/dev/null 2>&1 || true
+              rmdir "$mount_dir" >/dev/null 2>&1 || true
+            }
+            if [[ -z "$app_path" ]]; then
+              mount_dir="$(mktemp -d "$RUNNER_TEMP/opentu-dmg.XXXXXX")"
+              trap cleanup_mount EXIT
+              hdiutil attach "Opentu-macos-${ARCH}.dmg" -mountpoint "$mount_dir" -nobrowse -readonly
+              app_path="$(find "$mount_dir" -maxdepth 1 -name '*.app' -type d | head -n 1)"
+            fi
             [[ -n "$app_path" ]] || { echo "缺少 macOS app bundle" >&2; exit 1; }
             codesign --verify --deep --strict --verbose=2 "$app_path"
             spctl --assess --type execute --verbose=4 "$app_path"
             xcrun stapler validate "$app_path"
+            cleanup_mount
+            trap - EXIT
             hdiutil verify "Opentu-macos-${ARCH}.dmg"
             shasum -a 256 "Opentu-macos-${ARCH}.dmg" > "Opentu-macos-${ARCH}.dmg.sha256"
             gh release upload "$TAG" "Opentu-macos-${ARCH}.dmg" "Opentu-macos-${ARCH}.dmg.sha256" --clobber

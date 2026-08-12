@@ -20,6 +20,16 @@ const jsonFiles = [
   'apps/desktop/src-tauri/tauri.conf.json',
 ];
 const cargoFile = 'apps/desktop/src-tauri/Cargo.toml';
+const cargoLockFile = 'apps/desktop/src-tauri/Cargo.lock';
+
+function replaceCargoPackageVersion(content) {
+  const packagePattern = /(^\[\[package\]\]\nname = "opentu"\nversion = ")[^"]+("$)/m;
+  if (!packagePattern.test(content)) {
+    console.error(`未在 ${cargoLockFile} 中找到 opentu 包版本`);
+    process.exit(1);
+  }
+  return content.replace(packagePattern, `$1${version}$2`);
+}
 
 function readJson(relativePath) {
   return JSON.parse(fs.readFileSync(path.join(ROOT, relativePath), 'utf8'));
@@ -31,6 +41,8 @@ function currentVersions() {
   );
   const cargo = fs.readFileSync(path.join(ROOT, cargoFile), 'utf8');
   versions[cargoFile] = cargo.match(/^version\s*=\s*"([^"]+)"/m)?.[1];
+  const cargoLock = fs.readFileSync(path.join(ROOT, cargoLockFile), 'utf8');
+  versions[cargoLockFile] = cargoLock.match(/^\[\[package\]\]\nname = "opentu"\nversion = "([^"]+)"/m)?.[1];
   return versions;
 }
 
@@ -45,6 +57,10 @@ if (!CHECK_ONLY) {
   const cargoPath = path.join(ROOT, cargoFile);
   const cargo = fs.readFileSync(cargoPath, 'utf8');
   fs.writeFileSync(cargoPath, cargo.replace(/^version\s*=\s*"[^"]+"/m, `version = "${version}"`));
+
+  const cargoLockPath = path.join(ROOT, cargoLockFile);
+  const cargoLock = fs.readFileSync(cargoLockPath, 'utf8');
+  fs.writeFileSync(cargoLockPath, replaceCargoPackageVersion(cargoLock));
 }
 
 const mismatches = Object.entries(currentVersions()).filter(([, value]) => value !== version);

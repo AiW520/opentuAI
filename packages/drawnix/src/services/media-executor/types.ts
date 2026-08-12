@@ -1,6 +1,7 @@
 import type { ModelRef } from '../../utils/settings-manager';
 import type { GeminiMessagePart } from '../../utils/gemini-api/types';
 import type { GenerationParams as TaskGenerationParams } from '../../types/shared/core.types';
+import type { TaskInvocationRouteSnapshot } from '../../types/task.types';
 import type {
   ProviderAuthStrategy,
   ProviderModelBinding,
@@ -21,6 +22,8 @@ import type {
 export interface ImageGenerationParams {
   /** 任务 ID（用于写入 tasks 表） */
   taskId: string;
+  /** 当前正式提交使用的 Request ID；重试时与任务 ID 解耦。 */
+  requestId?: string;
   /** 生成提示词 */
   prompt: string;
   /** 模型名称 */
@@ -168,6 +171,12 @@ export type ProgressCallback = (progress: ExecutionProgress) => void;
 export interface ExecutionOptions {
   /** 进度回调 */
   onProgress?: ProgressCallback;
+  /** 图片正式提交请求即将发出。 */
+  onSubmissionAttempt?: (
+    invocationRoute?: TaskInvocationRouteSnapshot
+  ) => void | Promise<void>;
+  /** 当前执行尝试是否仍可写回任务结果。 */
+  isCurrentAttempt?: () => boolean;
   /** 取消信号 */
   signal?: AbortSignal;
 }

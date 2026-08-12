@@ -5,7 +5,11 @@
  */
 
 import type { ResolvedProviderContext } from '../../services/provider-routing';
-import { providerTransport } from '../../services/provider-routing';
+import {
+  providerTransport,
+  readProviderResponseJson,
+  readProviderResponseText,
+} from '../../services/provider-routing';
 import {
   GeminiConfig,
   GeminiMessage,
@@ -15,6 +19,13 @@ import {
 import { VIDEO_DEFAULT_CONFIG } from './config';
 import { analytics, getProviderEndpointAnalytics } from '../posthog-analytics';
 import { IMAGE_GENERATION_TIMEOUT_MS } from '../../constants/TASK_CONSTANTS';
+import {
+  buildManualHttpRequestPayload,
+  buildManualHttpVariables,
+  getManualHttpTemplate,
+  normalizeManualTextResponse,
+  renderTemplate,
+} from '../../services/provider-routing/manual-http-template';
 
 type GoogleInlineData = {
   mime_type?: string;
@@ -26,6 +37,10 @@ const MIN_GENERATE_CONTENT_TIMEOUT_MS = IMAGE_GENERATION_TIMEOUT_MS;
 
 function isGoogleGenerateContentProtocol(config: GeminiConfig): boolean {
   return config.protocol === 'google.generateContent';
+}
+
+function isManualHttpConfig(config: GeminiConfig): boolean {
+  return Boolean(getManualHttpTemplate(config.binding?.metadata));
 }
 
 function buildProviderContext(config: GeminiConfig): ResolvedProviderContext {
@@ -356,8 +371,9 @@ export function normalizeGoogleImageResponse(response: Record<string, any>): {
 }
 
 async function readGoogleError(response: Response): Promise<string> {
+  const text = await readProviderResponseText(response);
   try {
-    const payload = await response.json();
+    const payload = JSON.parse(text);
     return (
       payload?.error?.message ||
       payload?.error?.status ||
@@ -365,8 +381,108 @@ async function readGoogleError(response: Response): Promise<string> {
       response.statusText
     );
   } catch {
-    return (await response.text().catch(() => '')) || response.statusText;
+    return text || response.statusText;
   }
+}
+
+async function callManualHttpTextRaw(
+  config: GeminiConfig,
+  messages: GeminiMessage[],
+  options: {
+    stream?: boolean;
+    onChunk?: (content: string) => void;
+    signal?: AbortSignal;
+  } = {}
+): Promise<GeminiResponse> {
+  const template = getManualHttpTemplate(config.binding?.metadata);
+  if (!template) {
+    throw new Error('自定义文本模型缺少调用方法配置');
+  }
+
+  const model = config.modelName || 'custom';
+  const templateModelRef = config.binding?.modelId
+    ? {
+        profileId: config.binding.profileId,
+        modelId: config.binding.modelId,
+      }
+    : null;
+  const endpoint = config.binding?.submitPath || '/chat/completions';
+  const variables = buildManualHttpVariables({
+    model,
+    modelRef: templateModelRef,
+    prompt: messages
+      .flatMap((message) =>
+        message.content
+          .map((part) => (part.type === 'text' ? part.text : ''))
+          .filter(Boolean)
+      )
+      .join('\n'),
+    messages,
+    images: messages.flatMap((message) =>
+      message.content
+        .map((part) =>
+          part.type === 'image_url' ? part.image_url?.url : undefined
+        )
+        .filter((url): url is string => Boolean(url))
+    ),
+    params: {
+      stream: Boolean(options.stream),
+    },
+  });
+  const requestPayload = await buildManualHttpRequestPayload(
+    template,
+    variables,
+    undefined,
+    options.signal
+  );
+  const headers = renderTemplate(template.headers || {}, variables) as
+    | Record<string, string>
+    | undefined;
+
+  const response = await providerTransport.send(buildProviderContext(config), {
+    path: renderTemplate(endpoint, variables) as string,
+    baseUrlStrategy: config.binding?.baseUrlStrategy,
+    method:
+      template.method || (requestPayload.body === undefined ? 'GET' : 'POST'),
+    headers: {
+      ...(requestPayload.contentType
+        ? { 'Content-Type': requestPayload.contentType }
+        : {}),
+      ...(!requestPayload.contentType &&
+      requestPayload.body !== undefined &&
+      !(requestPayload.body instanceof FormData)
+        ? { 'Content-Type': 'application/json' }
+        : {}),
+      ...(headers || {}),
+    },
+    body: requestPayload.body,
+    signal: options.signal,
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => response.statusText);
+    const error = new Error(`HTTP ${response.status}: ${errorText}`);
+    (error as any).apiErrorBody = errorText;
+    (error as any).httpStatus = response.status;
+    throw error;
+  }
+
+  const text = await response.text();
+  let responsePayload: unknown = text;
+  if (text.trim()) {
+    try {
+      responsePayload = JSON.parse(text);
+    } catch {
+      responsePayload = text;
+    }
+  }
+
+  const normalized = normalizeManualTextResponse(
+    responsePayload,
+    template.responsePaths
+  );
+  options.onChunk?.(normalized.choices[0]?.message?.content || '');
+  return normalized;
 }
 
 export async function callGoogleGenerateContentRaw(
@@ -377,6 +493,8 @@ export async function callGoogleGenerateContentRaw(
     onChunk?: (content: string) => void;
     signal?: AbortSignal;
     generationConfig?: Record<string, unknown>;
+    requestId?: string;
+    onSubmissionAttempt?: () => void | Promise<void>;
   } = { stream: false }
 ): Promise<GeminiResponse> {
   const startTime = Date.now();
@@ -411,6 +529,7 @@ export async function callGoogleGenerateContentRaw(
   const timeoutControl = createTimeoutSignal(options.signal, timeoutMs);
 
   try {
+    await options.onSubmissionAttempt?.();
     const response = await providerTransport.send(providerContext, {
       path: endpoint,
       baseUrlStrategy: config.binding?.baseUrlStrategy,
@@ -418,9 +537,11 @@ export async function callGoogleGenerateContentRaw(
       headers: {
         'Content-Type': 'application/json',
       },
+      requestId: options.requestId,
       query: options.stream ? { alt: 'sse' } : undefined,
       body: JSON.stringify(requestBody),
       signal: timeoutControl.signal,
+      controlledResponseBody: true,
     });
 
     if (!response.ok) {
@@ -442,7 +563,9 @@ export async function callGoogleGenerateContentRaw(
     }
 
     if (!options.stream) {
-      const result = (await response.json()) as Record<string, any>;
+      const result = await readProviderResponseJson<Record<string, any>>(
+        response
+      );
       const normalized = normalizeGoogleResponse(result);
       const duration = Date.now() - startTime;
       analytics.trackAPICallSuccess({
@@ -567,6 +690,12 @@ export async function callApiRaw(
   config: GeminiConfig,
   messages: GeminiMessage[]
 ): Promise<GeminiResponse> {
+  if (isManualHttpConfig(config)) {
+    return callManualHttpTextRaw(config, messages, {
+      stream: false,
+    });
+  }
+
   if (isGoogleGenerateContentProtocol(config)) {
     return callGoogleGenerateContentRaw(config, messages, {
       stream: false,
@@ -575,7 +704,7 @@ export async function callApiRaw(
 
   const startTime = Date.now();
   const model = config.modelName || 'gemini-3-pro-image-preview-vip';
-  const endpoint = '/chat/completions';
+  const endpoint = config.binding?.submitPath || '/chat/completions';
 
   // Track API call start
   analytics.trackAPICallStart({
@@ -601,6 +730,7 @@ export async function callApiRaw(
       buildProviderContext(config),
       {
         path: endpoint,
+        baseUrlStrategy: config.binding?.baseUrlStrategy,
         method: 'POST',
         headers,
         body: JSON.stringify(data),
@@ -690,6 +820,14 @@ export async function callApiStreamRaw(
   onChunk?: (content: string) => void,
   signal?: AbortSignal
 ): Promise<GeminiResponse> {
+  if (isManualHttpConfig(config)) {
+    return callManualHttpTextRaw(config, messages, {
+      stream: true,
+      onChunk,
+      signal,
+    });
+  }
+
   if (isGoogleGenerateContentProtocol(config)) {
     return callGoogleGenerateContentRaw(config, messages, {
       stream: true,
@@ -714,7 +852,7 @@ async function callApiStreamDirect(
 ): Promise<GeminiResponse> {
   const startTime = Date.now();
   const model = config.modelName || 'gemini-3-pro-image-preview-vip';
-  const endpoint = '/chat/completions';
+  const endpoint = config.binding?.submitPath || '/chat/completions';
   // Track API call start
   analytics.trackAPICallStart({
     endpoint,
@@ -741,6 +879,7 @@ async function callApiStreamDirect(
       buildProviderContext(config),
       {
         path: endpoint,
+        baseUrlStrategy: config.binding?.baseUrlStrategy,
         method: 'POST',
         headers,
         body: JSON.stringify(data),

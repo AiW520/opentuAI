@@ -17,16 +17,20 @@ jobs:
     env:
       NODE_OPTIONS: "--max-old-space-size=8192"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
-      # Cache node_modules
-      - uses: actions/setup-node@v4
+      # 安装 pnpm 后再启用 setup-node 的 pnpm 缓存，否则 runner PATH 中找不到 pnpm
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10.21.0
+          run_install: false
+
+      - uses: actions/setup-node@v6
         with:
           node-version: 20
-
-      - uses: pnpm/action-setup@v4
+          cache: 'pnpm'
       - run: pnpm install --frozen-lockfile
       - uses: nrwl/nx-set-shas@v4
 
@@ -54,13 +58,24 @@ jobs:
       - name: Install Playwright
         run: npx playwright install --with-deps chromium
 
+      - name: Typecheck shared projects
+        run: pnpm typecheck
+
+      - name: Test shared projects
+        run: pnpm test
+
+      - name: Lint shared projects
+        run: pnpm lint
+
       # 分步骤启动独立进程，确保 Web 构建释放内存后再打包 Desktop。
       - name: Build Web production bundle
         run: pnpm exec nx run web:build --verbose
 
+      - name: Verify startup bundle
+        run: pnpm verify:startup
+
       - name: Build Desktop installer
         run: pnpm exec nx run desktop:build --verbose
-      - run: npx nx affected -t lint --exclude=drawnix --base="$NX_BASE" --head="$NX_HEAD" --verbose
 
       # PR 时运行冒烟测试（快速，约2分钟）
       - name: Run Smoke Tests
@@ -68,17 +83,18 @@ jobs:
 
       - name: Upload Smoke Test Results
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: smoke-test-results
           path: apps/web-e2e/test-results/
 
       - name: Check Bundle Size
+        if: always()
         run: pnpm run size
 
       - name: Upload Bundle Stats
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: bundle-stats
           path: dist/apps/web/stats.html
@@ -127,15 +143,19 @@ jobs:
     # 仅在 main 分支 push 或手动触发时运行
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10.21.0
+          run_install: false
+
+      - uses: actions/setup-node@v6
         with:
           node-version: 20
-
-      - uses: pnpm/action-setup@v4
+          cache: 'pnpm'
       - run: pnpm install --frozen-lockfile
 
       # 安装所有浏览器用于完整测试
@@ -161,7 +181,7 @@ jobs:
       # 上传测试报告
       - name: Upload E2E Test Report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: e2e-test-report
           path: apps/web-e2e/playwright-report/
@@ -169,14 +189,14 @@ jobs:
       # 上传测试结果（包含截图）
       - name: Upload Test Results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: e2e-test-results
           path: apps/web-e2e/test-results/
 
       # 上传用户手册
       - name: Upload User Manual
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: user-manual
           path: docs/user-manual/

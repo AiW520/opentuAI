@@ -28,6 +28,8 @@ import {
 } from '../settings-manager';
 import {
   providerTransport,
+  readProviderResponseJson,
+  readProviderResponseText,
   resolveInvocationPlanFromRoute,
   type ResolvedProviderContext,
   type ProviderAuthStrategy,
@@ -190,6 +192,9 @@ export async function generateImageWithGemini(
     count?: number;
     model?: string; // 支持指定模型
     modelRef?: ModelRef | null;
+    requestId?: string;
+    signal?: AbortSignal;
+    onSubmissionAttempt?: () => void | Promise<void>;
   } = {}
 ): Promise<any> {
   // 等待设置管理器初始化完成
@@ -221,6 +226,9 @@ async function generateImageDirect(
     count?: number;
     model?: string;
     modelRef?: ModelRef | null;
+    requestId?: string;
+    signal?: AbortSignal;
+    onSubmissionAttempt?: () => void | Promise<void>;
   },
   modelName: string,
   routeModel?: string | ModelRef | null
@@ -280,6 +288,11 @@ async function generateImageDirect(
         ],
         {
           stream: false,
+          requestId: options.requestId,
+          signal: options.signal,
+          ...(options.onSubmissionAttempt
+            ? { onSubmissionAttempt: options.onSubmissionAttempt }
+            : {}),
           generationConfig: {
             responseModalities: ['IMAGE'],
             imageConfig: {
@@ -315,15 +328,15 @@ async function generateImageDirect(
 
     // 构建请求体 - 强调生成图片
     const enhancedPrompt = `Generate an image: ${prompt}`;
-  const data: any = {
-    model: validatedConfig.modelName || 'gemini-3-pro-image-preview-vip',
-    prompt: enhancedPrompt,
-  };
-  if (options.response_format) {
-    data.response_format = options.response_format;
-  } else if (!options.omitDefaultResponseFormat) {
-    data.response_format = 'url'; // 默认返回 url
-  }
+    const data: any = {
+      model: validatedConfig.modelName || 'gemini-3-pro-image-preview-vip',
+      prompt: enhancedPrompt,
+    };
+    if (options.response_format) {
+      data.response_format = options.response_format;
+    } else if (!options.omitDefaultResponseFormat) {
+      data.response_format = 'url'; // 默认返回 url
+    }
 
     // size 参数可选，不传则由 API 自动决定（对应 auto）
     if (options.size && options.size !== 'auto') {
@@ -348,6 +361,7 @@ async function generateImageDirect(
       data.n = Math.min(Math.max(Math.round(options.count), 1), 10);
     }
 
+    await options.onSubmissionAttempt?.();
     const response = await providerTransport.send(
       buildProviderContextFromConfig(validatedConfig),
       {
@@ -355,12 +369,15 @@ async function generateImageDirect(
         method: 'POST',
         headers,
         body: JSON.stringify(data),
+        signal: options.signal,
         timeoutMs: IMAGE_GENERATION_TIMEOUT_MS,
+        requestId: options.requestId,
+        controlledResponseBody: true,
       }
     );
 
     if (!response.ok) {
-      const errorText = await response.text();
+      const errorText = await readProviderResponseText(response);
       console.error('[ImageAPI] Request failed:', response.status, errorText);
       const duration = Date.now() - startTime;
       failLLMApiLog(logId, {
@@ -376,7 +393,9 @@ async function generateImageDirect(
       throw error;
     }
 
-    const result = await response.json();
+    const result = await readProviderResponseJson<Record<string, any>>(
+      response
+    );
     const duration = Date.now() - startTime;
 
     // 提取结果 URL

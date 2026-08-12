@@ -74,6 +74,13 @@ import {
   normalizeGenerationParamsKnowledgeContext,
 } from './generation-context-service';
 import { MAX_VIDEO_GENERATION_PROMPT_LENGTH } from '../components/shared/workflow/prompt-builders';
+import {
+  createImageSubmissionParams,
+  getImageSubmissionRequestId,
+  imageGenerationRecoveryService,
+  isImageRequestRecoveryCandidate,
+} from './image-generation-recovery-service';
+import { isImageSubmissionOutcomeUnknownError } from './provider-routing';
 
 const VIDEO_ANALYZER_SIMULATED_DURATION_MS = 10 * 60 * 1000;
 const VIDEO_ANALYZER_SIMULATED_INTERVAL_MS = 5000;
@@ -102,9 +109,18 @@ const STRIPPED_TASK_PARAM_KEYS = [
   'audioData',
   'pdfData',
 ] as const;
+const MAX_RECENTLY_DELETED_TASK_IDS = STORAGE_LIMITS.MAX_RETAINED_TASKS * 10;
 
 type InsertionSource = 'manual' | 'auto_insert';
 type StrippedTaskParamKey = (typeof STRIPPED_TASK_PARAM_KEYS)[number];
+type TaskExecutionGuardOptions = {
+  isCurrentAttempt: () => boolean;
+  onProgress: (progress: { progress: number; phase?: string }) => void;
+};
+type ImageAttemptExecutionGuard = {
+  startedAt: number;
+  executionToken: symbol;
+};
 const STORAGE_SYNC_FIELDS = [
   'status',
   'progress',
@@ -132,12 +148,7 @@ function areStorageSyncValuesEqual(left: unknown, right: unknown): boolean {
     return true;
   }
 
-  if (
-    left &&
-    right &&
-    typeof left === 'object' &&
-    typeof right === 'object'
-  ) {
+  if (left && right && typeof left === 'object' && typeof right === 'object') {
     const leftJson = stableStringify(left);
     const rightJson = stableStringify(right);
     return leftJson !== undefined && leftJson === rightJson;
@@ -146,7 +157,10 @@ function areStorageSyncValuesEqual(left: unknown, right: unknown): boolean {
   return false;
 }
 
-function hasStorageTaskChanges(task: Task, storageTask: Partial<Task>): boolean {
+function hasStorageTaskChanges(
+  task: Task,
+  storageTask: Partial<Task>
+): boolean {
   return STORAGE_SYNC_FIELDS.some((field) => {
     if (!(field in storageTask)) {
       return false;
@@ -235,10 +249,7 @@ function trackTaskAnalytics(
 
 function isTrackedTerminalTaskStatus(
   status: TaskStatus
-): status is
-  | TaskStatus.COMPLETED
-  | TaskStatus.FAILED
-  | TaskStatus.CANCELLED {
+): status is TaskStatus.COMPLETED | TaskStatus.FAILED | TaskStatus.CANCELLED {
   return (
     status === TaskStatus.COMPLETED ||
     status === TaskStatus.FAILED ||
@@ -427,10 +438,14 @@ class TaskQueueService {
   private static instance: TaskQueueService;
   private tasks: Map<string, Task>;
   private taskUpdates$: Subject<TaskEvent>;
-  private executingTasks = new Set<string>();
+  private executingTasks = new Map<string, AbortController>();
   private taskAbortControllers = new Map<string, AbortController>();
+  private taskStorageOperations = new Map<string, Promise<void>>();
+  private pendingTaskDeletions = new Map<string, Promise<void>>();
+  private recentlyDeletedTaskIds = new Set<string>();
   private blockedTaskIds = new Set<string>();
   private tasksWithStrippedParams = new Set<string>();
+  private taskExecutionTokens = new Map<string, symbol>();
 
   private constructor() {
     this.tasks = new Map();
@@ -465,9 +480,29 @@ class TaskQueueService {
    * Persist task to IndexedDB (async, fire-and-forget)
    */
   private persistTask(task: Task): void {
-    this.persistTaskInternal(task).catch((error) => {
+    this.enqueueTaskStorageOperation(task.id, () =>
+      this.persistTaskInternal(task)
+    ).catch((error) => {
       console.error('[TaskQueueService] Failed to persist task:', error);
     });
+  }
+
+  private enqueueTaskStorageOperation(
+    taskId: string,
+    operation: () => Promise<void>
+  ): Promise<void> {
+    const previous =
+      this.taskStorageOperations.get(taskId) || Promise.resolve();
+    const next = previous.catch(() => undefined).then(operation);
+    this.taskStorageOperations.set(taskId, next);
+    void next
+      .finally(() => {
+        if (this.taskStorageOperations.get(taskId) === next) {
+          this.taskStorageOperations.delete(taskId);
+        }
+      })
+      .catch(() => undefined);
+    return next;
   }
 
   private async persistTaskInternal(task: Task): Promise<void> {
@@ -478,20 +513,102 @@ class TaskQueueService {
     taskStorageReader.invalidateCache();
   }
 
-  private shouldSkipExecutionWriteback(taskId: string): boolean {
+  private rememberRecentlyDeletedTask(taskId: string): void {
+    this.recentlyDeletedTaskIds.delete(taskId);
+    this.recentlyDeletedTaskIds.add(taskId);
+
+    while (this.recentlyDeletedTaskIds.size > MAX_RECENTLY_DELETED_TASK_IDS) {
+      const oldestTaskId = this.recentlyDeletedTaskIds.values().next().value;
+      if (typeof oldestTaskId !== 'string') {
+        break;
+      }
+      this.recentlyDeletedTaskIds.delete(oldestTaskId);
+    }
+  }
+
+  private renewTaskExecutionToken(taskId: string): symbol {
+    const token = Symbol(taskId);
+    this.taskExecutionTokens.set(taskId, token);
+    return token;
+  }
+
+  private abortTaskExecution(taskId: string): void {
+    const taskAbortController = this.taskAbortControllers.get(taskId);
+    taskAbortController?.abort();
+    if (this.taskAbortControllers.get(taskId) === taskAbortController) {
+      this.taskAbortControllers.delete(taskId);
+    }
+
+    const execution = this.executingTasks.get(taskId);
+    execution?.abort();
+    if (this.executingTasks.get(taskId) === execution) {
+      this.executingTasks.delete(taskId);
+    }
+  }
+
+  private shouldSkipExecutionWriteback(
+    taskId: string,
+    execution?: AbortController,
+    requestId?: string
+  ): boolean {
     const task = this.tasks.get(taskId);
     return (
       !task ||
       task.status === TaskStatus.CANCELLED ||
-      this.blockedTaskIds.has(taskId)
+      this.blockedTaskIds.has(taskId) ||
+      this.recentlyDeletedTaskIds.has(taskId) ||
+      Boolean(execution && this.executingTasks.get(taskId) !== execution) ||
+      Boolean(
+        requestId &&
+          task.type === TaskType.IMAGE &&
+          (task.status !== TaskStatus.PROCESSING ||
+            getImageSubmissionRequestId(task) !== requestId)
+      )
     );
   }
 
-  private repersistCancelledTask(taskId: string): void {
-    const task = this.tasks.get(taskId);
-    if (task?.status === TaskStatus.CANCELLED) {
-      this.persistTask(task);
+  private updateExecutionProgress(
+    taskId: string,
+    options: TaskExecutionGuardOptions,
+    progress: number,
+    phase?: string
+  ): boolean {
+    if (!options.isCurrentAttempt()) {
+      return false;
     }
+
+    const task = this.tasks.get(taskId);
+    if (!task) {
+      return false;
+    }
+    this.updateTaskStatus(taskId, task.status, {
+      progress: Math.min(100, Math.max(0, progress)),
+      ...(phase ? { executionPhase: phase as Task['executionPhase'] } : {}),
+    });
+    return true;
+  }
+
+  private async repersistCancelledTask(
+    taskId: string,
+    requestId?: string
+  ): Promise<void> {
+    const task = this.tasks.get(taskId);
+    if (task?.status !== TaskStatus.CANCELLED) {
+      return;
+    }
+
+    if (task.type === TaskType.IMAGE && requestId) {
+      await this.updateImageAttemptStorage(taskId, requestId, () =>
+        taskStorageWriter.updateStatus(taskId, 'cancelled', requestId, {
+          allowLegacyRequestId: true,
+        })
+      );
+      return;
+    }
+
+    await this.enqueueTaskStorageOperation(taskId, () =>
+      this.persistTaskInternal(task)
+    );
   }
 
   private async resolveTaskKnowledgeContext(task: Task): Promise<Task> {
@@ -586,15 +703,81 @@ class TaskQueueService {
   /**
    * Delete task from IndexedDB (async, fire-and-forget)
    */
-  private persistDelete(taskId: string): void {
-    taskStorageWriter.deleteTask(taskId).catch((error) => {
-      console.error(
-        '[TaskQueueService] Failed to delete task from storage:',
-        error
-      );
+  private persistDelete(task: Task, hadStrippedParams: boolean): void {
+    const taskId = task.id;
+    const deletion = this.enqueueTaskStorageOperation(taskId, async () => {
+      try {
+        await taskStorageWriter.deleteTask(taskId);
+      } finally {
+        taskStorageReader.invalidateCache();
+      }
     });
-    // Invalidate reader cache after delete
-    taskStorageReader.invalidateCache();
+    this.pendingTaskDeletions.set(taskId, deletion);
+    this.releaseDeletedTaskBlockWhenSettled(task, hadStrippedParams, deletion);
+  }
+
+  private releaseDeletedTaskBlockWhenSettled(
+    deletedTask: Task,
+    hadStrippedParams: boolean,
+    deletion: Promise<void>
+  ): void {
+    const taskId = deletedTask.id;
+    void (async () => {
+      let deletionError: unknown;
+      try {
+        await deletion;
+      } catch (error) {
+        deletionError = error;
+      }
+
+      // 同 ID 的明确恢复/新建会排在删除之后持久化。等待当前串行链尾完成，
+      // 再释放栅栏，避免删除完成与新状态落盘之间出现可写窗口。
+      while (this.pendingTaskDeletions.get(taskId) === deletion) {
+        const pending = this.taskStorageOperations.get(taskId);
+        if (!pending || pending === deletion) {
+          break;
+        }
+        await pending.catch(() => undefined);
+      }
+
+      if (this.pendingTaskDeletions.get(taskId) !== deletion) {
+        return;
+      }
+      this.pendingTaskDeletions.delete(taskId);
+      this.blockedTaskIds.delete(taskId);
+
+      if (deletionError && !this.tasks.has(taskId)) {
+        const restoredTask = isTaskActive(deletedTask)
+          ? {
+              ...deletedTask,
+              status: TaskStatus.CANCELLED,
+              updatedAt: Date.now(),
+            }
+          : deletedTask;
+        this.recentlyDeletedTaskIds.delete(taskId);
+        this.tasks.set(taskId, restoredTask);
+        this.renewTaskExecutionToken(taskId);
+        if (hadStrippedParams) {
+          this.tasksWithStrippedParams.add(taskId);
+        }
+        if (restoredTask !== deletedTask) {
+          this.persistTask(restoredTask);
+        }
+        this.emitEvent('taskCreated', restoredTask);
+      }
+
+      if (deletionError) {
+        console.error(
+          '[TaskQueueService] Failed to delete task from storage:',
+          deletionError
+        );
+      } else {
+        const restoredTask = this.tasks.get(taskId);
+        if (restoredTask && !this.recentlyDeletedTaskIds.has(taskId)) {
+          this.emitEvent('taskUpdated', restoredTask);
+        }
+      }
+    })();
   }
 
   /**
@@ -602,19 +785,46 @@ class TaskQueueService {
    * This is called automatically after task creation
    */
   private async executeTask(task: Task): Promise<void> {
+    const submissionRequestId =
+      task.type === TaskType.IMAGE
+        ? getImageSubmissionRequestId(task)
+        : undefined;
     // 防止同一任务被重复执行（双重调用防护）
-    if (this.executingTasks.has(task.id)) {
+    const currentExecution = this.executingTasks.get(task.id);
+    if (
+      currentExecution &&
+      (!currentExecution.signal.aborted || task.type !== TaskType.IMAGE)
+    ) {
       console.warn(
         `[TaskQueueService] Task ${task.id} is already executing, skipping duplicate`
       );
       return;
     }
-    this.executingTasks.add(task.id);
     const abortController = new AbortController();
+    this.executingTasks.set(task.id, abortController);
     this.taskAbortControllers.set(task.id, abortController);
     const { signal } = abortController;
+    let shouldNotifyRecoveryAfterExecution = false;
+
     try {
-      if (this.shouldSkipExecutionWriteback(task.id)) {
+      if (
+        this.shouldSkipExecutionWriteback(
+          task.id,
+          abortController,
+          submissionRequestId
+        )
+      ) {
+        return;
+      }
+
+      await this.taskStorageOperations.get(task.id);
+      if (
+        this.shouldSkipExecutionWriteback(
+          task.id,
+          abortController,
+          submissionRequestId
+        )
+      ) {
         return;
       }
 
@@ -636,6 +846,15 @@ class TaskQueueService {
         console.warn(
           '[TaskQueueService] No API configuration, cannot execute task'
         );
+        if (task.type === TaskType.IMAGE && submissionRequestId) {
+          await this.failImageAttempt(
+            task.id,
+            submissionRequestId,
+            { code: 'NO_API_KEY', message: '未配置 API Key' },
+            { allowLegacyRequestId: true }
+          );
+          return;
+        }
         this.updateTaskStatus(task.id, TaskStatus.FAILED, {
           error: { code: 'NO_API_KEY', message: '未配置 API Key' },
         });
@@ -645,6 +864,15 @@ class TaskQueueService {
       task = await this.resolveTaskKnowledgeContext(
         await this.restoreStrippedTaskParams(task)
       );
+      const isCurrentExecutionAttempt = () =>
+        !this.shouldSkipExecutionWriteback(
+          task.id,
+          abortController,
+          submissionRequestId
+        );
+      if (!isCurrentExecutionAttempt()) {
+        return;
+      }
 
       if (task.type === TaskType.AUDIO) {
         const requestedModel = task.params.model as string | undefined;
@@ -682,12 +910,14 @@ class TaskQueueService {
               ...(task.params as any).params,
               signal,
               onProgress: (progress: number) => {
+                if (!isCurrentExecutionAttempt()) return;
                 this.updateTaskProgress(task.id, progress);
                 this.updateTaskStatus(task.id, TaskStatus.PROCESSING, {
                   executionPhase: TaskExecutionPhase.POLLING,
                 });
               },
               onSubmitted: (remoteId: string) => {
+                if (!isCurrentExecutionAttempt()) return;
                 this.updateTaskStatus(task.id, TaskStatus.PROCESSING, {
                   remoteId,
                   invocationRoute: mergeTaskInvocationRoute(
@@ -701,7 +931,13 @@ class TaskQueueService {
           }
         );
 
-        if (this.shouldSkipExecutionWriteback(task.id)) {
+        if (
+          this.shouldSkipExecutionWriteback(
+            task.id,
+            abortController,
+            submissionRequestId
+          )
+        ) {
           return;
         }
 
@@ -826,6 +1062,16 @@ class TaskQueueService {
           }
         }
 
+        if (
+          this.shouldSkipExecutionWriteback(
+            task.id,
+            abortController,
+            submissionRequestId
+          )
+        ) {
+          return;
+        }
+
         const now = Date.now();
         const previousTask = this.tasks.get(task.id) || task;
         const completedTask: Task = {
@@ -870,8 +1116,37 @@ class TaskQueueService {
       // React.memo 比较 prev.task.progress === next.task.progress 时永远相等
       const executionOptions = {
         signal,
+        isCurrentAttempt: isCurrentExecutionAttempt,
+        onSubmissionAttempt: async (
+          invocationRoute?: Task['invocationRoute']
+        ) => {
+          if (submissionRequestId) {
+            await this.markImageSubmissionAttempted(
+              task.id,
+              submissionRequestId,
+              invocationRoute
+            );
+          }
+          if (
+            this.shouldSkipExecutionWriteback(
+              task.id,
+              abortController,
+              submissionRequestId
+            )
+          ) {
+            const error = new Error('图片提交已被取消或替代');
+            error.name = 'AbortError';
+            throw error;
+          }
+        },
         onProgress: (progress: { progress: number; phase?: string }) => {
-          if (this.shouldSkipExecutionWriteback(task.id)) {
+          if (
+            this.shouldSkipExecutionWriteback(
+              task.id,
+              abortController,
+              submissionRequestId
+            )
+          ) {
             return;
           }
 
@@ -917,6 +1192,7 @@ class TaskQueueService {
           await executor.generateImage(
             {
               taskId: task.id,
+              requestId: submissionRequestId,
               prompt: task.params.prompt,
               model: task.params.model,
               modelRef: task.params.modelRef || null,
@@ -1014,7 +1290,7 @@ class TaskQueueService {
             (task.params as { videoAnalyzerAction?: string })
               .videoAnalyzerAction === 'analyze'
           ) {
-            await this.executeVideoAnalyzerAnalyzeTask(task);
+            await this.executeVideoAnalyzerAnalyzeTask(task, executionOptions);
             break;
           }
 
@@ -1041,7 +1317,7 @@ class TaskQueueService {
             (task.params as { musicAnalyzerAction?: string })
               .musicAnalyzerAction === 'analyze'
           ) {
-            await this.executeMusicAnalyzerAnalyzeTask(task);
+            await this.executeMusicAnalyzerAnalyzeTask(task, executionOptions);
             break;
           }
 
@@ -1072,6 +1348,10 @@ class TaskQueueService {
             break;
           }
 
+          const inlineDataParts = await this.buildChatInlineDataParts(task);
+          if (!isCurrentExecutionAttempt()) {
+            return;
+          }
           await executor.generateText(
             {
               taskId: task.id,
@@ -1081,7 +1361,7 @@ class TaskQueueService {
               referenceImages: task.params.referenceImages as
                 | string[]
                 | undefined,
-              inlineDataParts: await this.buildChatInlineDataParts(task),
+              inlineDataParts,
               params: (task.params as any).params,
             },
             executionOptions
@@ -1092,7 +1372,13 @@ class TaskQueueService {
           throw new Error(`Unsupported task type: ${task.type}`);
       }
 
-      if (this.shouldSkipExecutionWriteback(task.id)) {
+      if (
+        this.shouldSkipExecutionWriteback(
+          task.id,
+          abortController,
+          submissionRequestId
+        )
+      ) {
         return;
       }
 
@@ -1101,7 +1387,18 @@ class TaskQueueService {
         timeout: IMAGE_GENERATION_TIMEOUT_MS,
         signal,
         onProgress: (updatedTask) => {
-          if (this.shouldSkipExecutionWriteback(task.id)) {
+          if (
+            this.shouldSkipExecutionWriteback(
+              task.id,
+              abortController,
+              submissionRequestId
+            )
+          ) {
+            return;
+          }
+
+          if (task.type === TaskType.IMAGE && submissionRequestId) {
+            this.syncImageAttemptFromStorage(task.id, updatedTask as SWTask);
             return;
           }
 
@@ -1133,8 +1430,17 @@ class TaskQueueService {
       if (
         localTask &&
         result.task &&
-        !this.shouldSkipExecutionWriteback(task.id)
+        !this.shouldSkipExecutionWriteback(
+          task.id,
+          abortController,
+          submissionRequestId
+        )
       ) {
+        if (task.type === TaskType.IMAGE && submissionRequestId) {
+          this.syncImageAttemptFromStorage(task.id, result.task as SWTask);
+          return;
+        }
+
         const finalTask: Task = {
           ...localTask,
           status: result.task.status as TaskStatus,
@@ -1151,7 +1457,13 @@ class TaskQueueService {
         this.emitEvent('taskUpdated', finalTask);
       }
     } catch (error: any) {
-      if (this.shouldSkipExecutionWriteback(task.id)) {
+      if (
+        this.shouldSkipExecutionWriteback(
+          task.id,
+          abortController,
+          submissionRequestId
+        )
+      ) {
         return;
       }
 
@@ -1159,6 +1471,22 @@ class TaskQueueService {
       const localTask = this.tasks.get(task.id);
       if (localTask) {
         const now = Date.now();
+        if (task.type === TaskType.IMAGE && submissionRequestId) {
+          if (isImageSubmissionOutcomeUnknownError(error)) {
+            shouldNotifyRecoveryAfterExecution =
+              await this.markImageAttemptRecovering(
+                task.id,
+                submissionRequestId
+              );
+            return;
+          }
+          await this.failImageAttempt(task.id, submissionRequestId, {
+            code: 'EXECUTION_ERROR',
+            message: error.message || 'Task execution failed',
+          });
+          return;
+        }
+
         const failedTask: Task = {
           ...localTask,
           status: TaskStatus.FAILED,
@@ -1179,13 +1507,26 @@ class TaskQueueService {
       if (this.taskAbortControllers.get(task.id) === abortController) {
         this.taskAbortControllers.delete(task.id);
       }
-      this.repersistCancelledTask(task.id);
-      this.executingTasks.delete(task.id);
+      await this.repersistCancelledTask(task.id, submissionRequestId);
+      if (this.executingTasks.get(task.id) === abortController) {
+        this.executingTasks.delete(task.id);
+      }
+      if (shouldNotifyRecoveryAfterExecution) {
+        const recoveryTask = this.tasks.get(task.id);
+        if (
+          recoveryTask &&
+          getImageSubmissionRequestId(recoveryTask) === submissionRequestId &&
+          isImageRequestRecoveryCandidate(recoveryTask)
+        ) {
+          this.emitEvent('taskUpdated', recoveryTask);
+        }
+      }
     }
   }
 
   private async finalizeChatTask(
     task: Task,
+    options: TaskExecutionGuardOptions,
     payload: {
       title: string;
       chatResponse: string;
@@ -1193,7 +1534,7 @@ class TaskQueueService {
       resultExtras?: Partial<NonNullable<Task['result']>>;
     }
   ): Promise<void> {
-    if (this.shouldSkipExecutionWriteback(task.id)) {
+    if (!options.isCurrentAttempt()) {
       return;
     }
 
@@ -1207,12 +1548,6 @@ class TaskQueueService {
       ...payload.resultExtras,
     };
 
-    await taskStorageWriter.completeTask(task.id, result);
-
-    if (this.shouldSkipExecutionWriteback(task.id)) {
-      return;
-    }
-
     const now = Date.now();
     const previousTask = this.tasks.get(task.id) || task;
     const completedTask: Task = {
@@ -1224,14 +1559,24 @@ class TaskQueueService {
       completedAt: now,
       updatedAt: now,
     };
+    await this.enqueueTaskStorageOperation(task.id, () =>
+      this.persistTaskInternal(completedTask)
+    );
+
+    if (!options.isCurrentAttempt()) {
+      return;
+    }
+
     trackTerminalTaskAnalytics(completedTask, previousTask.status);
     this.tasks.set(task.id, completedTask);
-    this.persistTask(completedTask);
     this.emitEvent('taskUpdated', completedTask);
     this.emitEvent('taskCompleted', completedTask);
   }
 
-  private async executeVideoAnalyzerAnalyzeTask(task: Task): Promise<void> {
+  private async executeVideoAnalyzerAnalyzeTask(
+    task: Task,
+    options: TaskExecutionGuardOptions
+  ): Promise<void> {
     const params = task.params as {
       model?: string;
       modelRef?: Task['params']['modelRef'];
@@ -1243,8 +1588,7 @@ class TaskQueueService {
       prompt?: string;
     };
 
-    await taskStorageWriter.updateStatus(task.id, 'processing');
-    this.updateTaskProgress(task.id, 8);
+    if (!this.updateExecutionProgress(task.id, options, 8)) return;
 
     let videoData = params.videoData;
     let mimeType = params.mimeType || 'video/mp4';
@@ -1271,7 +1615,15 @@ class TaskQueueService {
       mimeType = part.mimeType || mimeType;
     }
 
-    this.updateTaskProgress(task.id, VIDEO_ANALYZER_SIMULATED_START_PROGRESS);
+    if (
+      !this.updateExecutionProgress(
+        task.id,
+        options,
+        VIDEO_ANALYZER_SIMULATED_START_PROGRESS
+      )
+    ) {
+      return;
+    }
 
     const startedAt = Date.now();
     const progressTimer = window.setInterval(() => {
@@ -1282,7 +1634,7 @@ class TaskQueueService {
         (VIDEO_ANALYZER_SIMULATED_END_PROGRESS -
           VIDEO_ANALYZER_SIMULATED_START_PROGRESS) *
           ratio;
-      this.updateTaskProgress(task.id, Math.floor(nextProgress));
+      this.updateExecutionProgress(task.id, options, Math.floor(nextProgress));
     }, VIDEO_ANALYZER_SIMULATED_INTERVAL_MS);
 
     try {
@@ -1302,7 +1654,7 @@ class TaskQueueService {
       const analysis = (result.data as { analysis: VideoAnalysisData })
         .analysis;
       const formattedText = formatShotsMarkdown(analysis.shots || [], analysis);
-      await this.finalizeChatTask(task, {
+      await this.finalizeChatTask(task, options, {
         title: '视频分析结果',
         chatResponse: formattedText,
         format: 'md',
@@ -1317,9 +1669,7 @@ class TaskQueueService {
 
   private async executeVideoAnalyzerRewriteTask(
     task: Task,
-    options: {
-      onProgress: (progress: { progress: number; phase?: string }) => void;
-    }
+    options: TaskExecutionGuardOptions
   ): Promise<void> {
     const params = task.params as {
       model?: string;
@@ -1333,16 +1683,15 @@ class TaskQueueService {
       throw new Error('缺少脚本改编提示词');
     }
 
-    await taskStorageWriter.updateStatus(task.id, 'processing');
-    options.onProgress({
-      progress: VIDEO_REWRITE_SIMULATED_START_PROGRESS,
-      phase: 'submitting',
-    });
-    await taskStorageWriter.updateProgress(
-      task.id,
-      VIDEO_REWRITE_SIMULATED_START_PROGRESS,
-      'submitting'
-    );
+    if (
+      !this.updateExecutionProgress(
+        task.id,
+        options,
+        VIDEO_REWRITE_SIMULATED_START_PROGRESS,
+        'submitting'
+      )
+    )
+      return;
 
     const startedAt = Date.now();
     const progressTimer = window.setInterval(() => {
@@ -1353,7 +1702,7 @@ class TaskQueueService {
         (VIDEO_REWRITE_SIMULATED_END_PROGRESS -
           VIDEO_REWRITE_SIMULATED_START_PROGRESS) *
           ratio;
-      this.updateTaskProgress(task.id, Math.floor(nextProgress));
+      this.updateExecutionProgress(task.id, options, Math.floor(nextProgress));
     }, VIDEO_REWRITE_SIMULATED_INTERVAL_MS);
 
     try {
@@ -1391,7 +1740,7 @@ class TaskQueueService {
           : text;
 
       options.onProgress({ progress: 100 });
-      await this.finalizeChatTask(task, {
+      await this.finalizeChatTask(task, options, {
         title: '脚本改编结果',
         chatResponse: text,
         format: 'md',
@@ -1416,9 +1765,7 @@ class TaskQueueService {
 
   private async executeVideoAnalyzerPromptGenerateTask(
     task: Task,
-    options: {
-      onProgress: (progress: { progress: number; phase?: string }) => void;
-    }
+    options: TaskExecutionGuardOptions
   ): Promise<void> {
     const params = task.params as {
       model?: string;
@@ -1431,16 +1778,15 @@ class TaskQueueService {
       throw new Error('缺少提示词生成内容');
     }
 
-    await taskStorageWriter.updateStatus(task.id, 'processing');
-    options.onProgress({
-      progress: VIDEO_PROMPT_SIMULATED_START_PROGRESS,
-      phase: 'submitting',
-    });
-    await taskStorageWriter.updateProgress(
-      task.id,
-      VIDEO_PROMPT_SIMULATED_START_PROGRESS,
-      'submitting'
-    );
+    if (
+      !this.updateExecutionProgress(
+        task.id,
+        options,
+        VIDEO_PROMPT_SIMULATED_START_PROGRESS,
+        'submitting'
+      )
+    )
+      return;
 
     const startedAt = Date.now();
     const progressTimer = window.setInterval(() => {
@@ -1451,7 +1797,7 @@ class TaskQueueService {
         (VIDEO_PROMPT_SIMULATED_END_PROGRESS -
           VIDEO_PROMPT_SIMULATED_START_PROGRESS) *
           ratio;
-      this.updateTaskProgress(task.id, Math.floor(nextProgress));
+      this.updateExecutionProgress(task.id, options, Math.floor(nextProgress));
     }, VIDEO_PROMPT_SIMULATED_INTERVAL_MS);
 
     try {
@@ -1464,6 +1810,7 @@ class TaskQueueService {
           ],
         },
       ];
+      if (!options.isCurrentAttempt()) return;
       const response = await sendChatWithGemini(
         messages,
         undefined,
@@ -1480,7 +1827,7 @@ class TaskQueueService {
       const formattedText = formatShotsMarkdown(analysis.shots || [], analysis);
 
       options.onProgress({ progress: 100 });
-      await this.finalizeChatTask(task, {
+      await this.finalizeChatTask(task, options, {
         title: '提示词生成结果',
         chatResponse: formattedText,
         format: 'md',
@@ -1493,7 +1840,10 @@ class TaskQueueService {
     }
   }
 
-  private async executeMusicAnalyzerAnalyzeTask(task: Task): Promise<void> {
+  private async executeMusicAnalyzerAnalyzeTask(
+    task: Task,
+    options: TaskExecutionGuardOptions
+  ): Promise<void> {
     const params = task.params as {
       model?: string;
       modelRef?: Task['params']['modelRef'];
@@ -1504,8 +1854,7 @@ class TaskQueueService {
       prompt?: string;
     };
 
-    await taskStorageWriter.updateStatus(task.id, 'processing');
-    this.updateTaskProgress(task.id, 8);
+    if (!this.updateExecutionProgress(task.id, options, 8)) return;
 
     let audioData = params.audioData;
     let mimeType = params.mimeType || 'audio/mpeg';
@@ -1535,7 +1884,14 @@ class TaskQueueService {
       mimeType = part.mimeType || mimeType;
     }
 
-    this.updateTaskProgress(task.id, MUSIC_ANALYZER_SIMULATED_START_PROGRESS);
+    if (
+      !this.updateExecutionProgress(
+        task.id,
+        options,
+        MUSIC_ANALYZER_SIMULATED_START_PROGRESS
+      )
+    )
+      return;
 
     const startedAt = Date.now();
     const progressTimer = window.setInterval(() => {
@@ -1546,7 +1902,7 @@ class TaskQueueService {
         (MUSIC_ANALYZER_SIMULATED_END_PROGRESS -
           MUSIC_ANALYZER_SIMULATED_START_PROGRESS) *
           ratio;
-      this.updateTaskProgress(task.id, Math.floor(nextProgress));
+      this.updateExecutionProgress(task.id, options, Math.floor(nextProgress));
     }, MUSIC_ANALYZER_SIMULATED_INTERVAL_MS);
 
     try {
@@ -1568,7 +1924,7 @@ class TaskQueueService {
       const analysis = (result.data as { analysis: MusicAnalysisData })
         .analysis;
       const formattedText = formatMusicAnalysisMarkdown(analysis);
-      await this.finalizeChatTask(task, {
+      await this.finalizeChatTask(task, options, {
         title: '音频分析结果',
         chatResponse: formattedText,
         format: 'md',
@@ -1583,9 +1939,7 @@ class TaskQueueService {
 
   private async executeMusicAnalyzerRewriteTask(
     task: Task,
-    options: {
-      onProgress: (progress: { progress: number; phase?: string }) => void;
-    }
+    options: TaskExecutionGuardOptions
   ): Promise<void> {
     const params = task.params as {
       model?: string;
@@ -1599,16 +1953,15 @@ class TaskQueueService {
       throw new Error('缺少歌词改写提示词');
     }
 
-    await taskStorageWriter.updateStatus(task.id, 'processing');
-    options.onProgress({
-      progress: MUSIC_REWRITE_SIMULATED_START_PROGRESS,
-      phase: 'submitting',
-    });
-    await taskStorageWriter.updateProgress(
-      task.id,
-      MUSIC_REWRITE_SIMULATED_START_PROGRESS,
-      'submitting'
-    );
+    if (
+      !this.updateExecutionProgress(
+        task.id,
+        options,
+        MUSIC_REWRITE_SIMULATED_START_PROGRESS,
+        'submitting'
+      )
+    )
+      return;
 
     const startedAt = Date.now();
     const progressTimer = window.setInterval(() => {
@@ -1619,7 +1972,7 @@ class TaskQueueService {
         (MUSIC_REWRITE_SIMULATED_END_PROGRESS -
           MUSIC_REWRITE_SIMULATED_START_PROGRESS) *
           ratio;
-      this.updateTaskProgress(task.id, Math.floor(nextProgress));
+      this.updateExecutionProgress(task.id, options, Math.floor(nextProgress));
     }, MUSIC_REWRITE_SIMULATED_INTERVAL_MS);
 
     try {
@@ -1660,7 +2013,7 @@ class TaskQueueService {
           : text;
 
       options.onProgress({ progress: 100 });
-      await this.finalizeChatTask(task, {
+      await this.finalizeChatTask(task, options, {
         title: '歌词改写结果',
         chatResponse: formattedText,
         format: 'md',
@@ -1680,9 +2033,7 @@ class TaskQueueService {
 
   private async executeMusicAnalyzerLyricsGenTask(
     task: Task,
-    options: {
-      onProgress: (progress: { progress: number; phase?: string }) => void;
-    }
+    options: TaskExecutionGuardOptions
   ): Promise<void> {
     const params = task.params as {
       model?: string;
@@ -1695,16 +2046,15 @@ class TaskQueueService {
       throw new Error('缺少歌词生成提示词');
     }
 
-    await taskStorageWriter.updateStatus(task.id, 'processing');
-    options.onProgress({
-      progress: MUSIC_REWRITE_SIMULATED_START_PROGRESS,
-      phase: 'submitting',
-    });
-    await taskStorageWriter.updateProgress(
-      task.id,
-      MUSIC_REWRITE_SIMULATED_START_PROGRESS,
-      'submitting'
-    );
+    if (
+      !this.updateExecutionProgress(
+        task.id,
+        options,
+        MUSIC_REWRITE_SIMULATED_START_PROGRESS,
+        'submitting'
+      )
+    )
+      return;
 
     const startedAt = Date.now();
     const progressTimer = window.setInterval(() => {
@@ -1715,7 +2065,7 @@ class TaskQueueService {
         (MUSIC_REWRITE_SIMULATED_END_PROGRESS -
           MUSIC_REWRITE_SIMULATED_START_PROGRESS) *
           ratio;
-      this.updateTaskProgress(task.id, Math.floor(nextProgress));
+      this.updateExecutionProgress(task.id, options, Math.floor(nextProgress));
     }, MUSIC_REWRITE_SIMULATED_INTERVAL_MS);
 
     try {
@@ -1756,7 +2106,7 @@ class TaskQueueService {
           : text;
 
       options.onProgress({ progress: 100 });
-      await this.finalizeChatTask(task, {
+      await this.finalizeChatTask(task, options, {
         title: '歌词草稿结果',
         chatResponse: formattedText,
         format: 'md',
@@ -1776,9 +2126,7 @@ class TaskQueueService {
 
   private async executeMVStoryboardTask(
     task: Task,
-    options: {
-      onProgress: (progress: { progress: number; phase?: string }) => void;
-    }
+    options: TaskExecutionGuardOptions
   ): Promise<void> {
     const params = task.params as {
       model?: string;
@@ -1791,16 +2139,15 @@ class TaskQueueService {
       throw new Error('缺少分镜规划提示词');
     }
 
-    await taskStorageWriter.updateStatus(task.id, 'processing');
-    options.onProgress({
-      progress: MUSIC_REWRITE_SIMULATED_START_PROGRESS,
-      phase: 'submitting',
-    });
-    await taskStorageWriter.updateProgress(
-      task.id,
-      MUSIC_REWRITE_SIMULATED_START_PROGRESS,
-      'submitting'
-    );
+    if (
+      !this.updateExecutionProgress(
+        task.id,
+        options,
+        MUSIC_REWRITE_SIMULATED_START_PROGRESS,
+        'submitting'
+      )
+    )
+      return;
 
     // 读取音频 base64
     let audioData: string | undefined;
@@ -1822,6 +2169,7 @@ class TaskQueueService {
         }
       }
     }
+    if (!options.isCurrentAttempt()) return;
 
     const startedAt = Date.now();
     const progressTimer = window.setInterval(() => {
@@ -1832,7 +2180,7 @@ class TaskQueueService {
         (MUSIC_REWRITE_SIMULATED_END_PROGRESS -
           MUSIC_REWRITE_SIMULATED_START_PROGRESS) *
           ratio;
-      this.updateTaskProgress(task.id, Math.floor(nextProgress));
+      this.updateExecutionProgress(task.id, options, Math.floor(nextProgress));
     }, MUSIC_REWRITE_SIMULATED_INTERVAL_MS);
 
     try {
@@ -1868,7 +2216,7 @@ class TaskQueueService {
       }
 
       options.onProgress({ progress: 100 });
-      await this.finalizeChatTask(task, {
+      await this.finalizeChatTask(task, options, {
         title: 'MV 分镜脚本',
         chatResponse: text,
         format: 'md',
@@ -1910,11 +2258,16 @@ class TaskQueueService {
 
     // Create new task - starts as PROCESSING since it will be executed immediately
     const now = Date.now();
+    const taskId = generateTaskId();
+    const taskParams =
+      type === TaskType.IMAGE
+        ? createImageSubmissionParams(sanitizedParams, taskId)
+        : sanitizedParams;
     const task: Task = {
-      id: generateTaskId(),
+      id: taskId,
       type,
       status: TaskStatus.PROCESSING,
-      params: sanitizedParams,
+      params: taskParams,
       createdAt: now,
       updatedAt: now,
       startedAt: now,
@@ -1933,10 +2286,14 @@ class TaskQueueService {
       task.invocationRoute = invocationRoute;
     }
 
-    this.blockedTaskIds.delete(task.id);
+    if (!this.pendingTaskDeletions.has(task.id)) {
+      this.blockedTaskIds.delete(task.id);
+      this.recentlyDeletedTaskIds.delete(task.id);
+    }
 
     // Add to queue
     this.tasks.set(task.id, task);
+    this.renewTaskExecutionToken(task.id);
 
     // Persist to IndexedDB
     this.persistTask(task);
@@ -1970,29 +2327,20 @@ class TaskQueueService {
   updateTaskStatus(
     taskId: string,
     status: TaskStatus,
-    updates?: Partial<Task>
+    updates?: Partial<Task>,
+    options: { persist?: boolean } = {}
   ): void {
-    if (this.blockedTaskIds.has(taskId) && status !== TaskStatus.CANCELLED) {
+    if (
+      this.recentlyDeletedTaskIds.has(taskId) ||
+      (this.blockedTaskIds.has(taskId) && status !== TaskStatus.CANCELLED)
+    ) {
       return;
     }
 
-    let task = this.tasks.get(taskId);
+    const task = this.tasks.get(taskId);
     if (!task) {
-      // Task not in memory — create a minimal entry so the event is still emitted.
-      // This can happen after page refresh if restoreTasks hasn't run yet.
-      console.warn(
-        `[TaskQueueService] Task ${taskId} not in memory, creating stub for status update`
-      );
-      const now = Date.now();
-      task = {
-        id: taskId,
-        type: (updates as any)?.type || TaskType.VIDEO,
-        status: TaskStatus.PROCESSING,
-        params: { prompt: '' },
-        createdAt: now,
-        updatedAt: now,
-      };
-      this.tasks.set(taskId, task);
+      console.warn(`[TaskQueueService] Task ${taskId} not found`);
+      return;
     }
 
     const now = Date.now();
@@ -2015,8 +2363,10 @@ class TaskQueueService {
 
     this.tasks.set(taskId, updatedTask);
 
-    // Persist to IndexedDB
-    this.persistTask(updatedTask);
+    if (options.persist !== false) {
+      // Persist to IndexedDB
+      this.persistTask(updatedTask);
+    }
 
     this.emitEvent('taskUpdated', updatedTask);
 
@@ -2037,7 +2387,10 @@ class TaskQueueService {
    * @param progress - Progress percentage (0-100)
    */
   updateTaskProgress(taskId: string, progress: number): void {
-    if (this.blockedTaskIds.has(taskId)) {
+    if (
+      this.blockedTaskIds.has(taskId) ||
+      this.recentlyDeletedTaskIds.has(taskId)
+    ) {
       return;
     }
 
@@ -2061,6 +2414,52 @@ class TaskQueueService {
     this.emitEvent('taskUpdated', updatedTask);
   }
 
+  async markImageSubmissionAttempted(
+    taskId: string,
+    requestId: string,
+    invocationRoute?: Task['invocationRoute']
+  ): Promise<void> {
+    const task = this.tasks.get(taskId);
+    if (
+      !task ||
+      task.type !== TaskType.IMAGE ||
+      getImageSubmissionRequestId(task) !== requestId ||
+      task.status === TaskStatus.CANCELLED ||
+      this.blockedTaskIds.has(taskId) ||
+      this.recentlyDeletedTaskIds.has(taskId)
+    ) {
+      const error = new Error('图片提交已被取消或替代');
+      error.name = 'AbortError';
+      throw error;
+    }
+
+    const marked = await this.updateImageAttemptStorage(taskId, requestId, () =>
+      taskStorageWriter.markImageSubmissionAttempted(
+        taskId,
+        requestId,
+        invocationRoute
+      )
+    );
+    if (!marked) {
+      const error = new Error('图片提交已被取消或替代');
+      error.name = 'AbortError';
+      throw error;
+    }
+
+    const currentTask = this.tasks.get(taskId);
+    if (
+      !currentTask ||
+      currentTask.status === TaskStatus.CANCELLED ||
+      this.blockedTaskIds.has(taskId) ||
+      this.recentlyDeletedTaskIds.has(taskId) ||
+      getImageSubmissionRequestId(currentTask) !== requestId
+    ) {
+      const error = new Error('图片提交已被取消或替代');
+      error.name = 'AbortError';
+      throw error;
+    }
+  }
+
   /**
    * Gets a task by ID
    *
@@ -2069,6 +2468,25 @@ class TaskQueueService {
    */
   getTask(taskId: string): Task | undefined {
     return this.tasks.get(taskId);
+  }
+
+  /**
+   * 当前页面是否仍持有该任务的真实执行实例。
+   * 页面刷新后内存执行表会自然清空，此时持久化任务才允许进入恢复轮询。
+   */
+  isTaskExecutionActive(taskId: string): boolean {
+    const execution = this.executingTasks.get(taskId);
+    return Boolean(execution && !execution.signal.aborted);
+  }
+
+  getTaskExecutionToken(taskId: string): symbol | undefined {
+    return this.taskExecutionTokens.get(taskId);
+  }
+
+  isTaskExecutionTokenCurrent(taskId: string, token: symbol): boolean {
+    return (
+      this.tasks.has(taskId) && this.taskExecutionTokens.get(taskId) === token
+    );
   }
 
   async getCompleteTask(taskId: string): Promise<Task | undefined> {
@@ -2082,9 +2500,9 @@ class TaskQueueService {
   }
 
   async findImageTaskByResultUrl(imageUrl: string): Promise<Task | undefined> {
-    const memoryMatch = this
-      .getAllTasks()
-      .find((task) => imageTaskMatchesUrl(task, imageUrl));
+    const memoryMatch = this.getAllTasks().find((task) =>
+      imageTaskMatchesUrl(task, imageUrl)
+    );
     if (memoryMatch) {
       return this.getCompleteTask(memoryMatch.id);
     }
@@ -2147,8 +2565,27 @@ class TaskQueueService {
     }
 
     this.blockedTaskIds.add(taskId);
-    this.taskAbortControllers.get(taskId)?.abort();
-    this.updateTaskStatus(taskId, TaskStatus.CANCELLED);
+    if (task.type === TaskType.IMAGE) {
+      const requestId = getImageSubmissionRequestId(task);
+      this.updateTaskStatus(taskId, TaskStatus.CANCELLED, undefined, {
+        persist: false,
+      });
+      void this.updateImageAttemptStorage(taskId, requestId, () =>
+        taskStorageWriter.updateStatus(taskId, 'cancelled', requestId, {
+          allowLegacyRequestId: true,
+        })
+      ).catch((error) => {
+        console.error(
+          '[TaskQueueService] Failed to cancel image attempt:',
+          error
+        );
+      });
+    } else {
+      this.updateTaskStatus(taskId, TaskStatus.CANCELLED);
+    }
+    this.abortTaskExecution(taskId);
+    this.renewTaskExecutionToken(taskId);
+    imageGenerationRecoveryService.stop(taskId);
     // console.log(`[TaskQueueService] Cancelled task ${taskId}`);
   }
 
@@ -2157,13 +2594,17 @@ class TaskQueueService {
    *
    * @param taskId - The task ID to retry
    */
-  retryTask(
-    taskId: string,
-    options: { allowCompleted?: boolean } = {}
-  ): void {
+  retryTask(taskId: string, options: { allowCompleted?: boolean } = {}): void {
     const task = this.tasks.get(taskId);
     if (!task) {
       console.warn(`[TaskQueueService] Task ${taskId} not found`);
+      return;
+    }
+
+    if (
+      this.pendingTaskDeletions.has(taskId) ||
+      this.recentlyDeletedTaskIds.has(taskId)
+    ) {
       return;
     }
 
@@ -2187,8 +2628,16 @@ class TaskQueueService {
       previousErrorCode: task.error?.code,
       previousErrorMessage: task.error?.message,
     });
+    imageGenerationRecoveryService.stop(taskId);
+    this.abortTaskExecution(taskId);
+    this.renewTaskExecutionToken(taskId);
     this.blockedTaskIds.delete(taskId);
+    const retryParams =
+      task.type === TaskType.IMAGE
+        ? createImageSubmissionParams(task.params, generateTaskId())
+        : task.params;
     this.updateTaskStatus(taskId, TaskStatus.PROCESSING, {
+      params: retryParams,
       error: undefined,
       result: undefined,
       startedAt: now, // Set new start time
@@ -2230,11 +2679,16 @@ class TaskQueueService {
     }
 
     this.blockedTaskIds.add(taskId);
+    this.rememberRecentlyDeletedTask(taskId);
+    const hadStrippedParams = this.tasksWithStrippedParams.has(taskId);
+    this.abortTaskExecution(taskId);
+    imageGenerationRecoveryService.stop(taskId);
     this.tasks.delete(taskId);
+    this.taskExecutionTokens.delete(taskId);
     this.tasksWithStrippedParams.delete(taskId);
 
     // Delete from IndexedDB
-    this.persistDelete(taskId);
+    this.persistDelete(task, hadStrippedParams);
 
     this.emitEvent('taskDeleted', task);
 
@@ -2260,12 +2714,53 @@ class TaskQueueService {
   }
 
   /**
+   * 停止所有任务并清空内存与持久化记录。
+   * 先阻止异步写回，再使用单次 store.clear() 避免大量逐条删除。
+   */
+  async clearAllTasks(): Promise<void> {
+    taskStorageWriter.pauseWrites();
+    const tasks = this.getAllTasks();
+
+    for (const task of tasks) {
+      this.blockedTaskIds.add(task.id);
+      this.abortTaskExecution(task.id);
+      imageGenerationRecoveryService.stop(task.id);
+    }
+
+    await Promise.allSettled(this.taskStorageOperations.values());
+    for (const task of this.tasks.values()) {
+      this.rememberRecentlyDeletedTask(task.id);
+    }
+    this.tasks.clear();
+    this.taskExecutionTokens.clear();
+    this.tasksWithStrippedParams.clear();
+    this.taskAbortControllers.clear();
+    this.executingTasks.clear();
+    this.taskStorageOperations.clear();
+    this.pendingTaskDeletions.clear();
+    this.blockedTaskIds.clear();
+
+    await taskStorageWriter.clearAllTasks();
+    taskStorageReader.invalidateCache();
+
+    for (const task of tasks) {
+      this.emitEvent('taskDeleted', task);
+    }
+  }
+
+  /**
    * Tracks an externally-created task in the in-memory Map.
    * Used by media generation services to register tasks so that
    * retryTask() and observeTaskUpdates() work correctly.
    * Idempotent: skips if task already exists in memory.
    */
   trackExternalTask(task: Task): void {
+    if (
+      this.pendingTaskDeletions.has(task.id) ||
+      this.recentlyDeletedTaskIds.has(task.id)
+    ) {
+      return;
+    }
     this.blockedTaskIds.delete(task.id);
     if (this.tasks.has(task.id)) return;
     const trackedTask: Task = task.invocationRoute
@@ -2275,6 +2770,7 @@ class TaskQueueService {
           invocationRoute: createTaskInvocationRouteSnapshotFromTask(task),
         };
     this.tasks.set(task.id, trackedTask);
+    this.renewTaskExecutionToken(task.id);
     this.persistTask(trackedTask);
     this.emitEvent('taskCreated', trackedTask);
     trackTaskAnalytics('generation_task_created', trackedTask, {
@@ -2288,7 +2784,10 @@ class TaskQueueService {
    * when the executor updates IndexedDB directly.
    */
   syncTaskFromStorage(taskId: string, storageTask: Partial<Task>): void {
-    if (this.blockedTaskIds.has(taskId)) {
+    if (
+      this.blockedTaskIds.has(taskId) ||
+      this.recentlyDeletedTaskIds.has(taskId)
+    ) {
       return;
     }
 
@@ -2307,6 +2806,324 @@ class TaskQueueService {
     this.emitEvent('taskUpdated', updatedTask);
   }
 
+  private syncImageAttemptFromStorage(
+    taskId: string,
+    storageTask: SWTask
+  ): void {
+    if (
+      this.blockedTaskIds.has(taskId) ||
+      this.recentlyDeletedTaskIds.has(taskId)
+    ) {
+      return;
+    }
+
+    const currentTask = this.tasks.get(taskId);
+    if (!currentTask) {
+      return;
+    }
+
+    const storagePatch: Partial<Task> = {
+      status: storageTask.status as TaskStatus,
+      params: {
+        ...currentTask.params,
+        submissionRequestId: storageTask.params.submissionRequestId,
+        imageSubmissionAttempted: storageTask.params.imageSubmissionAttempted,
+      },
+      startedAt: storageTask.startedAt,
+      completedAt: storageTask.completedAt,
+      result: storageTask.result,
+      error: storageTask.error as Task['error'],
+      progress: storageTask.progress,
+      remoteId: storageTask.remoteId,
+      invocationRoute: storageTask.invocationRoute,
+      executionPhase: storageTask.executionPhase as Task['executionPhase'],
+    };
+    const requestIdChanged =
+      currentTask.params.submissionRequestId !==
+      storageTask.params.submissionRequestId;
+    const attemptChanged =
+      requestIdChanged ||
+      currentTask.params.imageSubmissionAttempted !==
+        storageTask.params.imageSubmissionAttempted;
+    const cancellationLostToTerminal =
+      currentTask.status === TaskStatus.CANCELLED &&
+      (storageTask.status === 'completed' || storageTask.status === 'failed');
+    if (!attemptChanged && !hasStorageTaskChanges(currentTask, storagePatch)) {
+      return;
+    }
+
+    if (requestIdChanged || cancellationLostToTerminal) {
+      this.blockedTaskIds.delete(taskId);
+    }
+
+    const updatedTask: Task = {
+      ...currentTask,
+      ...storagePatch,
+      updatedAt: Date.now(),
+    };
+    this.tasks.set(taskId, updatedTask);
+    this.emitEvent('taskUpdated', updatedTask);
+  }
+
+  private async updateImageAttemptStorage(
+    taskId: string,
+    requestId: string,
+    operation: () => Promise<boolean>,
+    validateStoredTask: (task: SWTask) => boolean = () => true,
+    isCurrentAttempt: () => boolean = () => true
+  ): Promise<boolean> {
+    let updated = false;
+    await this.enqueueTaskStorageOperation(taskId, async () => {
+      if (!isCurrentAttempt()) {
+        return;
+      }
+      updated = await operation();
+      taskStorageReader.invalidateCache();
+    });
+
+    if (!isCurrentAttempt()) {
+      return false;
+    }
+    const storageTask = await taskStorageWriter.getTask(taskId);
+    if (!isCurrentAttempt()) {
+      return false;
+    }
+    if (storageTask) {
+      const currentTask = this.tasks.get(taskId);
+      const currentRequestId =
+        currentTask?.type === TaskType.IMAGE
+          ? getImageSubmissionRequestId(currentTask)
+          : undefined;
+      const storageRequestId = storageTask.params.submissionRequestId;
+      const localAttemptChanged =
+        currentRequestId !== undefined && currentRequestId !== requestId;
+      const storageStillMatchesOperation = storageRequestId === requestId;
+
+      // 本地已开始新重试时，不允许较晚结束的旧事务把内存回滚到旧尝试。
+      // 若存储已是另一个 Request ID，则说明来自其他标签页，仍需同步。
+      if (!localAttemptChanged || !storageStillMatchesOperation) {
+        this.syncImageAttemptFromStorage(taskId, storageTask);
+      }
+    }
+    return Boolean(
+      updated &&
+        storageTask?.params.submissionRequestId === requestId &&
+        validateStoredTask(storageTask)
+    );
+  }
+
+  async activateImageAttempt(
+    taskId: string,
+    requestId: string
+  ): Promise<boolean> {
+    if (
+      this.blockedTaskIds.has(taskId) ||
+      this.recentlyDeletedTaskIds.has(taskId)
+    ) {
+      return false;
+    }
+    return this.updateImageAttemptStorage(taskId, requestId, () =>
+      taskStorageWriter.updateStatus(taskId, 'processing', requestId)
+    );
+  }
+
+  async updateImageAttemptProgress(
+    taskId: string,
+    requestId: string,
+    progress: number,
+    phase?: Task['executionPhase']
+  ): Promise<boolean> {
+    if (
+      this.blockedTaskIds.has(taskId) ||
+      this.recentlyDeletedTaskIds.has(taskId)
+    ) {
+      return false;
+    }
+    return this.updateImageAttemptStorage(taskId, requestId, () =>
+      taskStorageWriter.updateProgress(taskId, progress, phase, requestId)
+    );
+  }
+
+  async updateImageAttemptRemoteId(
+    taskId: string,
+    requestId: string,
+    remoteId: string,
+    invocationRoute?: Task['invocationRoute']
+  ): Promise<boolean> {
+    if (
+      this.blockedTaskIds.has(taskId) ||
+      this.recentlyDeletedTaskIds.has(taskId)
+    ) {
+      return false;
+    }
+    return this.updateImageAttemptStorage(taskId, requestId, () =>
+      taskStorageWriter.updateRemoteId(
+        taskId,
+        remoteId,
+        invocationRoute,
+        requestId
+      )
+    );
+  }
+
+  async markImageAttemptRecovering(
+    taskId: string,
+    requestId: string,
+    executionGuard?: ImageAttemptExecutionGuard
+  ): Promise<boolean> {
+    const isCurrentRecoveryAttempt = () => {
+      const currentTask = this.tasks.get(taskId);
+      return Boolean(
+        currentTask?.type === TaskType.IMAGE &&
+          currentTask.status === TaskStatus.PROCESSING &&
+          getImageSubmissionRequestId(currentTask) === requestId &&
+          (!executionGuard ||
+            ((currentTask.startedAt ?? currentTask.createdAt) ===
+              executionGuard.startedAt &&
+              this.taskExecutionTokens.get(taskId) ===
+                executionGuard.executionToken)) &&
+          !this.blockedTaskIds.has(taskId) &&
+          !this.recentlyDeletedTaskIds.has(taskId)
+      );
+    };
+
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      if (!isCurrentRecoveryAttempt()) {
+        return false;
+      }
+
+      try {
+        const persisted = await this.updateImageAttemptStorage(
+          taskId,
+          requestId,
+          () =>
+            taskStorageWriter.markImageAttemptRecovering(taskId, requestId, {
+              expectedStartedAt: executionGuard?.startedAt,
+              shouldUpdate: isCurrentRecoveryAttempt,
+            }),
+          undefined,
+          isCurrentRecoveryAttempt
+        );
+        if (persisted) {
+          return true;
+        }
+
+        const currentTask = this.tasks.get(taskId);
+        if (
+          currentTask?.type !== TaskType.IMAGE ||
+          currentTask.status !== TaskStatus.PROCESSING ||
+          getImageSubmissionRequestId(currentTask) !== requestId
+        ) {
+          return false;
+        }
+        lastError = new Error('Recovery state persistence was rejected');
+      } catch (error) {
+        lastError = error;
+        if (!isCurrentRecoveryAttempt()) {
+          return false;
+        }
+        if (attempt < 2) {
+          await new Promise((resolve) =>
+            setTimeout(resolve, 25 * 2 ** attempt)
+          );
+          if (!isCurrentRecoveryAttempt()) {
+            return false;
+          }
+        }
+      }
+    }
+
+    if (lastError && isCurrentRecoveryAttempt()) {
+      console.warn(
+        `[TaskQueueService] Recovery state persistence failed for task ${taskId}; recovery was not started`,
+        lastError
+      );
+    }
+
+    return false;
+  }
+
+  async completeImageAttempt(
+    taskId: string,
+    requestId: string,
+    result: Task['result']
+  ): Promise<boolean> {
+    if (
+      this.blockedTaskIds.has(taskId) ||
+      this.recentlyDeletedTaskIds.has(taskId)
+    ) {
+      return false;
+    }
+    return this.updateImageAttemptStorage(
+      taskId,
+      requestId,
+      () => taskStorageWriter.completeTask(taskId, result, requestId),
+      (storedTask) =>
+        storedTask.status === 'completed' &&
+        typeof storedTask.result?.url === 'string' &&
+        storedTask.result.url.length > 0
+    );
+  }
+
+  async failImageAttempt(
+    taskId: string,
+    requestId: string,
+    error: NonNullable<Task['error']>,
+    options: {
+      allowPending?: boolean;
+      allowLegacyRequestId?: boolean;
+      clearStartedAt?: boolean;
+      executionGuard?: ImageAttemptExecutionGuard;
+    } = {}
+  ): Promise<boolean> {
+    const { executionGuard, ...storageOptions } = options;
+    const isCurrentAttempt = () => {
+      const currentTask = this.tasks.get(taskId);
+      const currentRequestId =
+        currentTask?.type === TaskType.IMAGE
+          ? getImageSubmissionRequestId(currentTask)
+          : undefined;
+      return Boolean(
+        currentTask?.type === TaskType.IMAGE &&
+          (currentTask.status === TaskStatus.PROCESSING ||
+            (storageOptions.allowPending &&
+              currentTask.status === TaskStatus.PENDING)) &&
+          (currentRequestId === requestId ||
+            (storageOptions.allowLegacyRequestId &&
+              currentRequestId === undefined &&
+              taskId === requestId)) &&
+          (!executionGuard ||
+            ((currentTask.startedAt ?? currentTask.createdAt) ===
+              executionGuard.startedAt &&
+              this.taskExecutionTokens.get(taskId) ===
+                executionGuard.executionToken)) &&
+          !this.blockedTaskIds.has(taskId) &&
+          !this.recentlyDeletedTaskIds.has(taskId)
+      );
+    };
+    if (!isCurrentAttempt()) {
+      return false;
+    }
+    return this.updateImageAttemptStorage(
+      taskId,
+      requestId,
+      () =>
+        taskStorageWriter.failTask(
+          taskId,
+          error as SWTask['error'],
+          requestId,
+          {
+            ...storageOptions,
+            expectedStartedAt: executionGuard?.startedAt,
+            shouldUpdate: isCurrentAttempt,
+          }
+        ),
+      (storedTask) => storedTask.status === 'failed',
+      isCurrentAttempt
+    );
+  }
+
   /**
    * Restores tasks from storage
    *
@@ -2316,12 +3133,33 @@ class TaskQueueService {
    * by executeTask() but not yet persisted to IndexedDB at read time.
    *
    * @param tasks - Array of tasks to restore
+   * @param options.allowDeletedTaskRestore - Explicit backup/sync restore may
+   * revive a recently deleted task and waits for the replacement write.
+   * @param options.deletedTasksOnly - Restrict this batch to deleting or
+   * recently deleted tasks.
    */
-  restoreTasks(tasks: Task[]): void {
+  restoreTasks(
+    tasks: Task[],
+    options: {
+      allowDeletedTaskRestore?: boolean;
+      deletedTasksOnly?: boolean;
+    } = {}
+  ): Promise<void> {
     let restoredCount = 0;
+    const pendingRestores: Promise<void>[] = [];
     tasks.forEach((task) => {
       // 跳过已归档的任务
       if (task.archived) return;
+
+      const restoreAfterDelete =
+        this.pendingTaskDeletions.has(task.id) ||
+        this.recentlyDeletedTaskIds.has(task.id);
+      if (options.deletedTasksOnly && !restoreAfterDelete) {
+        return;
+      }
+      if (restoreAfterDelete && !options.allowDeletedTaskRestore) {
+        return;
+      }
 
       const existing = this.tasks.get(task.id);
 
@@ -2329,15 +3167,24 @@ class TaskQueueService {
       if (existing) {
         // If in-memory task was updated more recently, keep it
         if (existing.updatedAt >= task.updatedAt) {
+          if (restoreAfterDelete && options.allowDeletedTaskRestore) {
+            const pending = this.taskStorageOperations.get(task.id);
+            if (pending) {
+              pendingRestores.push(pending);
+            }
+          }
           return;
         }
       }
-
+      const existingHadStrippedParams = this.tasksWithStrippedParams.has(
+        task.id
+      );
       // Ensure video tasks have progress field (for backward compatibility)
       let restoredTask: Task =
         task.type === TaskType.VIDEO && task.progress === undefined
           ? { ...task, progress: 0 }
           : { ...task };
+      const persistableRestoredTask = restoredTask;
 
       // 剥离大字段（base64 参考图等），减少内存占用
       if (
@@ -2357,10 +3204,56 @@ class TaskQueueService {
             audioData: undefined,
           },
         };
+      } else {
+        this.tasksWithStrippedParams.delete(restoredTask.id);
       }
 
-      this.blockedTaskIds.delete(restoredTask.id);
+      const deletionInFlight = this.pendingTaskDeletions.has(restoredTask.id);
+      if (!deletionInFlight) {
+        this.blockedTaskIds.delete(restoredTask.id);
+      }
+      if (existing) {
+        imageGenerationRecoveryService.stop(restoredTask.id);
+        this.abortTaskExecution(restoredTask.id);
+      }
       this.tasks.set(restoredTask.id, restoredTask);
+      this.renewTaskExecutionToken(restoredTask.id);
+      if (restoreAfterDelete) {
+        const restoreOperation = this.enqueueTaskStorageOperation(
+          restoredTask.id,
+          () => this.persistTaskInternal(persistableRestoredTask)
+        ).then(
+          () => {
+            if (this.tasks.get(restoredTask.id) === restoredTask) {
+              this.recentlyDeletedTaskIds.delete(restoredTask.id);
+              if (!this.pendingTaskDeletions.has(restoredTask.id)) {
+                this.emitEvent('taskUpdated', restoredTask);
+              }
+            }
+          },
+          (error) => {
+            if (this.tasks.get(restoredTask.id) === restoredTask) {
+              if (existing) {
+                this.tasks.set(existing.id, existing);
+                this.renewTaskExecutionToken(existing.id);
+                if (existingHadStrippedParams) {
+                  this.tasksWithStrippedParams.add(existing.id);
+                } else {
+                  this.tasksWithStrippedParams.delete(existing.id);
+                }
+                this.emitEvent('taskUpdated', existing);
+              } else {
+                this.tasks.delete(restoredTask.id);
+                this.taskExecutionTokens.delete(restoredTask.id);
+                this.tasksWithStrippedParams.delete(restoredTask.id);
+                this.emitEvent('taskDeleted', restoredTask);
+              }
+            }
+            throw error;
+          }
+        );
+        pendingRestores.push(restoreOperation);
+      }
       if (
         restoredTask.status === TaskStatus.PENDING ||
         restoredTask.status === TaskStatus.PROCESSING
@@ -2386,6 +3279,7 @@ class TaskQueueService {
       this.enforceRetentionLimit();
     }
     // console.log(`[TaskQueueService] Restored ${restoredCount}/${tasks.length} tasks (merged)`);
+    return Promise.all(pendingRestores).then(() => undefined);
   }
 
   /**
@@ -2474,6 +3368,7 @@ class TaskQueueService {
     for (let i = 0; i < Math.min(toArchiveCount, terminalTasks.length); i++) {
       const task = terminalTasks[i];
       this.tasks.delete(task.id);
+      this.taskExecutionTokens.delete(task.id);
       this.tasksWithStrippedParams.delete(task.id);
       archiveIds.push(task.id);
     }

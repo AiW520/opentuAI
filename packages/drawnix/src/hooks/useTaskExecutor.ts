@@ -7,20 +7,14 @@
  */
 
 import { useEffect, useRef } from 'react';
-import {
-  taskQueueService,
-  legacyTaskQueueService,
-} from '../services/task-queue';
+import { legacyTaskQueueService } from '../services/task-queue';
 import { generationAPIService } from '../services/generation-api-service';
 import { characterAPIService } from '../services/character-api-service';
 import { characterStorageService } from '../services/character-storage-service';
 import { unifiedCacheService } from '../services/unified-cache-service';
 import { Task, TaskStatus, TaskType } from '../types/task.types';
 import { CharacterStatus } from '../types/character.types';
-import {
-  isResumableAsyncImageTask,
-  isTaskTimeout,
-} from '../utils/task-utils';
+import { isResumableAsyncImageTask, isTaskTimeout } from '../utils/task-utils';
 import { AI_GENERATION_CONCURRENCY_LIMIT } from '../constants/TASK_CONSTANTS';
 import { classifyApiCredentialError } from '../utils/api-auth-error-event';
 import {
@@ -28,6 +22,50 @@ import {
   resolveTaskInvocationRouteModel,
   shouldUseStrictTaskInvocationRoute,
 } from '../services/task-invocation-route';
+import { cacheRemoteUrls } from '../services/media-executor/fallback-utils';
+import {
+  getImageSubmissionRequestId,
+  imageGenerationRecoveryService,
+  isCurrentImageRecoveryAttempt,
+  isImageRequestRecoveryCandidate,
+} from '../services/image-generation-recovery-service';
+import { isImageSubmissionOutcomeUnknownError } from '../services/provider-routing';
+
+function inferImageFormat(url: string): string {
+  const pathname = url.split(/[?#]/, 1)[0] || '';
+  const extension = pathname.match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase();
+  return !extension || extension === 'bin' ? 'png' : extension;
+}
+
+function isRecoveryWritebackWatchdogAbort(signal: AbortSignal): boolean {
+  const reason = signal.reason;
+  return Boolean(
+    signal.aborted &&
+      reason instanceof Error &&
+      reason.name === 'TimeoutError' &&
+      reason.message === 'Image recovery terminal callback timed out'
+  );
+}
+
+async function waitForPromiseOrAbort<T>(
+  promise: Promise<T>,
+  signal: AbortSignal
+): Promise<T> {
+  signal.throwIfAborted();
+
+  let removeAbortListener: () => void = () => undefined;
+  const aborted = new Promise<never>((_, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener('abort', abort, { once: true });
+    removeAbortListener = () => signal.removeEventListener('abort', abort);
+  });
+
+  try {
+    return await Promise.race([promise, aborted]);
+  } finally {
+    removeAbortListener();
+  }
+}
 
 /**
  * 从 API 错误体中提取原始错误消息
@@ -195,15 +233,254 @@ const MAX_CONCURRENT_TASKS = AI_GENERATION_CONCURRENCY_LIMIT;
 // 页面加载后延迟执行积压任务，避免与页面初始化竞争资源
 const STARTUP_DELAY_MS = 2000;
 
-export function useTaskExecutor(): void {
-  const executingTasksRef = useRef<Set<string>>(new Set());
-  const pendingQueueRef = useRef<Task[]>([]);
+export function useTaskExecutor(isTaskStorageReady = true): void {
+  const executingTasksRef = useRef<Map<string, symbol>>(new Map());
+  const pendingQueueRef = useRef<Array<{ task: Task; token: symbol }>>([]);
   const timeoutCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
+    if (!isTaskStorageReady) {
+      return;
+    }
+
     let isActive = true;
+    const pendingTimeoutWritebacks = new Set<string>();
+
+    const persistRejectedRecoveryStart = async (
+      task: Task,
+      requestId: string,
+      startedAt: number,
+      reason: 'invalid-task' | 'expired' | 'route-unavailable'
+    ): Promise<void> => {
+      const expired = reason === 'expired';
+      const failure = {
+        code: expired ? 'RECOVERY_TIMEOUT' : 'RECOVERY_ROUTE_UNAVAILABLE',
+        message: expired
+          ? '图片结果恢复超时'
+          : '原供应商配置不可用，无法继续恢复图片结果',
+        details: {
+          originalError: expired
+            ? 'Image recovery deadline expired'
+            : 'Image recovery route is unavailable',
+          timestamp: Date.now(),
+        },
+      };
+
+      let lastError: unknown;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        if (!isActive) return;
+        const current = legacyTaskQueueService.getTask(task.id);
+        if (!isCurrentImageRecoveryAttempt(current, requestId, startedAt)) {
+          return;
+        }
+        try {
+          if (
+            await legacyTaskQueueService.failImageAttempt(
+              task.id,
+              requestId,
+              failure
+            )
+          ) {
+            return;
+          }
+          lastError = new Error('Recovery start failure was not persisted');
+        } catch (error) {
+          lastError = error;
+        }
+      }
+
+      console.error(
+        `[TaskExecutor] Failed to persist rejected recovery start for image task ${task.id}:`,
+        lastError
+      );
+    };
+
+    const startImageRequestRecovery = (task: Task): boolean => {
+      if (
+        executingTasksRef.current.has(task.id) ||
+        legacyTaskQueueService.isTaskExecutionActive(task.id)
+      ) {
+        imageGenerationRecoveryService.stop(task.id);
+        return false;
+      }
+
+      if (!isImageRequestRecoveryCandidate(task)) {
+        imageGenerationRecoveryService.stop(task.id);
+        return false;
+      }
+
+      const requestId = getImageSubmissionRequestId(task);
+      const startedAt = task.startedAt ?? task.createdAt;
+      let resolvedUrls: string[] | null = null;
+      const startResult = imageGenerationRecoveryService.start(task, {
+        onSucceeded: async (result, signal) => {
+          if (!isActive || signal.aborted) return;
+          const shouldStopWriteback = () =>
+            !isActive ||
+            (signal.aborted && !isRecoveryWritebackWatchdogAbort(signal));
+          let current = legacyTaskQueueService.getTask(task.id);
+          if (!isCurrentImageRecoveryAttempt(current, requestId, startedAt)) {
+            return;
+          }
+
+          const format = inferImageFormat(result.url);
+          if (!resolvedUrls) {
+            try {
+              resolvedUrls = await waitForPromiseOrAbort(
+                cacheRemoteUrls(result.urls, task.id, 'image', format, {
+                  forceRemoteCache: true,
+                  returnLocalCacheUrl: true,
+                  cacheKey: requestId,
+                  extraMetadata: task.params.assetMetadata
+                    ? { ...task.params.assetMetadata }
+                    : undefined,
+                  signal,
+                }),
+                signal
+              );
+            } catch (error) {
+              if (shouldStopWriteback()) {
+                return;
+              }
+              resolvedUrls = result.urls;
+              console.warn(
+                `[TaskExecutor] Failed to cache recovered image task ${task.id}, using remote URL:`,
+                error
+              );
+            }
+          }
+          if (shouldStopWriteback()) {
+            return;
+          }
+
+          current = legacyTaskQueueService.getTask(task.id);
+          if (!isCurrentImageRecoveryAttempt(current, requestId, startedAt)) {
+            return;
+          }
+
+          const completed = await legacyTaskQueueService.completeImageAttempt(
+            task.id,
+            requestId,
+            {
+              url: resolvedUrls[0] || result.url,
+              urls: resolvedUrls.length > 1 ? resolvedUrls : undefined,
+              format,
+              size: 0,
+              resultKind: 'image',
+            }
+          );
+          if (shouldStopWriteback()) {
+            return;
+          }
+          if (!completed) {
+            current = legacyTaskQueueService.getTask(task.id);
+            if (isCurrentImageRecoveryAttempt(current, requestId, startedAt)) {
+              throw new Error('恢复图片结果写入失败，稍后重试');
+            }
+            return;
+          }
+          current = legacyTaskQueueService.getTask(task.id);
+          if (
+            !current ||
+            getImageSubmissionRequestId(current) !== requestId ||
+            (current.startedAt || current.createdAt) !== startedAt
+          ) {
+            return;
+          }
+          if (current.status !== TaskStatus.COMPLETED || !current.result?.url) {
+            if (isCurrentImageRecoveryAttempt(current, requestId, startedAt)) {
+              throw new Error('恢复图片结果尚未写入完成，稍后重试');
+            }
+            return;
+          }
+
+          if (signal.aborted) {
+            return;
+          }
+
+          try {
+            await unifiedCacheService.registerImageMetadata(
+              resolvedUrls[0] || result.url,
+              {
+                taskId: task.id,
+                model: task.params.model,
+                prompt: task.params.prompt,
+                params: task.params,
+              }
+            );
+          } catch (error) {
+            console.error(
+              `[TaskExecutor] Failed to register metadata for recovered image task ${task.id}:`,
+              error
+            );
+          }
+        },
+        onFailed: async (error, signal) => {
+          if (!isActive || signal.aborted) return;
+          const current = legacyTaskQueueService.getTask(task.id);
+          if (!isCurrentImageRecoveryAttempt(current, requestId, startedAt)) {
+            return;
+          }
+          const failed = await legacyTaskQueueService.failImageAttempt(
+            task.id,
+            requestId,
+            {
+              code: error.code,
+              message: error.message,
+              details: {
+                originalError: error.message,
+                timestamp: Date.now(),
+              },
+            }
+          );
+          if (signal.aborted || !isActive) {
+            return;
+          }
+          if (!failed) {
+            const latest = legacyTaskQueueService.getTask(task.id);
+            if (isCurrentImageRecoveryAttempt(latest, requestId, startedAt)) {
+              throw new Error('恢复失败状态写入失败，稍后重试');
+            }
+          }
+        },
+      });
+      if (startResult.status === 'rejected') {
+        void persistRejectedRecoveryStart(
+          task,
+          requestId,
+          startedAt,
+          startResult.reason
+        );
+        return false;
+      }
+      return true;
+    };
 
     // All tasks execute in main thread
+
+    const claimTaskExecution = (
+      taskId: string,
+      expectedToken?: symbol
+    ): symbol | undefined => {
+      if (executingTasksRef.current.has(taskId)) {
+        return undefined;
+      }
+      const token = legacyTaskQueueService.getTaskExecutionToken(taskId);
+      if (
+        !token ||
+        (expectedToken && token !== expectedToken) ||
+        !legacyTaskQueueService.isTaskExecutionTokenCurrent(taskId, token)
+      ) {
+        return undefined;
+      }
+      executingTasksRef.current.set(taskId, token);
+      return token;
+    };
+
+    const isCurrentTaskExecution = (taskId: string, token: symbol): boolean =>
+      isActive &&
+      executingTasksRef.current.get(taskId) === token &&
+      legacyTaskQueueService.isTaskExecutionTokenCurrent(taskId, token);
 
     // 尝试从等待队列中执行下一个任务（并发控制）
     // 注意：引用了 executeTask，但 executeTask 也是 const，
@@ -215,27 +492,27 @@ export function useTaskExecutor(): void {
         executingTasksRef.current.size < MAX_CONCURRENT_TASKS
       ) {
         const next = pendingQueueRef.current.shift();
-        if (next && !executingTasksRef.current.has(next.id)) {
-          executeTask(next);
+        if (next && !executingTasksRef.current.has(next.task.id)) {
+          executeTask(next.task, next.token);
         }
       }
     };
 
     // 任务完成后释放并发槽位，触发队列中下一个任务
-    const onTaskFinished = (taskId: string) => {
+    const onTaskFinished = (taskId: string, token: symbol) => {
+      if (executingTasksRef.current.get(taskId) !== token) {
+        return;
+      }
       executingTasksRef.current.delete(taskId);
       tryExecuteNext();
     };
 
-    const resumeAudioTask = async (task: Task) => {
+    const resumeAudioTask = async (task: Task, expectedToken?: symbol) => {
       const taskId = task.id;
       const remoteId = task.remoteId!;
 
-      if (executingTasksRef.current.has(taskId)) {
-        return;
-      }
-
-      executingTasksRef.current.add(taskId);
+      const executionToken = claimTaskExecution(taskId, expectedToken);
+      if (!executionToken) return;
 
       try {
         if (shouldUseStrictTaskInvocationRoute(task)) {
@@ -247,13 +524,13 @@ export function useTaskExecutor(): void {
           resolveTaskInvocationRouteModel(task)
         );
 
-        if (!isActive) return;
+        if (!isCurrentTaskExecution(taskId, executionToken)) return;
 
         legacyTaskQueueService.updateTaskStatus(taskId, TaskStatus.COMPLETED, {
           result,
         });
       } catch (error: any) {
-        if (!isActive) return;
+        if (!isCurrentTaskExecution(taskId, executionToken)) return;
 
         const errorCode = error.httpStatus
           ? `HTTP_${error.httpStatus}`
@@ -276,20 +553,21 @@ export function useTaskExecutor(): void {
           },
         });
       } finally {
-        onTaskFinished(taskId);
+        onTaskFinished(taskId, executionToken);
       }
     };
 
     // Function to resume an async image task that has a remoteId
-    const resumeAsyncImageTask = async (task: Task) => {
+    const resumeAsyncImageTask = async (task: Task, expectedToken?: symbol) => {
       const taskId = task.id;
       const remoteId = task.remoteId!;
+      const requestId = getImageSubmissionRequestId(task);
 
-      if (executingTasksRef.current.has(taskId)) {
+      if (legacyTaskQueueService.isTaskExecutionActive(taskId)) {
         return;
       }
-
-      executingTasksRef.current.add(taskId);
+      const executionToken = claimTaskExecution(taskId, expectedToken);
+      if (!executionToken) return;
 
       try {
         if (shouldUseStrictTaskInvocationRoute(task)) {
@@ -298,14 +576,28 @@ export function useTaskExecutor(): void {
         const result = await generationAPIService.resumeAsyncImageGeneration(
           taskId,
           remoteId,
-          resolveTaskInvocationRouteModel(task)
+          resolveTaskInvocationRouteModel(task),
+          requestId
         );
 
-        if (!isActive) return;
+        if (!isCurrentTaskExecution(taskId, executionToken)) return;
 
-        legacyTaskQueueService.updateTaskStatus(taskId, TaskStatus.COMPLETED, {
-          result,
-        });
+        const completed = await legacyTaskQueueService.completeImageAttempt(
+          taskId,
+          requestId,
+          result
+        );
+        if (!completed || !isCurrentTaskExecution(taskId, executionToken))
+          return;
+
+        const currentTask = legacyTaskQueueService.getTask(taskId);
+        if (
+          !currentTask ||
+          currentTask.status !== TaskStatus.COMPLETED ||
+          getImageSubmissionRequestId(currentTask) !== requestId
+        ) {
+          return;
+        }
 
         if (result.url) {
           try {
@@ -323,7 +615,7 @@ export function useTaskExecutor(): void {
           }
         }
       } catch (error: any) {
-        if (!isActive) return;
+        if (!isCurrentTaskExecution(taskId, executionToken)) return;
 
         const errorCode = error.httpStatus
           ? `HTTP_${error.httpStatus}`
@@ -335,31 +627,25 @@ export function useTaskExecutor(): void {
           error.message ||
           String(error);
 
-        legacyTaskQueueService.updateTaskStatus(taskId, TaskStatus.FAILED, {
-          error: {
-            code: errorCode,
-            message: errorMessage,
-            details: {
-              originalError: originalErrorInfo,
-              timestamp: Date.now(),
-            },
+        await legacyTaskQueueService.failImageAttempt(taskId, requestId, {
+          code: errorCode,
+          message: errorMessage,
+          details: {
+            originalError: originalErrorInfo,
+            timestamp: Date.now(),
           },
         });
       } finally {
-        onTaskFinished(taskId);
+        onTaskFinished(taskId, executionToken);
       }
     };
 
     // Function to execute a character task
-    const executeCharacterTask = async (task: Task) => {
+    const executeCharacterTask = async (task: Task, expectedToken?: symbol) => {
       const taskId = task.id;
 
-      // Prevent duplicate execution
-      if (executingTasksRef.current.has(taskId)) {
-        return;
-      }
-
-      executingTasksRef.current.add(taskId);
+      const executionToken = claimTaskExecution(taskId, expectedToken);
+      if (!executionToken) return;
 
       try {
         // Update status to processing
@@ -386,7 +672,7 @@ export function useTaskExecutor(): void {
           }
         );
 
-        if (!isActive) return;
+        if (!isCurrentTaskExecution(taskId, executionToken)) return;
 
         // Save character to storage
         await characterStorageService.saveCharacter({
@@ -403,6 +689,11 @@ export function useTaskExecutor(): void {
           completedAt: Date.now(),
         });
 
+        if (!isCurrentTaskExecution(taskId, executionToken)) {
+          await characterStorageService.deleteCharacter(result.characterId);
+          return;
+        }
+
         // Mark task as completed with character info
         legacyTaskQueueService.updateTaskStatus(taskId, TaskStatus.COMPLETED, {
           result: {
@@ -416,7 +707,7 @@ export function useTaskExecutor(): void {
           remoteId: result.characterId,
         });
       } catch (error: any) {
-        if (!isActive) return;
+        if (!isCurrentTaskExecution(taskId, executionToken)) return;
 
         console.error(`[TaskExecutor] Character task ${taskId} failed:`, error);
 
@@ -446,17 +737,36 @@ export function useTaskExecutor(): void {
           },
         });
       } finally {
-        onTaskFinished(taskId);
+        onTaskFinished(taskId, executionToken);
       }
     };
 
     // Function to execute a single task
-    const executeTask = async (task: Task) => {
+    const executeTask = async (task: Task, expectedToken?: symbol) => {
+      if (expectedToken) {
+        if (
+          !legacyTaskQueueService.isTaskExecutionTokenCurrent(
+            task.id,
+            expectedToken
+          )
+        ) {
+          return;
+        }
+        const currentTask = legacyTaskQueueService.getTask(task.id);
+        if (!currentTask) return;
+        task = currentTask;
+      }
       const taskId = task.id;
+      const submissionRequestId =
+        task.type === TaskType.IMAGE
+          ? getImageSubmissionRequestId(task)
+          : undefined;
+      const submissionStartedAt = task.startedAt || task.createdAt;
+      let shouldStartRecoveryAfterExecution = false;
 
-      // Check if this is a character task
-      if (task.type === TaskType.CHARACTER) {
-        return executeCharacterTask(task);
+      if (isImageRequestRecoveryCandidate(task)) {
+        startImageRequestRecovery(task);
+        return;
       }
 
       // Check if this is a resumable async image task
@@ -464,7 +774,7 @@ export function useTaskExecutor(): void {
         task.status === TaskStatus.PROCESSING &&
         isResumableAsyncImageTask(task)
       ) {
-        return resumeAsyncImageTask(task);
+        return resumeAsyncImageTask(task, expectedToken);
       }
 
       // Skip resumable video tasks — handled by FallbackMediaExecutor.resumePendingTasks()
@@ -481,19 +791,47 @@ export function useTaskExecutor(): void {
         task.remoteId &&
         task.status === TaskStatus.PROCESSING
       ) {
-        return resumeAudioTask(task);
+        return resumeAudioTask(task, expectedToken);
       }
 
-      // Prevent duplicate execution
-      if (executingTasksRef.current.has(taskId)) {
+      if (task.status !== TaskStatus.PENDING) {
         return;
       }
 
-      executingTasksRef.current.add(taskId);
+      // Check if this is a character task
+      if (task.type === TaskType.CHARACTER) {
+        return executeCharacterTask(task, expectedToken);
+      }
+
+      const executionToken = claimTaskExecution(taskId, expectedToken);
+      if (!executionToken) return;
+      const isCurrentSubmissionAttempt = () => {
+        if (!isCurrentTaskExecution(taskId, executionToken)) return false;
+        if (!submissionRequestId) return true;
+        const currentTask = legacyTaskQueueService.getTask(taskId);
+        return Boolean(
+          currentTask &&
+            currentTask.status === TaskStatus.PROCESSING &&
+            getImageSubmissionRequestId(currentTask) === submissionRequestId &&
+            (currentTask.startedAt || currentTask.createdAt) ===
+              submissionStartedAt
+        );
+      };
 
       try {
         // Update status to processing
-        legacyTaskQueueService.updateTaskStatus(taskId, TaskStatus.PROCESSING);
+        if (submissionRequestId) {
+          const activated = await legacyTaskQueueService.activateImageAttempt(
+            taskId,
+            submissionRequestId
+          );
+          if (!activated) return;
+        } else {
+          legacyTaskQueueService.updateTaskStatus(
+            taskId,
+            TaskStatus.PROCESSING
+          );
+        }
 
         // Execute the generation
         const result = await generationAPIService.generate(
@@ -502,12 +840,33 @@ export function useTaskExecutor(): void {
           task.type
         );
 
-        if (!isActive) return;
+        if (!isActive || !isCurrentSubmissionAttempt()) return;
 
-        // Mark as completed with result
-        legacyTaskQueueService.updateTaskStatus(taskId, TaskStatus.COMPLETED, {
-          result,
-        });
+        let completed = true;
+        if (submissionRequestId) {
+          completed = await legacyTaskQueueService.completeImageAttempt(
+            taskId,
+            submissionRequestId,
+            result
+          );
+        } else {
+          legacyTaskQueueService.updateTaskStatus(
+            taskId,
+            TaskStatus.COMPLETED,
+            { result }
+          );
+        }
+        if (!completed || !isActive) return;
+        if (submissionRequestId) {
+          const currentTask = legacyTaskQueueService.getTask(taskId);
+          if (
+            !currentTask ||
+            currentTask.status !== TaskStatus.COMPLETED ||
+            getImageSubmissionRequestId(currentTask) !== submissionRequestId
+          ) {
+            return;
+          }
+        }
 
         // Register image/video metadata in unified cache
         if (result.url) {
@@ -526,7 +885,7 @@ export function useTaskExecutor(): void {
           }
         }
       } catch (error: any) {
-        if (!isActive) return;
+        if (!isActive || !isCurrentSubmissionAttempt()) return;
 
         console.error(`[TaskExecutor] Task ${taskId} failed:`, error);
 
@@ -549,29 +908,71 @@ export function useTaskExecutor(): void {
           timestamp: Date.now(),
         };
 
-        // Check if we should retry - disabled, mark as failed directly
-        legacyTaskQueueService.updateTaskStatus(taskId, TaskStatus.FAILED, {
-          error: {
-            code: errorCode,
-            message: errorMessage,
-            details: errorDetails,
-          },
-        });
+        const taskError = {
+          code: errorCode,
+          message: errorMessage,
+          details: errorDetails,
+        };
+        if (submissionRequestId) {
+          if (isImageSubmissionOutcomeUnknownError(error)) {
+            shouldStartRecoveryAfterExecution =
+              await legacyTaskQueueService.markImageAttemptRecovering(
+                taskId,
+                submissionRequestId
+              );
+            return;
+          }
+          await legacyTaskQueueService.failImageAttempt(
+            taskId,
+            submissionRequestId,
+            taskError
+          );
+        } else {
+          // Check if we should retry - disabled, mark as failed directly
+          legacyTaskQueueService.updateTaskStatus(taskId, TaskStatus.FAILED, {
+            error: taskError,
+          });
+        }
       } finally {
-        onTaskFinished(taskId);
+        onTaskFinished(taskId, executionToken);
+        if (shouldStartRecoveryAfterExecution && isActive) {
+          const recoveryTask = legacyTaskQueueService.getTask(taskId);
+          if (recoveryTask) {
+            startImageRequestRecovery(recoveryTask);
+          }
+        }
       }
     };
 
     // 将任务加入执行队列（带并发控制）
     const enqueueTask = (task: Task) => {
-      if (executingTasksRef.current.has(task.id)) return;
-      // 避免重复入队
-      if (pendingQueueRef.current.some((t) => t.id === task.id)) return;
+      const token = legacyTaskQueueService.getTaskExecutionToken(task.id);
+      if (
+        !token ||
+        !legacyTaskQueueService.isTaskExecutionTokenCurrent(task.id, token)
+      ) {
+        return;
+      }
+
+      const activeToken = executingTasksRef.current.get(task.id);
+      if (activeToken) {
+        if (activeToken === token) return;
+        generationAPIService.cancelRequest(task.id);
+        executingTasksRef.current.delete(task.id);
+      }
+
+      const queuedIndex = pendingQueueRef.current.findIndex(
+        (item) => item.task.id === task.id
+      );
+      if (queuedIndex >= 0) {
+        pendingQueueRef.current[queuedIndex] = { task, token };
+        return;
+      }
 
       if (executingTasksRef.current.size < MAX_CONCURRENT_TASKS) {
-        executeTask(task);
+        executeTask(task, token);
       } else {
-        pendingQueueRef.current.push(task);
+        pendingQueueRef.current.push({ task, token });
       }
     };
 
@@ -598,9 +999,12 @@ export function useTaskExecutor(): void {
           task.remoteId &&
           task.status === TaskStatus.PROCESSING
       );
+      const recoverableImageRequestTasks = tasks.filter(
+        isImageRequestRecoveryCandidate
+      );
 
       console.warn(
-        `[TaskExecutor] processPendingTasks: ${tasks.length} total, ${pendingTasks.length} pending, ${resumableTasks.length} resumable-image, ${resumableAudioTasks.length} resumable-audio, ${executingTasksRef.current.size} executing`
+        `[TaskExecutor] processPendingTasks: ${tasks.length} total, ${pendingTasks.length} pending, ${resumableTasks.length} resumable-image, ${resumableAudioTasks.length} resumable-audio, ${recoverableImageRequestTasks.length} recoverable-image, ${executingTasksRef.current.size} executing`
       );
 
       pendingTasks.forEach((task) => {
@@ -612,6 +1016,7 @@ export function useTaskExecutor(): void {
       resumableAudioTasks.forEach((task) => {
         enqueueTask(task);
       });
+      recoverableImageRequestTasks.forEach(startImageRequestRecovery);
     };
 
     // Function to check for timed out tasks
@@ -625,24 +1030,57 @@ export function useTaskExecutor(): void {
 
       processingTasks.forEach((task) => {
         if (isTaskTimeout(task)) {
+          const isRecoveryTimeout =
+            task.type === TaskType.IMAGE &&
+            isImageRequestRecoveryCandidate(task);
+          if (
+            isRecoveryTimeout &&
+            imageGenerationRecoveryService.hasPendingTerminalWriteback(task.id)
+          ) {
+            return;
+          }
           console.warn(`[TaskExecutor] Task ${task.id} timed out`);
 
-          // Cancel the API request
-          generationAPIService.cancelRequest(task.id);
+          if (isRecoveryTimeout) {
+            imageGenerationRecoveryService.stop(task.id);
+          } else {
+            generationAPIService.cancelRequest(task.id);
+          }
 
           const timeoutDetails = {
             originalError: `Task ${task.id} timed out after processing`,
             timestamp: Date.now(),
           };
-
           // Check if we should retry - disabled, mark as failed directly
-          legacyTaskQueueService.updateTaskStatus(task.id, TaskStatus.FAILED, {
-            error: {
-              code: 'TIMEOUT',
-              message: '任务执行超时',
-              details: timeoutDetails,
-            },
-          });
+          const timeoutError = {
+            code: isRecoveryTimeout ? 'RECOVERY_TIMEOUT' : 'TIMEOUT',
+            message: isRecoveryTimeout ? '图片结果恢复超时' : '任务执行超时',
+            details: timeoutDetails,
+          };
+          if (task.type === TaskType.IMAGE) {
+            const requestId = getImageSubmissionRequestId(task);
+            if (pendingTimeoutWritebacks.has(task.id)) {
+              return;
+            }
+            pendingTimeoutWritebacks.add(task.id);
+            void legacyTaskQueueService
+              .failImageAttempt(task.id, requestId, timeoutError)
+              .catch((error) => {
+                console.error(
+                  '[TaskExecutor] Failed to persist image timeout:',
+                  error
+                );
+              })
+              .finally(() => {
+                pendingTimeoutWritebacks.delete(task.id);
+              });
+          } else {
+            legacyTaskQueueService.updateTaskStatus(
+              task.id,
+              TaskStatus.FAILED,
+              { error: timeoutError }
+            );
+          }
         }
       });
     };
@@ -653,8 +1091,47 @@ export function useTaskExecutor(): void {
       .subscribe((event) => {
         if (!isActive) return;
 
+        if (event.type === 'taskDeleted') {
+          imageGenerationRecoveryService.stop(event.task.id);
+          generationAPIService.cancelRequest(event.task.id);
+          executingTasksRef.current.delete(event.task.id);
+          pendingQueueRef.current = pendingQueueRef.current.filter(
+            (item) => item.task.id !== event.task.id
+          );
+          tryExecuteNext();
+          return;
+        }
+
         if (event.type === 'taskCreated' || event.type === 'taskUpdated') {
           const task = event.task;
+
+          if (event.type === 'taskCreated') {
+            processPendingTasks();
+            return;
+          }
+
+          const isPendingOrResumable =
+            task.status === TaskStatus.PENDING ||
+            (task.status === TaskStatus.PROCESSING &&
+              Boolean(task.remoteId) &&
+              (isResumableAsyncImageTask(task) ||
+                task.type === TaskType.AUDIO));
+          if (!isPendingOrResumable) {
+            pendingQueueRef.current = pendingQueueRef.current.filter(
+              (item) => item.task.id !== task.id
+            );
+          }
+          if (task.status === TaskStatus.CANCELLED) {
+            generationAPIService.cancelRequest(task.id);
+            executingTasksRef.current.delete(task.id);
+            tryExecuteNext();
+          }
+
+          if (isImageRequestRecoveryCandidate(task)) {
+            startImageRequestRecovery(task);
+            return;
+          }
+          imageGenerationRecoveryService.stop(task.id);
 
           // Execute pending tasks
           if (task.status === TaskStatus.PENDING) {
@@ -681,7 +1158,9 @@ export function useTaskExecutor(): void {
 
     // Process existing pending tasks on mount (delayed to avoid competing with page initialization)
     // The subscription above will catch tasks created/restored after this point
-    const startupTimer = setTimeout(processPendingTasks, STARTUP_DELAY_MS);
+    const startupTimers = [0, 3000, 8000].map((delay) =>
+      setTimeout(processPendingTasks, STARTUP_DELAY_MS + delay)
+    );
 
     // Set up timeout checker (every 10 seconds)
     timeoutCheckIntervalRef.current = setInterval(checkTimeouts, 10000);
@@ -690,18 +1169,20 @@ export function useTaskExecutor(): void {
     return () => {
       isActive = false;
       subscription.unsubscribe();
-      clearTimeout(startupTimer);
+      startupTimers.forEach(clearTimeout);
       pendingQueueRef.current = [];
+      pendingTimeoutWritebacks.clear();
 
       if (timeoutCheckIntervalRef.current) {
         clearInterval(timeoutCheckIntervalRef.current);
       }
 
       // Cancel all ongoing requests
-      executingTasksRef.current.forEach((taskId) => {
+      executingTasksRef.current.forEach((_token, taskId) => {
         generationAPIService.cancelRequest(taskId);
       });
       executingTasksRef.current.clear();
+      imageGenerationRecoveryService.stopAll();
     };
-  }, []);
+  }, [isTaskStorageReady]);
 }

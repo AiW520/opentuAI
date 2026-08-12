@@ -61,6 +61,11 @@ import {
   AUDIO_PLAYLIST_CANVAS_AUDIO_LABEL,
 } from './types/audio-playlist.types';
 import type { MediaItem as UnifiedMediaItem } from './components/shared/media-preview/types';
+import {
+  createCanvasMediaDimensionResolver,
+  type CanvasMediaDimensions,
+  type CanvasPreviewMediaItem,
+} from './utils/canvas-media-preview';
 import { PlaitDrawElement } from '@plait/draw';
 import { withTracking } from './plugins/tracking';
 import { withUnknownElementFallback } from './plugins/with-unknown-element-fallback';
@@ -110,7 +115,10 @@ import { isCardElement } from './types/card.types';
 import { isFrameElement } from './types/frame.types';
 import { openCardInKnowledgeBase } from './utils/card-actions';
 import { useI18n } from './i18n';
-import { safeReload } from './utils/active-tasks';
+import {
+  hasPersistedRecoverableTasks,
+  safeReload,
+} from './utils/active-tasks';
 import { useTabSync } from './hooks/useTabSync';
 import { canvasAudioPlaybackService } from './services/canvas-audio-playback-service';
 import { useCanvasAudioPlaybackSelector } from './hooks/useCanvasAudioPlayback';
@@ -389,6 +397,27 @@ export const Drawnix: React.FC<DrawnixProps> = ({
 
   const enableGenerationRuntime = useCallback(() => {
     enableDeferredRuntime(TOOL_WINDOW_GROUPS);
+  }, [enableDeferredRuntime]);
+
+  useEffect(() => {
+    let active = true;
+
+    hasPersistedRecoverableTasks()
+      .then((shouldWakeRuntime) => {
+        if (active && shouldWakeRuntime) {
+          enableDeferredRuntime(TOOL_WINDOW_GROUPS);
+        }
+      })
+      .catch((error) => {
+        console.warn(
+          '[Drawnix] Failed to inspect persisted recoverable tasks:',
+          error
+        );
+      });
+
+    return () => {
+      active = false;
+    };
   }, [enableDeferredRuntime]);
 
   useEffect(() => {
@@ -1100,6 +1129,7 @@ const DrawnixContent: React.FC<DrawnixContentProps> = ({
     UnifiedMediaItem[]
   >([]);
   const [mediaPreviewInitialIndex, setMediaPreviewInitialIndex] = useState(0);
+  const mediaPreviewRequestIdRef = useRef(0);
 
   useEffect(() => {
     if (!playbackError) {
@@ -1135,12 +1165,12 @@ const DrawnixContent: React.FC<DrawnixContentProps> = ({
 
   // 收集画布上所有图片和视频元素
   const collectCanvasMediaItems = useCallback((): {
-    items: UnifiedMediaItem[];
+    items: CanvasPreviewMediaItem[];
     elementIds: string[];
   } => {
     if (!board || !board.children) return { items: [], elementIds: [] };
 
-    const items: UnifiedMediaItem[] = [];
+    const items: CanvasPreviewMediaItem[] = [];
     const elementIds: string[] = [];
 
     for (const element of board.children) {
@@ -1159,11 +1189,17 @@ const DrawnixContent: React.FC<DrawnixContentProps> = ({
       const isVideo = isVideoElement(element);
 
       if (isImage || isVideo) {
+        const generationTaskId = (element as Record<string, unknown>)
+          .generationTaskId;
         items.push({
           id: element.id,
           url,
           type: isVideo ? 'video' : 'image',
           title: (element as any).name || undefined,
+          generationTaskId:
+            isImage && typeof generationTaskId === 'string'
+              ? generationTaskId
+              : undefined,
         });
         elementIds.push(element.id);
       }
@@ -1181,17 +1217,104 @@ const DrawnixContent: React.FC<DrawnixContentProps> = ({
       const targetIndex = elementIds.indexOf(targetElementId);
       if (targetIndex === -1) return;
 
+      const requestId = ++mediaPreviewRequestIdRef.current;
       setMediaPreviewItems(items);
       setMediaPreviewInitialIndex(targetIndex);
       setMediaPreviewVisible(true);
+
+      if (!items.some((item) => item.type === 'image')) return;
+
+      void (async () => {
+        try {
+          const { taskQueueService } = await import('./services/task-queue');
+          if (requestId !== mediaPreviewRequestIdRef.current) return;
+
+          const resolveDimensions =
+            createCanvasMediaDimensionResolver(taskQueueService);
+          const orderedIndices = [
+            targetIndex,
+            ...Array.from(items.keys()).filter(
+              (index) => index !== targetIndex
+            ),
+          ];
+          const deferredUpdates: Array<{
+            index: number;
+            sourceItem: CanvasPreviewMediaItem;
+            dimensions: CanvasMediaDimensions;
+          }> = [];
+          const applyDimensionUpdates = (
+            currentItems: UnifiedMediaItem[],
+            updates: typeof deferredUpdates
+          ): UnifiedMediaItem[] => {
+            let nextItems: UnifiedMediaItem[] | null = null;
+
+            for (const { index, sourceItem, dimensions } of updates) {
+              const currentItem = (nextItems || currentItems)[index];
+              if (
+                !currentItem ||
+                currentItem.id !== sourceItem.id ||
+                currentItem.url !== sourceItem.url ||
+                currentItem.type !== sourceItem.type ||
+                (currentItem.width === dimensions.width &&
+                  currentItem.height === dimensions.height)
+              ) {
+                continue;
+              }
+
+              if (!nextItems) nextItems = [...currentItems];
+              nextItems[index] = { ...currentItem, ...dimensions };
+            }
+
+            return nextItems || currentItems;
+          };
+
+          for (const index of orderedIndices) {
+            if (requestId !== mediaPreviewRequestIdRef.current) return;
+
+            const sourceItem = items[index];
+            const dimensions = await resolveDimensions(sourceItem, {
+              allowUrlFallback: index === targetIndex,
+            });
+            if (requestId !== mediaPreviewRequestIdRef.current) return;
+            if (!dimensions) continue;
+
+            const update = { index, sourceItem, dimensions };
+            if (index === targetIndex) {
+              setMediaPreviewItems((currentItems) =>
+                applyDimensionUpdates(currentItems, [update])
+              );
+            } else {
+              deferredUpdates.push(update);
+            }
+          }
+
+          if (
+            requestId === mediaPreviewRequestIdRef.current &&
+            deferredUpdates.length > 0
+          ) {
+            setMediaPreviewItems((currentItems) =>
+              applyDimensionUpdates(currentItems, deferredUpdates)
+            );
+          }
+        } catch {
+          // Missing task metadata must not block the canvas preview.
+        }
+      })();
     },
     [collectCanvasMediaItems]
   );
 
   // 关闭媒体预览
   const closeMediaPreview = useCallback(() => {
+    mediaPreviewRequestIdRef.current += 1;
     setMediaPreviewVisible(false);
   }, []);
+
+  useEffect(() => {
+    return () => {
+      mediaPreviewRequestIdRef.current += 1;
+    };
+  }, [board]);
 
   // 处理图片编辑覆盖保存（内置编辑器回调）
   const handleMediaEditorOverwrite = useCallback(
@@ -1253,6 +1376,7 @@ const DrawnixContent: React.FC<DrawnixContentProps> = ({
               width: img.naturalWidth,
               height: img.naturalHeight,
               points: newPoints,
+              generationTaskId: undefined,
             } as any,
             [elementIndex]
           );
@@ -1675,6 +1799,7 @@ const DrawnixContent: React.FC<DrawnixContentProps> = ({
           <Suspense fallback={null}>
             <DeferredAIInputBar
               isDataReady={isDataReady}
+              currentBoardId={currentBoardId}
               activationKey={0}
               onEnableToolWindows={enableToolWindows}
               onEnableRuntime={enableGenerationRuntime}

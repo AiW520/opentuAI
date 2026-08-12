@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { callGoogleGenerateContentRaw } from './apiCalls';
 
 const { sendMock, analyticsMock } = vi.hoisted(() => ({
   sendMock: vi.fn(),
@@ -13,6 +14,9 @@ vi.mock('../../services/provider-routing', () => ({
   providerTransport: {
     send: (...args: unknown[]) => sendMock(...args),
   },
+  readProviderResponseJson: <T>(response: Response) =>
+    response.json() as Promise<T>,
+  readProviderResponseText: (response: Response) => response.text(),
 }));
 
 vi.mock('../posthog-analytics', () => ({
@@ -27,8 +31,6 @@ vi.mock('../posthog-analytics', () => ({
     };
   },
 }));
-
-import { callGoogleGenerateContentRaw } from './apiCalls';
 
 describe('callGoogleGenerateContentRaw', () => {
   beforeEach(() => {
@@ -207,6 +209,35 @@ describe('callGoogleGenerateContentRaw', () => {
         path: '/v1beta/models/gemini-3.1-flash-image-preview-4k:generateContent',
         baseUrlStrategy: 'trim-v1',
         method: 'POST',
+      })
+    );
+  });
+
+  it('adds the stable image request ID to Google submissions', async () => {
+    await callGoogleGenerateContentRaw(
+      {
+        apiKey: 'secret',
+        baseUrl: 'https://api.example.com',
+        modelName: 'gemini-image',
+        protocol: 'google.generateContent',
+        authType: 'bearer',
+      },
+      [
+        {
+          role: 'user',
+          content: [{ type: 'text', text: 'draw a cat' }],
+        },
+      ],
+      { stream: false, requestId: 'task-google-image-1' }
+    );
+
+    expect(sendMock).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        requestId: 'task-google-image-1',
       })
     );
   });

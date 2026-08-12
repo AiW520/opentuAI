@@ -62,6 +62,12 @@ const TTDDialogComponent = ({
     dialogInitialDataByType?.[DialogType.aiImageGeneration] ?? null;
   const videoDialogInitialData =
     dialogInitialDataByType?.[DialogType.aiVideoGeneration] ?? null;
+  const imageDialogSessionKey =
+    imageDialogInitialData?.prefillId ||
+    imageDialogInitialData?.batchId ||
+    'ai-image-dialog';
+  const [imageDialogManualModeKey, setImageDialogManualModeKey] =
+    useState<string | null>(null);
 
   // 移动端和平板端不显示批量出图
   const showBatchTab = !isMobile && !isTablet;
@@ -212,6 +218,32 @@ const TTDDialogComponent = ({
     initialImages: [],
     selectedElementIds: [],
   });
+  const resolvedAiImageData = imageDialogInitialData
+    ? {
+        initialPrompt:
+          imageDialogInitialData.initialPrompt ||
+          imageDialogInitialData.prompt ||
+          '',
+        initialImages:
+          imageDialogInitialData.initialImages ||
+          imageDialogInitialData.uploadedImages ||
+          [],
+        selectedElementIds: [],
+        initialKnowledgeContextRefs:
+          imageDialogInitialData.initialKnowledgeContextRefs ||
+          imageDialogInitialData.knowledgeContextRefs ||
+          [],
+        initialResultUrl:
+          imageDialogInitialData.initialResultUrl ||
+          imageDialogInitialData.resultUrl,
+        initialAspectRatio: imageDialogInitialData.initialAspectRatio,
+        targetFrameId: imageDialogInitialData.targetFrameId,
+        targetFrameDimensions: imageDialogInitialData.targetFrameDimensions,
+        pptSlideImage: imageDialogInitialData.pptSlideImage,
+        pptSlidePrompt: imageDialogInitialData.pptSlidePrompt,
+        pptReplaceElementId: imageDialogInitialData.pptReplaceElementId,
+      }
+    : aiImageData;
 
   // AI 视频生成的初始数据
   const [aiVideoData, setAiVideoData] = useState<{
@@ -240,6 +272,14 @@ const TTDDialogComponent = ({
         return 'single';
       }
     });
+  const shouldForceImageDialogSingleMode =
+    !!imageDialogInitialData && imageDialogManualModeKey !== imageDialogSessionKey;
+  const imageDialogRenderMode: ImageGenerationMode =
+    shouldForceImageDialogSingleMode ? 'single' : imageGenerationMode;
+
+  useEffect(() => {
+    setImageDialogManualModeKey(null);
+  }, [imageDialogInitialData]);
 
   // 移动端/平板端自动切换回单图模式
   useEffect(() => {
@@ -250,6 +290,7 @@ const TTDDialogComponent = ({
 
   // 处理图片生成模式变化
   const handleImageModeChange = useCallback((mode: ImageGenerationMode) => {
+    setImageDialogManualModeKey(imageDialogSessionKey);
     setImageGenerationMode(mode);
     // 切换到批量模式时触发一次性全屏，切回时不调整尺寸（保持当前状态）
     if (mode === 'batch') {
@@ -263,7 +304,7 @@ const TTDDialogComponent = ({
     } catch (e) {
       console.warn('Failed to save image mode:', e);
     }
-  }, []);
+  }, [imageDialogSessionKey]);
 
   // 当对话框将要打开时，预先计算是否需要自动放大
   // 这需要在 WinBox 组件渲染前确定，且逻辑需要与 AIImageGeneration 的模式判断一致
@@ -681,11 +722,11 @@ const TTDDialogComponent = ({
       </Dialog>
       {/* AI 图片生成窗口 - 使用 WinBox */}
       <WinBoxWindow
-        key={imageDialogInitialData?.prefillId || 'ai-image-window'}
+        key={imageDialogSessionKey}
         id="ai-image-dialog"
         visible={appState.openDialogTypes.has(DialogType.aiImageGeneration)}
         title={
-          imageGenerationMode === 'batch'
+          imageDialogRenderMode === 'batch'
             ? language === 'zh'
               ? '批量出图'
               : 'Batch Generation'
@@ -704,7 +745,7 @@ const TTDDialogComponent = ({
               <button
                 type="button"
                 className={`mode-tab ${
-                  imageGenerationMode === 'single' ? 'active' : ''
+                  imageDialogRenderMode === 'single' ? 'active' : ''
                 }`}
                 onClick={(e) => {
                   e.stopPropagation();
@@ -717,7 +758,7 @@ const TTDDialogComponent = ({
               <button
                 type="button"
                 className={`mode-tab ${
-                  imageGenerationMode === 'batch' ? 'active' : ''
+                  imageDialogRenderMode === 'batch' ? 'active' : ''
                 }`}
                 onClick={(e) => {
                   e.stopPropagation();
@@ -744,7 +785,7 @@ const TTDDialogComponent = ({
         autoMaximize={imageDialogAutoMaximize || isMobile}
       >
         {appState.openDialogTypes.has(DialogType.aiImageGeneration) &&
-          (imageGenerationMode === 'batch' ? (
+          (imageDialogRenderMode === 'batch' ? (
             <Suspense
               fallback={
                 <div className="loading-fallback">
@@ -762,20 +803,13 @@ const TTDDialogComponent = ({
             </Suspense>
           ) : (
             <AIImageGeneration
-              key={
-                imageDialogInitialData?.prefillId ||
-                imageDialogInitialData?.batchId ||
-                'ai-image-dialog'
-              }
-              initialPrompt={aiImageData.initialPrompt}
-              initialImages={aiImageData.initialImages}
+              key={imageDialogSessionKey}
+              initialPrompt={resolvedAiImageData.initialPrompt}
+              initialImages={resolvedAiImageData.initialImages}
               initialKnowledgeContextRefs={
-                aiImageData.initialKnowledgeContextRefs ||
-                imageDialogInitialData?.initialKnowledgeContextRefs ||
-                imageDialogInitialData?.knowledgeContextRefs ||
-                []
+                resolvedAiImageData.initialKnowledgeContextRefs || []
               }
-              selectedElementIds={aiImageData.selectedElementIds}
+              selectedElementIds={resolvedAiImageData.selectedElementIds}
               initialWidth={
                 imageDialogInitialData?.initialWidth ||
                 imageDialogInitialData?.width
@@ -784,13 +818,13 @@ const TTDDialogComponent = ({
                 imageDialogInitialData?.initialHeight ||
                 imageDialogInitialData?.height
               }
-              initialResultUrl={aiImageData.initialResultUrl}
-              initialAspectRatio={aiImageData.initialAspectRatio}
-              targetFrameId={aiImageData.targetFrameId}
-              targetFrameDimensions={aiImageData.targetFrameDimensions}
-              pptSlideImage={aiImageData.pptSlideImage}
-              pptSlidePrompt={aiImageData.pptSlidePrompt}
-              pptReplaceElementId={aiImageData.pptReplaceElementId}
+              initialResultUrl={resolvedAiImageData.initialResultUrl}
+              initialAspectRatio={resolvedAiImageData.initialAspectRatio}
+              targetFrameId={resolvedAiImageData.targetFrameId}
+              targetFrameDimensions={resolvedAiImageData.targetFrameDimensions}
+              pptSlideImage={resolvedAiImageData.pptSlideImage}
+              pptSlidePrompt={resolvedAiImageData.pptSlidePrompt}
+              pptReplaceElementId={resolvedAiImageData.pptReplaceElementId}
               selectedModel={selectedImageModel}
               selectedModelRef={selectedImageModelRef}
               onModelChange={handleImageModelChange}

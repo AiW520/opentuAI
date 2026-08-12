@@ -6,17 +6,17 @@
 
 ## 2. Web 1.0.16 Integration
 
-- [ ] 2.1 Merge the pinned web baseline and retain all non-platform-specific renderer features and fixes.
-- [ ] 2.2 Resolve provider settings, model catalog, endpoint routing, and Seedance 2.0 conflicts.
-- [ ] 2.3 Resolve AI taskbar, request recovery, reference-image, and task lifecycle conflicts.
-- [ ] 2.4 Resolve media library, actual-dimension preview, cache, and local-data clearing conflicts.
-- [ ] 2.5 Preserve the Gemini 3.1 usable image response fix in both web and desktop fetch paths.
+- [x] 2.1 Merge the pinned web baseline and retain all non-platform-specific renderer features and fixes.
+- [x] 2.2 Resolve provider settings, model catalog, endpoint routing, and Seedance 2.0 conflicts.
+- [x] 2.3 Resolve AI taskbar, request recovery, reference-image, and task lifecycle conflicts.
+- [x] 2.4 Resolve media library, actual-dimension preview, cache, and local-data clearing conflicts.
+- [x] 2.5 Preserve the Gemini 3.1 usable image response fix in both web and desktop fetch paths.
 
 ## 3. Desktop Runtime Adaptation
 
-- [ ] 3.1 Keep Service Worker registration disabled in production desktop and provide safe fallbacks for new web calls.
-- [ ] 3.2 Make native durable media the desktop recovery source when browser cache entries are missing.
-- [ ] 3.3 Ensure local-data clearing does not delete native durable media without explicit user intent.
+- [x] 3.1 Keep Service Worker registration disabled in production desktop and provide safe fallbacks for new web calls.
+- [x] 3.2 Make native durable media the desktop recovery source when browser cache entries are missing.
+- [x] 3.3 Ensure local-data clearing does not delete native durable media without explicit user intent.
 - [ ] 3.4 Complete bounded reference-image materialization and remove large durable base64 payloads after submission.
 - [ ] 3.5 Replace large JSON number-array writes with a bounded binary transfer path.
 - [ ] 3.6 Clean up failed native imports and surface local preview failures in the UI.
@@ -32,7 +32,7 @@
 ## 5. Verification
 
 - [x] 5.1 Run OpenSpec strict validation.
-- [ ] 5.2 Install dependencies with the locked package manager and lockfile.
+- [x] 5.2 Install dependencies with the locked package manager and lockfile.
 - [ ] 5.3 Run TypeScript checks, lint, focused Vitest, and the broader relevant test suite.
 - [ ] 5.4 Run web and desktop renderer production builds.
 - [ ] 5.5 Run Rust tests and a Tauri production build where the required toolchain is available.

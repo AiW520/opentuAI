@@ -8,6 +8,7 @@
  */
 
 import localforage from 'localforage';
+import { calculateBlobChecksum } from '@aitu/utils';
 import { generateUUID } from '../utils/runtime-helpers';
 import { ASSET_CONSTANTS } from '../constants/ASSET_CONSTANTS';
 import {
@@ -103,13 +104,6 @@ class AssetStorageService {
   private migrationDone = false;
   private assetCachePromise: Promise<Cache> | null = null;
 
-  private async calculateBlobChecksum(blob: Blob): Promise<string> {
-    const arrayBuffer = await blob.arrayBuffer();
-    const hashBuffer = await crypto.subtle.digest('SHA-256', arrayBuffer);
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-  }
-
   private getFileExtension(mimeType: string): string {
     const normalizedMimeType = mimeType.toLowerCase();
     const extensionByMimeType: Record<string, string> = {
@@ -189,7 +183,7 @@ class AssetStorageService {
         try {
           const cachedBlob = await unifiedCacheService.getCachedBlob(stored.url);
           if (cachedBlob) {
-            const oldHash = await this.calculateBlobChecksum(cachedBlob);
+            const oldHash = await calculateBlobChecksum(cachedBlob);
             
             // 更新旧素材的 contentHash
             stored.contentHash = oldHash;
@@ -452,7 +446,7 @@ class AssetStorageService {
 
           // 迁移旧版数据（包含 blobData 的格式）
           if (this.isLegacyFormat(item)) {
-            const contentHash = await this.calculateBlobChecksum(item.blobData);
+            const contentHash = await calculateBlobChecksum(item.blobData);
             // 生成新的 URL
             const assetUrl = this.generateAssetUrl(contentHash, item.mimeType);
 
@@ -550,7 +544,7 @@ class AssetStorageService {
 
     // 计算内容哈希用于去重
     // console.log('[AssetStorageService] Computing content hash...');
-    const contentHash = await this.calculateBlobChecksum(data.blob);
+    const contentHash = await calculateBlobChecksum(data.blob);
     // console.log('[AssetStorageService] Content hash:', contentHash.substring(0, 16) + '...');
 
     // 检查是否已存在相同内容的素材

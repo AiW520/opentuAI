@@ -22,7 +22,11 @@ import {
   sleep,
   buildProviderContextFromApiConfig,
 } from './utils';
-import { providerTransport } from '../provider-routing/provider-transport';
+import {
+  providerTransport,
+  readProviderResponseJson,
+  readProviderResponseText,
+} from '../provider-routing/provider-transport';
 import { IMAGE_GENERATION_TIMEOUT_MS } from '../../constants/TASK_CONSTANTS';
 import { appendReferenceImageToFormData } from '../reference-image-form-data';
 
@@ -142,7 +146,8 @@ export function parseImageResponse(
 export async function generateImageSync(
   params: ImageGenerationParams,
   config: ImageApiConfig,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  requestId?: string
 ): Promise<ImageGenerationResult> {
   const fetchFn = config.fetchImpl || fetch;
   const model =
@@ -165,17 +170,21 @@ export async function generateImageSync(
       signal,
       timeoutMs: IMAGE_GENERATION_TIMEOUT_MS,
       fetcher: fetchFn,
+      requestId,
+      controlledResponseBody: true,
     }
   );
 
   if (!response.ok) {
-    const errorText = await response.text();
+    const errorText = await readProviderResponseText(response);
     throw new Error(
       `Image generation failed: ${response.status} - ${errorText}`
     );
   }
 
-  const data = await response.json();
+  const data = await readProviderResponseJson<Record<string, unknown>>(
+    response
+  );
   return parseImageResponse(data);
 }
 
@@ -195,8 +204,10 @@ export async function generateImageAsync(
 ): Promise<ImageGenerationResult> {
   const {
     onProgress,
+    onSubmissionAttempt,
     onSubmitted,
     signal,
+    requestId,
     interval = 5000,
     maxAttempts,
   } = options;
@@ -245,16 +256,19 @@ export async function generateImageAsync(
 
   onProgress?.(5);
   // 提交异步任务
+  await onSubmissionAttempt?.();
   const submitResponse = await providerTransport.send(providerContext, {
     path: '/v1/videos',
     method: 'POST',
+    requestId,
     body: formData,
     signal,
     timeoutMs: IMAGE_GENERATION_TIMEOUT_MS,
     fetcher: fetchFn,
+    controlledResponseBody: true,
   });
   if (!submitResponse.ok) {
-    const errorText = await submitResponse.text();
+    const errorText = await readProviderResponseText(submitResponse);
     console.error(
       `[ImageAPI] ❌ 提交失败: ${submitResponse.status} - ${errorText.substring(
         0,
@@ -266,7 +280,9 @@ export async function generateImageAsync(
     );
   }
 
-  const submitData: AsyncTaskSubmitResponse = await submitResponse.json();
+  const submitData = await readProviderResponseJson<AsyncTaskSubmitResponse>(
+    submitResponse
+  );
   if (submitData.status === 'failed') {
     const msg = parseErrorMessage(submitData.error) || '图片生成失败';
     console.error(`[ImageAPI] ❌ 任务失败: ${msg}`);
@@ -280,7 +296,7 @@ export async function generateImageAsync(
   }
 
   // 通知调用方保存 remoteId（用于页面刷新后恢复轮询）
-  onSubmitted?.(taskRemoteId);
+  await onSubmitted?.(taskRemoteId);
   onProgress?.(10);
   // 轮询等待结果
   let progress = submitData.progress ?? 0;
@@ -298,10 +314,11 @@ export async function generateImageAsync(
       signal,
       timeoutMs: IMAGE_GENERATION_TIMEOUT_MS,
       fetcher: fetchFn,
+      controlledResponseBody: true,
     });
 
     if (!queryResponse.ok) {
-      const errorText = await queryResponse.text();
+      const errorText = await readProviderResponseText(queryResponse);
       console.warn(
         `[ImageAPI] ⚠️ 轮询失败: attempt=${attempt + 1}, status=${
           queryResponse.status
@@ -312,7 +329,9 @@ export async function generateImageAsync(
       );
     }
 
-    const statusData = await queryResponse.json();
+    const statusData = await readProviderResponseJson<Record<string, any>>(
+      queryResponse
+    );
     progress = statusData.progress ?? progress;
     onProgress?.(10 + progress * 0.9); // 10% 提交 + 90% 轮询
 
@@ -371,16 +390,19 @@ export async function resumeAsyncImagePolling(
       signal,
       timeoutMs: IMAGE_GENERATION_TIMEOUT_MS,
       fetcher: fetchFn,
+      controlledResponseBody: true,
     });
 
     if (!queryResponse.ok) {
-      const errorText = await queryResponse.text();
+      const errorText = await readProviderResponseText(queryResponse);
       throw new Error(
         `Async image query failed: ${queryResponse.status} - ${errorText}`
       );
     }
 
-    const statusData = await queryResponse.json();
+    const statusData = await readProviderResponseJson<Record<string, any>>(
+      queryResponse
+    );
     const progress = statusData.progress ?? 0;
     onProgress?.(10 + progress * 0.9);
 

@@ -1,9 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const cacheMediaFromBlob = vi.fn();
+const getCachedBlob = vi.fn();
 const cachedUrls = new Set<string>();
 const isCached = vi.fn(async (url: string) => cachedUrls.has(url));
 const calculateBlobChecksum = vi.fn(async () => 'a'.repeat(64));
+const providerSend = vi.fn();
+const blobLike = expect.objectContaining({
+  size: expect.any(Number),
+  type: expect.any(String),
+});
 
 vi.mock('@aitu/utils', async () => {
   const actual = await vi.importActual<typeof import('@aitu/utils')>(
@@ -18,13 +24,64 @@ vi.mock('@aitu/utils', async () => {
 vi.mock('../unified-cache-service', () => ({
   unifiedCacheService: {
     cacheMediaFromBlob,
+    getCachedBlob,
     isCached,
   },
 }));
 
+vi.mock('../provider-routing/provider-transport', () => ({
+  providerTransport: { send: providerSend },
+}));
+
+describe('pollVideoStatus', () => {
+  beforeEach(() => {
+    providerSend.mockReset();
+  });
+
+  it('stops polling after the execution attempt is replaced', async () => {
+    vi.useFakeTimers();
+    try {
+      providerSend.mockResolvedValue(
+        new Response(JSON.stringify({ status: 'processing', progress: 25 }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      );
+      const { pollVideoStatus } = await import('./fallback-utils');
+      let current = true;
+      const polling = pollVideoStatus(
+        'remote-old',
+        {
+          apiKey: 'test-key',
+          baseUrl: 'https://api.example.com',
+        },
+        vi.fn(),
+        undefined,
+        () => current
+      );
+      const rejected = expect(polling).rejects.toMatchObject({
+        name: 'AbortError',
+      });
+
+      for (let turn = 0; turn < 6; turn += 1) {
+        await Promise.resolve();
+      }
+      expect(providerSend).toHaveBeenCalledOnce();
+
+      current = false;
+      await vi.advanceTimersByTimeAsync(5000);
+      await rejected;
+      expect(providerSend).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe('cacheRemoteUrl', () => {
   beforeEach(() => {
     cacheMediaFromBlob.mockReset();
+    getCachedBlob.mockReset().mockResolvedValue(null);
     isCached.mockClear();
     calculateBlobChecksum.mockClear();
     cachedUrls.clear();
@@ -58,12 +115,9 @@ describe('cacheRemoteUrl', () => {
     expect(fetchMock).toHaveBeenCalledWith(
       expect.stringMatching(/^data:image\/png;base64,/)
     );
-    expect(cacheMediaFromBlob).toHaveBeenCalledWith(
-      result,
-      expect.any(Blob),
-      'image',
-      { taskId: 'task-raw-b64' }
-    );
+    expect(cacheMediaFromBlob).toHaveBeenCalledWith(result, blobLike, 'image', {
+      taskId: 'task-raw-b64',
+    });
 
     vi.unstubAllGlobals();
   });
@@ -133,7 +187,7 @@ describe('cacheRemoteUrl', () => {
     });
     expect(cacheMediaFromBlob).toHaveBeenCalledWith(
       remoteUrl,
-      expect.any(Blob),
+      blobLike,
       'audio',
       {
         taskId: 'task-audio',
@@ -167,7 +221,7 @@ describe('cacheRemoteUrl', () => {
     expect(result).toBe(remoteUrl);
     expect(cacheMediaFromBlob).toHaveBeenCalledWith(
       remoteUrl,
-      expect.any(Blob),
+      blobLike,
       'audio',
       {
         taskId: 'asset:d88312b4-5b86-4f11-b9a6-c4162ba07486',
@@ -201,7 +255,7 @@ describe('cacheRemoteUrl', () => {
     expect(result).toBe(remoteUrl);
     expect(cacheMediaFromBlob).toHaveBeenCalledWith(
       remoteUrl,
-      expect.any(Blob),
+      blobLike,
       'image',
       {
         taskId: 'task-audio-cover',
@@ -239,7 +293,7 @@ describe('cacheRemoteUrl', () => {
     expect(result).toBe(remoteUrl);
     expect(cacheMediaFromBlob).toHaveBeenCalledWith(
       remoteUrl,
-      expect.any(Blob),
+      blobLike,
       'image',
       {
         taskId: 'task-cover',
@@ -247,6 +301,244 @@ describe('cacheRemoteUrl', () => {
       }
     );
 
+    vi.unstubAllGlobals();
+  });
+
+  it('returns a stable local URL only when explicitly requested', async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(new Blob(['image-binary'], { type: 'image/png' }), {
+        status: 200,
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { cacheRemoteUrl } = await import('./fallback-utils');
+    const remoteUrl = 'https://cdn.example.com/generated/image.png';
+
+    const result = await cacheRemoteUrl(
+      remoteUrl,
+      'insert-123',
+      'image',
+      'png',
+      undefined,
+      { forceRemoteCache: true, returnLocalCacheUrl: true }
+    );
+
+    expect(result).toBe('/__aitu_cache__/image/insert-123.png');
+    expect(cacheMediaFromBlob).toHaveBeenCalledWith(
+      '/__aitu_cache__/image/insert-123.png',
+      blobLike,
+      'image',
+      {
+        taskId: 'insert-123',
+        source: 'AI_GENERATED',
+      }
+    );
+
+    vi.unstubAllGlobals();
+  });
+
+  it('重试使用新提交 ID 作为缓存键，不复用上次图片', async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation(
+      async (url) =>
+        new Response(new Blob([String(url)], { type: 'image/png' }), {
+          status: 200,
+        })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { cacheRemoteUrl } = await import('./fallback-utils');
+    const first = await cacheRemoteUrl(
+      'https://cdn.example.com/generated/first.png',
+      'task-retry',
+      'image',
+      'png',
+      undefined,
+      {
+        forceRemoteCache: true,
+        returnLocalCacheUrl: true,
+        cacheKey: 'submission-first',
+      }
+    );
+    const retried = await cacheRemoteUrl(
+      'https://cdn.example.com/generated/retried.png',
+      'task-retry',
+      'image',
+      'png',
+      undefined,
+      {
+        forceRemoteCache: true,
+        returnLocalCacheUrl: true,
+        cacheKey: 'submission-retried',
+      }
+    );
+
+    expect(first).toBe('/__aitu_cache__/image/submission-first.png');
+    expect(retried).toBe('/__aitu_cache__/image/submission-retried.png');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    vi.unstubAllGlobals();
+  });
+
+  it('把已缓存的远程图片迁移到任务稳定地址后再返回', async () => {
+    const remoteUrl = 'https://cdn.example.com/generated/cached-image.png';
+    const localUrl = '/__aitu_cache__/image/task-cached.png';
+    cachedUrls.add(remoteUrl);
+    getCachedBlob.mockResolvedValueOnce(
+      new Blob(['cached-image'], { type: 'image/png' })
+    );
+    const fetchMock = vi.fn<typeof fetch>();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { cacheRemoteUrl } = await import('./fallback-utils');
+    const result = await cacheRemoteUrl(
+      remoteUrl,
+      'task-cached',
+      'image',
+      'png',
+      undefined,
+      { forceRemoteCache: true, returnLocalCacheUrl: true }
+    );
+
+    expect(result).toBe(localUrl);
+    expect(getCachedBlob).toHaveBeenCalledWith(remoteUrl);
+    expect(cacheMediaFromBlob).toHaveBeenCalledWith(
+      localUrl,
+      expect.any(Blob),
+      'image',
+      {
+        taskId: 'task-cached',
+        source: 'AI_GENERATED',
+      }
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    vi.unstubAllGlobals();
+  });
+
+  it('强制缓存多张远程图片时顺序处理，避免同时持有多个大 Blob', async () => {
+    let activeFetches = 0;
+    let maxActiveFetches = 0;
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation(async () => {
+      activeFetches += 1;
+      maxActiveFetches = Math.max(maxActiveFetches, activeFetches);
+      await Promise.resolve();
+      activeFetches -= 1;
+      return new Response(new Blob(['image-binary'], { type: 'image/png' }), {
+        status: 200,
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { cacheRemoteUrls } = await import('./fallback-utils');
+    const results = await cacheRemoteUrls(
+      [
+        'https://cdn.example.com/generated/image-1.png',
+        'https://cdn.example.com/generated/image-2.png',
+      ],
+      'task-images',
+      'image',
+      'png',
+      { forceRemoteCache: true, returnLocalCacheUrl: true }
+    );
+
+    expect(maxActiveFetches).toBe(1);
+    expect(results).toEqual([
+      '/__aitu_cache__/image/task-images_0.png',
+      '/__aitu_cache__/image/task-images_1.png',
+    ]);
+
+    vi.unstubAllGlobals();
+  });
+
+  it('passes the recovery abort signal to a remote cache fetch', async () => {
+    const controller = new AbortController();
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(new Blob(['image-binary'], { type: 'image/png' }), {
+        status: 200,
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { cacheRemoteUrl } = await import('./fallback-utils');
+    await cacheRemoteUrl(
+      'https://cdn.example.com/generated/signal.png',
+      'task-signal',
+      'image',
+      'png',
+      undefined,
+      { forceRemoteCache: true, signal: controller.signal }
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://cdn.example.com/generated/signal.png',
+      expect.objectContaining({ signal: controller.signal })
+    );
+    vi.unstubAllGlobals();
+  });
+
+  it('propagates cache-fetch cancellation instead of returning the remote URL', async () => {
+    const controller = new AbortController();
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation(
+      (_url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            'abort',
+            () => reject(init.signal?.reason),
+            { once: true }
+          );
+        })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { cacheRemoteUrl } = await import('./fallback-utils');
+    const cachePromise = cacheRemoteUrl(
+      'https://cdn.example.com/generated/abort.png',
+      'task-abort',
+      'image',
+      'png',
+      undefined,
+      { forceRemoteCache: true, signal: controller.signal }
+    );
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    const stopError = new Error('recovery stopped');
+    controller.abort(stopError);
+
+    await expect(cachePromise).rejects.toBe(stopError);
+    expect(cacheMediaFromBlob).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it('stops sequential remote caching before the next URL after cancellation', async () => {
+    const controller = new AbortController();
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation(
+      (_url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            'abort',
+            () => reject(init.signal?.reason),
+            { once: true }
+          );
+        })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { cacheRemoteUrls } = await import('./fallback-utils');
+    const cachePromise = cacheRemoteUrls(
+      [
+        'https://cdn.example.com/generated/abort-1.png',
+        'https://cdn.example.com/generated/abort-2.png',
+      ],
+      'task-abort-many',
+      'image',
+      'png',
+      { forceRemoteCache: true, signal: controller.signal }
+    );
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    controller.abort(new Error('recovery stopped'));
+
+    await expect(cachePromise).rejects.toThrow('recovery stopped');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     vi.unstubAllGlobals();
   });
 

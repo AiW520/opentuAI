@@ -1040,6 +1040,7 @@ export const GeneratePage: React.FC<GeneratePageProps> = ({
     const characterReferenceImages = getShotCharacterReferenceImages(shot);
     const shotBatchId = `va_${record.id}_shot${shot.id}_first`;
     openDialog(DialogType.aiImageGeneration, {
+      prefillId: shotBatchId,
       initialPrompt: draft?.prompt || prompt,
       batchId: shotBatchId,
       initialAspectRatio: draft?.aspectRatio ?? selectedImageAspectRatio,

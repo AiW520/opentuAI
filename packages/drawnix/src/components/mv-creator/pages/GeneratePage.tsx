@@ -1000,6 +1000,7 @@ export const GeneratePage: React.FC<GeneratePageProps> = ({
     const characterReferenceImages = getShotCharacterReferenceImages(shot);
     const shotBatchId = `mv_${record.id}_shot${shot.id}_first`;
     openDialog(DialogType.aiImageGeneration, {
+      prefillId: shotBatchId,
       initialPrompt: draft?.prompt || prompt,
       initialKnowledgeContextRefs: knowledgeContextRefs,
       batchId: shotBatchId,

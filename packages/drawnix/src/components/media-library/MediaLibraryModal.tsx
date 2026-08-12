@@ -28,6 +28,7 @@ import {
   getNativeFilePath,
   isTauriEnvironment,
 } from '../../utils/desktop-asset-url';
+import { getSupportedImageFileMimeType } from '../../data/blob';
 import './MediaLibraryModal.scss';
 
 function getAssetTypeFromDesktopFile(
@@ -250,7 +251,7 @@ export function MediaLibraryModal({
       // 处理普通媒体文件
       const validFiles: File[] = [];
       for (const file of mediaFiles) {
-        const isImage = file.type.startsWith('image/');
+        const isImage = !!getSupportedImageFileMimeType(file);
         const isVideo = file.type.startsWith('video/');
         const isAudio = file.type.startsWith('audio/');
 
@@ -317,7 +318,7 @@ export function MediaLibraryModal({
       // 上传普通媒体文件
       try {
         for (const file of validFiles) {
-          const isImage = file.type.startsWith('image/');
+          const isImage = !!getSupportedImageFileMimeType(file);
           const isAudio = file.type.startsWith('audio/');
           const type = isImage
             ? AssetType.IMAGE

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ModelVendor, type ModelConfig } from '../../constants/model-config';
 import { fluxImageAdapter } from '../model-adapters/flux-adapter';
 import { gptImageAdapter } from '../model-adapters/gpt-image-adapter';
@@ -12,7 +12,10 @@ import {
 import { seedreamImageAdapter } from '../model-adapters/seedream-adapter';
 import { tuziGPTImageAdapter } from '../model-adapters/tuzi-gpt-image-adapter';
 import type { ImageModelAdapter } from '../model-adapters/types';
-import { inferBindingsForProviderModel } from '../provider-routing';
+import {
+  IMAGE_SUBMISSION_OUTCOME_UNKNOWN_CODE,
+  inferBindingsForProviderModel,
+} from '../provider-routing';
 import type { ProviderProfileSnapshot } from '../provider-routing';
 
 const defaultBasicImageAdapter: ImageModelAdapter = {
@@ -136,6 +139,110 @@ describe('image routing to default registered adapters', () => {
     );
   });
 
+  it('executes legacy versioned Tuzi image bindings without duplicating /v1', async () => {
+    const fetcher = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            data: [
+              {
+                url: 'https://example.com/generated.png',
+                width: 1024,
+                height: 1024,
+              },
+            ],
+          }),
+          {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }
+        )
+    );
+
+    const result = await tuziGPTImageAdapter.generateImage(
+      {
+        baseUrl: 'https://api.tu-zi.com/v1',
+        apiKey: 'test-key',
+        authType: 'bearer',
+        fetcher,
+        binding: {
+          id: 'legacy-versioned-binding',
+          profileId: 'tuzi',
+          modelId: 'gpt-image-2',
+          operation: 'image',
+          protocol: 'openai.images.generations',
+          requestSchema: 'tuzi.image.gpt-generation-json',
+          responseSchema: 'openai.image.data',
+          submitPath: '/v1/images/generations',
+          priority: 320,
+          confidence: 'high',
+          source: 'manual',
+        },
+      },
+      {
+        model: 'gpt-image-2',
+        prompt: 'Draw a clean product photo',
+      }
+    );
+
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher.mock.calls[0]?.[0]).toBe(
+      'https://api.tu-zi.com/v1/images/generations'
+    );
+    expect(result.url).toBe('https://example.com/generated.png');
+  });
+
+  it('executes Tuzi image requests when endpoint selection stores an origin', async () => {
+    const fetcher = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            data: [
+              {
+                url: 'https://example.com/generated.png',
+                width: 1024,
+                height: 1024,
+              },
+            ],
+          }),
+          {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }
+        )
+    );
+
+    await tuziGPTImageAdapter.generateImage(
+      {
+        baseUrl: 'https://api.tu-zi.com',
+        apiKey: 'test-key',
+        authType: 'bearer',
+        fetcher,
+        binding: {
+          id: 'origin-binding',
+          profileId: 'tuzi',
+          modelId: 'gpt-image-2',
+          operation: 'image',
+          protocol: 'openai.images.generations',
+          requestSchema: 'tuzi.image.gpt-generation-json',
+          responseSchema: 'openai.image.data',
+          submitPath: '/images/generations',
+          priority: 320,
+          confidence: 'high',
+          source: 'template',
+        },
+      },
+      {
+        model: 'gpt-image-2',
+        prompt: 'Draw a clean product photo',
+      }
+    );
+
+    expect(fetcher.mock.calls[0]?.[0]).toBe(
+      'https://api.tu-zi.com/v1/images/generations'
+    );
+  });
+
   it('routes Tuzi GPT Image edit compatibility to the dedicated adapter', () => {
     const binding = imageBindingBySchema(
       tuziProfile,
@@ -244,5 +351,93 @@ describe('image routing to default registered adapters', () => {
       const binding = firstImageBinding(tuziProfile, model);
       expect(resolveAdapterForBinding(binding, 'image')?.id).toBe(adapterId);
     });
+  });
+
+  it.each([
+    ['GPT Image', gptImageAdapter],
+    ['Tuzi GPT Image', tuziGPTImageAdapter],
+  ])(
+    'propagates an interrupted %s response as an unknown submission outcome',
+    async (_label, adapter) => {
+      let emittedPartialBody = false;
+      const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              if (!emittedPartialBody) {
+                emittedPartialBody = true;
+                controller.enqueue(new TextEncoder().encode('{"data":['));
+                return;
+              }
+              controller.error(new Error('response stream disconnected'));
+            },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        )
+      );
+
+      await expect(
+        adapter.generateImage(
+          {
+            baseUrl: 'https://api.tu-zi.com/v1',
+            apiKey: 'test-key',
+            authType: 'bearer',
+            operation: 'image',
+            requestId: `interrupted-${adapter.id}`,
+            fetcher,
+            binding: null,
+          },
+          {
+            model: 'gpt-image-2',
+            prompt: 'Draw a clean product photo',
+          }
+        )
+      ).rejects.toMatchObject({
+        code: IMAGE_SUBMISSION_OUTCOME_UNKNOWN_CODE,
+      });
+
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    }
+  );
+
+  it('propagates an interrupted Seedream response as an unknown submission outcome', async () => {
+    let emittedPartialBody = false;
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (!emittedPartialBody) {
+              emittedPartialBody = true;
+              controller.enqueue(new TextEncoder().encode('{"data":['));
+              return;
+            }
+            controller.error(new Error('response stream disconnected'));
+          },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    );
+
+    await expect(
+      seedreamImageAdapter.generateImage(
+        {
+          baseUrl: 'https://api.tu-zi.com/v1',
+          apiKey: 'test-key',
+          authType: 'bearer',
+          operation: 'image',
+          requestId: 'seedream-interrupted-response',
+          fetcher,
+          binding: null,
+        },
+        {
+          model: 'doubao-seedream-5-0-260128',
+          prompt: 'Draw a clean product photo',
+        }
+      )
+    ).rejects.toMatchObject({
+      code: IMAGE_SUBMISSION_OUTCOME_UNKNOWN_CODE,
+    });
+
+    expect(fetcher).toHaveBeenCalledTimes(1);
   });
 });

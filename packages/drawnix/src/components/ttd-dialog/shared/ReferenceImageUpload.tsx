@@ -62,6 +62,8 @@ interface ReferenceImageUploadProps {
   slotLabels?: string[];
   /** Error callback */
   onError?: (error: string | null) => void;
+  /** Additional focus scope allowed to paste images into this uploader */
+  pasteScopeRef?: React.RefObject<HTMLElement>;
 }
 
 export const ReferenceImageUpload: React.FC<ReferenceImageUploadProps> = ({
@@ -74,6 +76,7 @@ export const ReferenceImageUpload: React.FC<ReferenceImageUploadProps> = ({
   label,
   slotLabels,
   onError,
+  pasteScopeRef,
 }) => {
   const [showMediaLibrary, setShowMediaLibrary] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
@@ -140,6 +143,10 @@ export const ReferenceImageUpload: React.FC<ReferenceImageUploadProps> = ({
 
   const assetToReferenceImage = useCallback(
     async (asset: Asset): Promise<ReferenceImage> => {
+      if (asset.type !== AssetType.IMAGE) {
+        throw new Error(`Asset is not an image: ${asset.name}`);
+      }
+
       if (asset.size && asset.size > MAX_IMAGE_SIZE_BYTES) {
         throw new Error(`Asset exceeds 25MB limit: ${asset.name}`);
       }
@@ -149,6 +156,10 @@ export const ReferenceImageUpload: React.FC<ReferenceImageUploadProps> = ({
 
       if (isTauriEnvironment() && (asset.filePath || isDesktopAssetUrl(runtimeUrl))) {
         blob = await assetStorageService.getDesktopAssetBlob(asset);
+      }
+
+      if (!blob) {
+        blob = await unifiedCacheService.getCachedBlob(asset.url);
       }
 
       if (!blob && isVirtualMediaUrl(runtimeUrl)) {
@@ -171,6 +182,14 @@ export const ReferenceImageUpload: React.FC<ReferenceImageUploadProps> = ({
       }
 
       if (!blob) {
+        const canUseRemoteUrl =
+          /^https?:\/\//i.test(asset.url) &&
+          asset.source === AssetSource.AI_GENERATED &&
+          (!asset.mimeType || asset.mimeType.startsWith('image/'));
+        if (canUseRemoteUrl) {
+          return { url: asset.url, name: asset.name };
+        }
+
         const response = await fetch(runtimeUrl, {
           referrerPolicy: 'no-referrer',
         });
@@ -178,6 +197,23 @@ export const ReferenceImageUpload: React.FC<ReferenceImageUploadProps> = ({
           throw new Error(`Failed to load asset: ${response.status}`);
         }
         blob = await response.blob();
+      }
+
+      if (blob.size === 0) {
+        throw new Error(`Asset content is unavailable: ${asset.name}`);
+      }
+
+      const blobMimeType = blob.type.toLowerCase();
+      const assetMimeType = asset.mimeType?.toLowerCase();
+      const mimeType =
+        !blobMimeType || blobMimeType === 'application/octet-stream'
+          ? assetMimeType || blobMimeType
+          : blobMimeType;
+      if (mimeType && !mimeType.startsWith('image/')) {
+        throw new Error(`Asset is not an image: ${asset.name}`);
+      }
+      if (mimeType && blob.type !== mimeType) {
+        blob = blob.slice(0, blob.size, mimeType);
       }
 
       if (blob.size > MAX_IMAGE_SIZE_BYTES) {
@@ -616,7 +652,9 @@ export const ReferenceImageUpload: React.FC<ReferenceImageUploadProps> = ({
         }
 
         setShowMediaLibrary(false);
-        onError?.(null);
+        onError?.(
+          newImages.length === selectedAssets.length ? null : t.loadFailed
+        );
       } catch (error) {
         console.error('[ReferenceImageUpload] Batch selection failed:', error);
         onError?.(t.loadFailed);
@@ -698,10 +736,10 @@ export const ReferenceImageUpload: React.FC<ReferenceImageUploadProps> = ({
       const container = containerRef.current;
       if (!container) return;
 
-      // Only handle paste if focus is within the container or on the document body
-      // (to allow paste when no specific element is focused)
+      // Allow callers to include a sibling input without handling unrelated fields.
       const isContainerFocused =
         container.contains(activeElement) ||
+        pasteScopeRef?.current?.contains(activeElement) ||
         activeElement === document.body ||
         activeElement?.tagName === 'BODY';
 
@@ -731,7 +769,7 @@ export const ReferenceImageUpload: React.FC<ReferenceImageUploadProps> = ({
     return () => {
       document.removeEventListener('paste', handlePaste);
     };
-  }, [disabled, handleFiles]);
+  }, [disabled, handleFiles, pasteScopeRef]);
 
   // Remove image
   const handleRemove = useCallback(

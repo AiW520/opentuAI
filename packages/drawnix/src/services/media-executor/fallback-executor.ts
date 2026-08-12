@@ -24,8 +24,12 @@ import {
   resolveInvocationRoute,
   type ModelRef,
 } from '../../utils/settings-manager';
+import { getDefaultImageModel } from '../../constants/model-config';
 import {
   providerTransport,
+  readProviderResponseJson,
+  readProviderResponseText,
+  isImageSubmissionOutcomeUnknownError,
   resolveInvocationPlanFromRoute,
   type ProviderAuthStrategy,
   type ResolvedProviderContext,
@@ -41,6 +45,13 @@ import {
   callApiWithRetry,
   callGoogleGenerateContentRaw,
 } from '../../utils/gemini-api/apiCalls';
+import {
+  buildManualHttpRequestPayload,
+  buildManualHttpVariables,
+  getManualHttpTemplate,
+  normalizeManualTextResponse,
+  renderTemplate,
+} from '../provider-routing/manual-http-template';
 import type { GeminiMessage as UnifiedGeminiMessage } from '../../utils/gemini-api/types';
 import {
   classifyApiCredentialError,
@@ -74,6 +85,29 @@ import {
   shouldUseStrictTaskInvocationRoute,
 } from '../task-invocation-route';
 
+function isCurrentExecutionAttempt(options?: ExecutionOptions): boolean {
+  return !options?.signal?.aborted && options?.isCurrentAttempt?.() !== false;
+}
+
+function assertCurrentExecutionAttempt(options?: ExecutionOptions): void {
+  if (!isCurrentExecutionAttempt(options)) {
+    const error = new Error('任务执行已被取消或替代');
+    error.name = 'AbortError';
+    throw error;
+  }
+}
+
+function createStorageWriteGuard(options?: ExecutionOptions): {
+  shouldUpdate: () => boolean;
+} {
+  return { shouldUpdate: () => isCurrentExecutionAttempt(options) };
+}
+
+interface VideoPollingAttempt {
+  isCurrent: () => boolean;
+  recoveryController?: AbortController;
+}
+
 function inferAuthTypeFromRoute(
   route: ReturnType<typeof resolveInvocationRoute>
 ): ProviderAuthStrategy {
@@ -99,6 +133,67 @@ function buildProviderContext(config: {
       extraHeaders: config.extraHeaders,
     }
   );
+}
+
+async function readResponseTextPreview(
+  response: Response,
+  limit = 1000
+): Promise<string> {
+  if (!response.body) {
+    try {
+      return (await response.clone().text()).slice(0, limit);
+    } catch {
+      return '';
+    }
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let text = '';
+
+  try {
+    while (text.length < limit) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+    }
+    text += decoder.decode();
+    if (text.length >= limit) {
+      await reader.cancel().catch(() => undefined);
+    }
+  } catch {
+    await reader.cancel().catch(() => undefined);
+  }
+
+  return text.slice(0, limit);
+}
+
+function extractProviderErrorMessage(rawText: string): string {
+  const trimmed = rawText.trim();
+  if (!trimmed) return '';
+
+  try {
+    const parsed = JSON.parse(trimmed) as {
+      message?: string;
+      detail?: string;
+      error?:
+        | string
+        | {
+            message?: string;
+            details?: string;
+          };
+    };
+    if (typeof parsed.error === 'string') return parsed.error;
+    return (
+      parsed.error?.message ||
+      parsed.error?.details ||
+      parsed.message ||
+      parsed.detail ||
+      ''
+    ).trim();
+  } catch {
+    return trimmed.replace(/\s+/g, ' ');
+  }
 }
 
 /** 从 uploadedImages 提取 URL 列表，与 SW ImageHandler 逻辑一致 */
@@ -164,7 +259,23 @@ export class FallbackMediaExecutor implements IMediaExecutor {
    * 正在轮询的任务 ID 集合
    * 用于防止同一个任务被重复轮询（例如 resumePendingTasks 被多次调用时）
    */
-  private pollingTasks = new Set<string>();
+  private pollingTasks = new Map<string, VideoPollingAttempt>();
+
+  cancelPendingTask(taskId: string): void {
+    const pollingAttempt = this.pollingTasks.get(taskId);
+    pollingAttempt?.recoveryController?.abort();
+    if (this.pollingTasks.get(taskId) === pollingAttempt) {
+      this.pollingTasks.delete(taskId);
+    }
+  }
+
+  cancelAllPendingTaskRecoveries(): void {
+    for (const [taskId, pollingAttempt] of this.pollingTasks) {
+      if (pollingAttempt.recoveryController) {
+        this.cancelPendingTask(taskId);
+      }
+    }
+  }
 
   /**
    * 降级执行器始终可用（只要浏览器支持 fetch）
@@ -183,6 +294,7 @@ export class FallbackMediaExecutor implements IMediaExecutor {
   ): Promise<void> {
     const {
       taskId,
+      requestId = taskId,
       prompt,
       model,
       modelRef,
@@ -204,11 +316,26 @@ export class FallbackMediaExecutor implements IMediaExecutor {
     const config = this.getConfig({ imageModel: modelRef || model });
 
     // 更新任务状态为 processing
-    await taskStorageWriter.updateStatus(taskId, 'processing');
+    const activated = await taskStorageWriter.updateStatus(
+      taskId,
+      'processing',
+      requestId,
+      createStorageWriteGuard(options)
+    );
+    if (activated === false) {
+      const staleAttemptError = new Error('图片提交已被取消或替代');
+      staleAttemptError.name = 'AbortError';
+      throw staleAttemptError;
+    }
     options?.onProgress?.({ progress: 0, phase: 'submitting' });
 
     const startTime = Date.now();
-    const modelName = model || config.imageConfig.modelName;
+    const modelName =
+      modelRef?.modelId ||
+      config.imageConfig.binding?.modelId ||
+      config.imageConfig.modelName ||
+      model ||
+      getDefaultImageModel();
 
     // 异步图片模型：使用 /v1/videos 接口（仅当 binding 为 async-image 时）
     const imagePlan = resolveInvocationPlanFromRoute(
@@ -223,6 +350,7 @@ export class FallbackMediaExecutor implements IMediaExecutor {
       return this.generateAsyncImageTask(
         taskId,
         {
+          requestId,
           prompt,
           model: modelName,
           modelRef: modelRef || null,
@@ -252,6 +380,7 @@ export class FallbackMediaExecutor implements IMediaExecutor {
         taskId,
         imageAdapter,
         {
+          requestId,
           prompt,
           model: modelName,
           modelRef: modelRef || null,
@@ -288,7 +417,6 @@ export class FallbackMediaExecutor implements IMediaExecutor {
       ),
       taskId,
     });
-
     try {
       // 处理参考图片：统一转为 base64（API 要求），并行处理提升性能
       let processedImages: string[] | undefined;
@@ -315,6 +443,12 @@ export class FallbackMediaExecutor implements IMediaExecutor {
       options?.onProgress?.({ progress: 10, phase: 'submitting' });
 
       // 直接调用 API
+      const invocationRoute = imagePlan
+        ? createTaskInvocationRouteSnapshot('image', imagePlan.modelRef, {
+            bindingId: imagePlan.binding.id,
+          })
+        : undefined;
+      await options?.onSubmissionAttempt?.(invocationRoute);
       const response = await providerTransport.send(
         buildProviderContext(config.imageConfig),
         {
@@ -326,33 +460,36 @@ export class FallbackMediaExecutor implements IMediaExecutor {
           body: JSON.stringify(requestBody),
           signal: options?.signal,
           timeoutMs: IMAGE_GENERATION_TIMEOUT_MS,
+          requestId,
         }
       );
 
       if (!response.ok) {
         const duration = Date.now() - startTime;
-        const errorBody = await response
-          .text()
-          .catch(
-            () => `HTTP ${response.status} ${response.statusText || 'Error'}`
-          );
+        const errorBody = await readProviderResponseText(response).catch(
+          () => `HTTP ${response.status} ${response.statusText || 'Error'}`
+        );
         failLLMApiLog(logId, {
           httpStatus: response.status,
           duration,
           errorMessage: errorBody.substring(0, 500),
         });
-        throw new Error(
-          `Image generation failed: ${response.status} - ${errorBody.substring(
-            0,
-            200
-          )}`
+        throw Object.assign(
+          new Error(
+            `Image generation failed: ${
+              response.status
+            } - ${errorBody.substring(0, 200)}`
+          ),
+          { httpStatus: response.status }
         );
       }
 
+      const data = await readProviderResponseJson<Record<string, unknown>>(
+        response
+      );
       options?.onProgress?.({ progress: 80, phase: 'downloading' });
-
-      const data = await response.json();
       const result = parseImageResponse(data);
+      assertCurrentExecutionAttempt(options);
       const duration = Date.now() - startTime;
       // 记录成功
       completeLLMApiLog(logId, {
@@ -371,20 +508,41 @@ export class FallbackMediaExecutor implements IMediaExecutor {
         allImgUrls,
         taskId,
         'image',
-        'png'
+        'png',
+        {
+          forceRemoteCache: true,
+          returnLocalCacheUrl: true,
+          cacheKey: requestId,
+        }
       );
+      assertCurrentExecutionAttempt(options);
 
       // 完成任务
-      await taskStorageWriter.completeTask(taskId, {
-        url: cachedImgUrls[0],
-        urls: cachedImgUrls.length > 1 ? cachedImgUrls : undefined,
-        format: 'png',
-        size: 0,
-      });
+      const completed = await taskStorageWriter.completeTask(
+        taskId,
+        {
+          url: cachedImgUrls[0],
+          urls: cachedImgUrls.length > 1 ? cachedImgUrls : undefined,
+          format: 'png',
+          size: 0,
+        },
+        requestId,
+        createStorageWriteGuard(options)
+      );
+      if (completed === false) {
+        const staleAttemptError = new Error('图片提交已被取消或替代');
+        staleAttemptError.name = 'AbortError';
+        throw staleAttemptError;
+      }
     } catch (error: any) {
       const duration = Date.now() - startTime;
       const originalMessage = error.message || 'Image generation failed';
       const friendlyMessage = formatFriendlyError(error, 'image');
+
+      if (options?.isCurrentAttempt?.() === false) {
+        failLLMApiLog(logId, { duration, errorMessage: originalMessage });
+        throw error;
+      }
       console.error(
         '[FallbackMediaExecutor] generateImage failed:',
         originalMessage,
@@ -410,10 +568,18 @@ export class FallbackMediaExecutor implements IMediaExecutor {
         duration,
         errorMessage: originalMessage,
       });
-      await taskStorageWriter.failTask(taskId, {
-        code: 'IMAGE_GENERATION_ERROR',
-        message: friendlyMessage,
-      });
+      if (isImageSubmissionOutcomeUnknownError(error)) {
+        throw error;
+      }
+      await taskStorageWriter.failTask(
+        taskId,
+        {
+          code: 'IMAGE_GENERATION_ERROR',
+          message: friendlyMessage,
+        },
+        requestId,
+        createStorageWriteGuard(options)
+      );
       throw error;
     }
   }
@@ -425,6 +591,7 @@ export class FallbackMediaExecutor implements IMediaExecutor {
   private async generateAsyncImageTask(
     taskId: string,
     params: {
+      requestId?: string;
       prompt: string;
       model: string;
       modelRef?: ImageGenerationParams['modelRef'];
@@ -438,7 +605,7 @@ export class FallbackMediaExecutor implements IMediaExecutor {
     startTime?: number
   ): Promise<void> {
     const logStartTime = startTime || Date.now();
-
+    const submissionRequestId = params.requestId || taskId;
     // 开始记录 LLM API 调用
     const logId = startLLMApiLog({
       endpoint: '/v1/videos (async image)',
@@ -485,6 +652,9 @@ export class FallbackMediaExecutor implements IMediaExecutor {
         },
         config.imageConfig,
         {
+          onSubmissionAttempt: async () => {
+            await options?.onSubmissionAttempt?.();
+          },
           onProgress: (progress) => {
             options?.onProgress?.({
               progress,
@@ -492,19 +662,29 @@ export class FallbackMediaExecutor implements IMediaExecutor {
             });
           },
           onSubmitted: async (remoteId) => {
+            assertCurrentExecutionAttempt(options);
             // 保存 remoteId，用于页面刷新后恢复轮询
-            await taskStorageWriter.updateRemoteId(
+            const updated = await taskStorageWriter.updateRemoteId(
               taskId,
               remoteId,
               createTaskInvocationRouteSnapshot(
                 'image',
                 params.modelRef || params.model
-              )
+              ),
+              submissionRequestId,
+              createStorageWriteGuard(options)
             );
+            if (updated === false) {
+              const staleAttemptError = new Error('图片提交已被取消或替代');
+              staleAttemptError.name = 'AbortError';
+              throw staleAttemptError;
+            }
           },
           signal: options?.signal,
+          requestId: submissionRequestId,
         }
       );
+      assertCurrentExecutionAttempt(options);
 
       const duration = Date.now() - logStartTime;
 
@@ -527,22 +707,41 @@ export class FallbackMediaExecutor implements IMediaExecutor {
         result.format,
         undefined,
         {
+          forceRemoteCache: true,
+          returnLocalCacheUrl: true,
+          cacheKey: submissionRequestId,
           extraMetadata: params.assetMetadata
             ? { ...params.assetMetadata }
             : undefined,
         }
       );
+      assertCurrentExecutionAttempt(options);
 
       // 完成任务
-      await taskStorageWriter.completeTask(taskId, {
-        url: cachedAsyncUrl,
-        format: result.format,
-        size: 0,
-      });
+      const completed = await taskStorageWriter.completeTask(
+        taskId,
+        {
+          url: cachedAsyncUrl,
+          format: result.format,
+          size: 0,
+        },
+        submissionRequestId,
+        createStorageWriteGuard(options)
+      );
+      if (completed === false) {
+        const staleAttemptError = new Error('图片提交已被取消或替代');
+        staleAttemptError.name = 'AbortError';
+        throw staleAttemptError;
+      }
     } catch (error: any) {
       const duration = Date.now() - logStartTime;
       const originalMessage = error.message || 'Async image generation failed';
       const friendlyMessage = formatFriendlyError(error, 'async_image');
+
+      if (options?.isCurrentAttempt?.() === false) {
+        failLLMApiLog(logId, { duration, errorMessage: originalMessage });
+        throw error;
+      }
 
       // 检测认证错误，触发设置弹窗
       const credentialErrorKind = classifyApiCredentialError(error);
@@ -558,10 +757,15 @@ export class FallbackMediaExecutor implements IMediaExecutor {
         duration,
         errorMessage: originalMessage,
       });
-      await taskStorageWriter.failTask(taskId, {
-        code: 'ASYNC_IMAGE_GENERATION_ERROR',
-        message: friendlyMessage,
-      });
+      await taskStorageWriter.failTask(
+        taskId,
+        {
+          code: 'ASYNC_IMAGE_GENERATION_ERROR',
+          message: friendlyMessage,
+        },
+        submissionRequestId,
+        createStorageWriteGuard(options)
+      );
       throw error;
     }
   }
@@ -593,7 +797,14 @@ export class FallbackMediaExecutor implements IMediaExecutor {
     const shouldSkipSeconds = durationEncodedInModel(model);
     const secondsToSend = shouldSkipSeconds ? undefined : duration ?? '8';
 
-    await taskStorageWriter.updateStatus(taskId, 'processing');
+    assertCurrentExecutionAttempt(options);
+    await taskStorageWriter.updateStatus(
+      taskId,
+      'processing',
+      undefined,
+      createStorageWriteGuard(options)
+    );
+    assertCurrentExecutionAttempt(options);
     options?.onProgress?.({ progress: 0, phase: 'submitting' });
 
     // 专用 adapter 路由（kling 等非 gemini 模型）
@@ -663,6 +874,7 @@ export class FallbackMediaExecutor implements IMediaExecutor {
           })
         );
       }
+      assertCurrentExecutionAttempt(options);
 
       const videoApiConfig = {
         ...config.videoConfig,
@@ -681,6 +893,7 @@ export class FallbackMediaExecutor implements IMediaExecutor {
         videoApiConfig,
         options?.signal
       );
+      assertCurrentExecutionAttempt(options);
 
       if (!videoId) {
         const elapsedTime = Date.now() - startTime;
@@ -698,18 +911,33 @@ export class FallbackMediaExecutor implements IMediaExecutor {
       });
 
       // 保存 remoteId，用于页面刷新后恢复轮询
-      await taskStorageWriter.updateRemoteId(taskId, videoId, invocationRoute);
+      await taskStorageWriter.updateRemoteId(
+        taskId,
+        videoId,
+        invocationRoute,
+        undefined,
+        createStorageWriteGuard(options)
+      );
+      assertCurrentExecutionAttempt(options);
 
       options?.onProgress?.({ progress: 10, phase: 'polling' });
 
       // 轮询等待视频完成
-      if (!this.pollingTasks.has(taskId)) {
-        this.pollingTasks.add(taskId);
+      const isCurrentTaskAttempt = () =>
+        !options?.signal?.aborted && options?.isCurrentAttempt?.() !== false;
+      const currentPollingAttempt = this.pollingTasks.get(taskId);
+      if (!currentPollingAttempt?.isCurrent()) {
+        const isCurrentPollingAttempt = () =>
+          this.pollingTasks.get(taskId)?.isCurrent ===
+            isCurrentPollingAttempt && isCurrentTaskAttempt();
+        const pollingAttempt = { isCurrent: isCurrentPollingAttempt };
+        this.pollingTasks.set(taskId, pollingAttempt);
         try {
           const result = await pollVideoStatus(
             videoId,
             config.videoConfig,
             (progress) => {
+              if (!isCurrentPollingAttempt()) return;
               // progress 是 0-1 范围（来自 pollVideoStatus 的 progress/100）
               // 映射到 10-90 范围：10 + (0~1) * 80 = 10~90
               options?.onProgress?.({
@@ -717,8 +945,10 @@ export class FallbackMediaExecutor implements IMediaExecutor {
                 phase: 'polling',
               });
             },
-            options?.signal
+            options?.signal,
+            isCurrentPollingAttempt
           );
+          assertCurrentExecutionAttempt(options);
 
           const elapsedTime = Date.now() - startTime;
 
@@ -741,20 +971,30 @@ export class FallbackMediaExecutor implements IMediaExecutor {
             'video',
             'mp4'
           );
+          assertCurrentExecutionAttempt(options);
 
           // 完成任务
-          await taskStorageWriter.completeTask(taskId, {
-            url: cachedVidUrl,
-            format: 'mp4',
-            size: 0,
-            duration: duration ? parseInt(duration, 10) : undefined,
-          });
+          await taskStorageWriter.completeTask(
+            taskId,
+            {
+              url: cachedVidUrl,
+              format: 'mp4',
+              size: 0,
+              duration: duration ? parseInt(duration, 10) : undefined,
+            },
+            undefined,
+            createStorageWriteGuard(options)
+          );
         } finally {
-          this.pollingTasks.delete(taskId);
+          if (this.pollingTasks.get(taskId) === pollingAttempt) {
+            this.pollingTasks.delete(taskId);
+          }
         }
-      } else {
       }
     } catch (error: any) {
+      if (options?.signal?.aborted || options?.isCurrentAttempt?.() === false) {
+        return;
+      }
       const elapsedTime = Date.now() - startTime;
       const originalMessage = error.message || 'Video generation failed';
       const friendlyMessage = formatFriendlyError(error, 'video');
@@ -773,10 +1013,15 @@ export class FallbackMediaExecutor implements IMediaExecutor {
         duration: elapsedTime,
         errorMessage: originalMessage,
       });
-      await taskStorageWriter.failTask(taskId, {
-        code: error.code || 'VIDEO_GENERATION_ERROR',
-        message: friendlyMessage,
-      });
+      await taskStorageWriter.failTask(
+        taskId,
+        {
+          code: error.code || 'VIDEO_GENERATION_ERROR',
+          message: friendlyMessage,
+        },
+        undefined,
+        createStorageWriteGuard(options)
+      );
       throw error;
     }
   }
@@ -1003,77 +1248,194 @@ export class FallbackMediaExecutor implements IMediaExecutor {
     };
 
     try {
+      assertCurrentExecutionAttempt(options);
       if (taskId) {
-        await taskStorageWriter.updateStatus(taskId, 'processing');
+        await taskStorageWriter.updateStatus(
+          taskId,
+          'processing',
+          undefined,
+          createStorageWriteGuard(options)
+        );
       }
+      assertCurrentExecutionAttempt(options);
       options?.onProgress?.({ progress: 30, phase: 'submitting' });
       if (taskId) {
-        await taskStorageWriter.updateProgress(taskId, 30, 'submitting');
+        await taskStorageWriter.updateProgress(
+          taskId,
+          30,
+          'submitting',
+          undefined,
+          createStorageWriteGuard(options)
+        );
       }
+      assertCurrentExecutionAttempt(options);
 
-      const data =
-        config.textConfig.protocol === 'google.generateContent'
-          ? await callGoogleGenerateContentRaw(config.textConfig, messages, {
-              stream: false,
+      const manualHttpTemplate = getManualHttpTemplate(
+        config.textConfig.binding?.metadata
+      );
+      const manualVariables = manualHttpTemplate
+        ? buildManualHttpVariables({
+            model: modelName,
+            modelRef: config.textConfig.binding?.modelId
+              ? {
+                  profileId: config.textConfig.binding.profileId,
+                  modelId: config.textConfig.binding.modelId,
+                }
+              : null,
+            prompt: normalizedPrompt,
+            messages,
+            images: referenceImages,
+            params: extraParams,
+          })
+        : null;
+      const manualPayload =
+        manualHttpTemplate && manualVariables
+          ? await buildManualHttpRequestPayload(
+              manualHttpTemplate,
+              manualVariables,
+              undefined,
+              options?.signal
+            )
+          : null;
+      const data = manualHttpTemplate
+        ? await providerTransport
+            .send(buildProviderContext(config.textConfig), {
+              path: renderTemplate(
+                config.textConfig.binding?.submitPath || '/chat/completions',
+                manualVariables || {}
+              ) as string,
+              baseUrlStrategy: config.textConfig.binding?.baseUrlStrategy,
+              method:
+                manualHttpTemplate.method ||
+                (manualPayload?.body === undefined ? 'GET' : 'POST'),
+              headers: {
+                ...(manualPayload?.contentType
+                  ? { 'Content-Type': manualPayload.contentType }
+                  : {}),
+                ...(!manualPayload?.contentType &&
+                manualPayload?.body !== undefined &&
+                !(manualPayload.body instanceof FormData)
+                  ? { 'Content-Type': 'application/json' }
+                  : {}),
+                ...(renderTemplate(
+                  manualHttpTemplate.headers || {},
+                  manualVariables || {}
+                ) as Record<string, string>),
+              },
+              body: manualPayload?.body,
               signal: options?.signal,
-              generationConfig: {
+            })
+            .then(async (response) => {
+              if (!response.ok) {
+                const rawError = await readResponseTextPreview(response);
+                const providerMessage = extractProviderErrorMessage(rawError);
+                throw new Error(
+                  `HTTP ${response.status}: ${
+                    providerMessage ||
+                    response.statusText ||
+                    'Text generation failed'
+                  }`
+                );
+              }
+              const rawText = await response.text();
+              let payload: unknown = rawText;
+              if (rawText.trim()) {
+                try {
+                  payload = JSON.parse(rawText);
+                } catch {
+                  payload = rawText;
+                }
+              }
+              return normalizeManualTextResponse(
+                payload,
+                manualHttpTemplate.responsePaths
+              );
+            })
+        : config.textConfig.protocol === 'google.generateContent'
+        ? await callGoogleGenerateContentRaw(config.textConfig, messages, {
+            stream: false,
+            signal: options?.signal,
+            generationConfig: {
+              ...(toNumber(extraParams?.temperature) !== undefined
+                ? { temperature: toNumber(extraParams?.temperature) }
+                : {}),
+              ...(toNumber(extraParams?.top_p) !== undefined
+                ? { topP: toNumber(extraParams?.top_p) }
+                : {}),
+              ...(toNumber(extraParams?.max_tokens) !== undefined
+                ? { maxOutputTokens: toNumber(extraParams?.max_tokens) }
+                : {}),
+              ...(typeof extraParams?.response_mime_type === 'string' &&
+              extraParams.response_mime_type.trim()
+                ? {
+                    responseMimeType: extraParams.response_mime_type.trim(),
+                  }
+                : {}),
+            },
+          })
+        : await providerTransport
+            .send(buildProviderContext(config.textConfig), {
+              path:
+                config.textConfig.binding?.submitPath || '/chat/completions',
+              baseUrlStrategy: config.textConfig.binding?.baseUrlStrategy,
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                model: modelName,
+                messages,
+                stream: false,
                 ...(toNumber(extraParams?.temperature) !== undefined
                   ? { temperature: toNumber(extraParams?.temperature) }
                   : {}),
                 ...(toNumber(extraParams?.top_p) !== undefined
-                  ? { topP: toNumber(extraParams?.top_p) }
+                  ? { top_p: toNumber(extraParams?.top_p) }
                   : {}),
                 ...(toNumber(extraParams?.max_tokens) !== undefined
-                  ? { maxOutputTokens: toNumber(extraParams?.max_tokens) }
+                  ? { max_tokens: toNumber(extraParams?.max_tokens) }
                   : {}),
-              },
+                ...(typeof extraParams?.response_format === 'object'
+                  ? { response_format: extraParams.response_format }
+                  : {}),
+              }),
+              signal: options?.signal,
             })
-          : await providerTransport
-              .send(buildProviderContext(config.textConfig), {
-                path: '/chat/completions',
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                  model: modelName,
-                  messages,
-                  stream: false,
-                  ...(toNumber(extraParams?.temperature) !== undefined
-                    ? { temperature: toNumber(extraParams?.temperature) }
-                    : {}),
-                  ...(toNumber(extraParams?.top_p) !== undefined
-                    ? { top_p: toNumber(extraParams?.top_p) }
-                    : {}),
-                  ...(toNumber(extraParams?.max_tokens) !== undefined
-                    ? { max_tokens: toNumber(extraParams?.max_tokens) }
-                    : {}),
-                }),
-                signal: options?.signal,
-              })
-              .then(async (response) => {
-                if (!response.ok) {
-                  throw new Error(
-                    `HTTP ${response.status}: ${
-                      response.statusText || 'Text generation failed'
-                    }`
-                  );
-                }
-                return response.json();
-              });
+            .then(async (response) => {
+              if (!response.ok) {
+                const rawError = await readResponseTextPreview(response);
+                const providerMessage = extractProviderErrorMessage(rawError);
+                throw new Error(
+                  `HTTP ${response.status}: ${
+                    providerMessage ||
+                    response.statusText ||
+                    'Text generation failed'
+                  }`
+                );
+              }
+              return response.json();
+            });
+      assertCurrentExecutionAttempt(options);
 
       const fullResponse = data.choices?.[0]?.message?.content || '';
       options?.onProgress?.({ progress: 100 });
+      assertCurrentExecutionAttempt(options);
       if (taskId) {
-        await taskStorageWriter.completeTask(taskId, {
-          url: '',
-          format: 'md',
-          size: fullResponse.length,
-          resultKind: 'chat',
-          title: prompt.slice(0, 80),
-          chatResponse: fullResponse,
-        });
+        await taskStorageWriter.completeTask(
+          taskId,
+          {
+            url: '',
+            format: 'md',
+            size: fullResponse.length,
+            resultKind: 'chat',
+            title: prompt.slice(0, 80),
+            chatResponse: fullResponse,
+          },
+          undefined,
+          createStorageWriteGuard(options)
+        );
       }
+      assertCurrentExecutionAttempt(options);
       completeLLMApiLog(logId, {
         httpStatus: 200,
         duration: Date.now() - startTime,
@@ -1086,12 +1448,20 @@ export class FallbackMediaExecutor implements IMediaExecutor {
         content: fullResponse,
       };
     } catch (error: any) {
+      if (options?.signal?.aborted || options?.isCurrentAttempt?.() === false) {
+        throw error;
+      }
       if (taskId) {
         const friendlyMessage = formatFriendlyError(error, 'text');
-        await taskStorageWriter.failTask(taskId, {
-          code: 'TEXT_GENERATION_FAILED',
-          message: friendlyMessage,
-        });
+        await taskStorageWriter.failTask(
+          taskId,
+          {
+            code: 'TEXT_GENERATION_FAILED',
+            message: friendlyMessage,
+          },
+          undefined,
+          createStorageWriteGuard(options)
+        );
       }
       failLLMApiLog(logId, {
         duration: Date.now() - startTime,
@@ -1114,7 +1484,8 @@ export class FallbackMediaExecutor implements IMediaExecutor {
       status: TaskStatus,
       updates?: Partial<Task>
     ) => void,
-    tasksFromMemory?: Task[]
+    tasksFromMemory?: Task[],
+    createTaskExecutionGuard?: (taskId: string) => () => boolean
   ): Promise<void> {
     try {
       // 优先使用内存中的任务列表，避免 useTaskStorage 的 fire-and-forget persistTask
@@ -1162,7 +1533,13 @@ export class FallbackMediaExecutor implements IMediaExecutor {
       }
       // 并行恢复
       await Promise.all(
-        videoTasks.map((task) => this.resumeVideoTask(task, onTaskUpdate))
+        videoTasks.map((task) =>
+          this.resumeVideoTask(
+            task,
+            onTaskUpdate,
+            createTaskExecutionGuard?.(task.id)
+          )
+        )
       );
     } catch (error) {
       console.error(
@@ -1181,30 +1558,46 @@ export class FallbackMediaExecutor implements IMediaExecutor {
       taskId: string,
       status: TaskStatus,
       updates?: Partial<Task>
-    ) => void
+    ) => void,
+    isTaskExecutionCurrent: () => boolean = () => true
   ): Promise<void> {
     // 如果任务已经在轮询中，直接跳过
-    if (this.pollingTasks.has(task.id)) {
+    const currentPollingAttempt = this.pollingTasks.get(task.id);
+    if (currentPollingAttempt?.isCurrent()) {
       return;
     }
+    if (!isTaskExecutionCurrent()) return;
 
-    if (shouldUseStrictTaskInvocationRoute(task)) {
-      assertTaskInvocationRouteAvailable('video', task);
-    }
-    const routeModel = resolveLegacyTaskInvocationRouteModel('video', task);
-    const config = this.getConfig({ videoModel: routeModel });
-    config.videoConfig.params = (task.params as any).params;
+    currentPollingAttempt?.recoveryController?.abort();
+
     const videoId = task.remoteId!;
+    const recoveryController = new AbortController();
 
     // 标记为正在轮询
-    this.pollingTasks.add(task.id);
+    const isCurrentPollingAttempt = () =>
+      this.pollingTasks.get(task.id)?.isCurrent === isCurrentPollingAttempt &&
+      !recoveryController.signal.aborted &&
+      isTaskExecutionCurrent();
+    const pollingAttempt = {
+      isCurrent: isCurrentPollingAttempt,
+      recoveryController,
+    };
+    this.pollingTasks.set(task.id, pollingAttempt);
 
     try {
+      if (shouldUseStrictTaskInvocationRoute(task)) {
+        assertTaskInvocationRouteAvailable('video', task);
+      }
+      const routeModel = resolveLegacyTaskInvocationRouteModel('video', task);
+      const config = this.getConfig({ videoModel: routeModel });
+      config.videoConfig.params = (task.params as any).params;
+
       // 重新开始轮询
       const result = await pollVideoStatus(
         videoId,
         config.videoConfig,
         (progress) => {
+          if (!isCurrentPollingAttempt()) return;
           // 这里的 progress 是 0-1
           // 视频生成中，polling 阶段通常对应 10%-90%
           const mappedProgress = 10 + progress * 80;
@@ -1216,14 +1609,21 @@ export class FallbackMediaExecutor implements IMediaExecutor {
           } else {
             // taskStorageWriter.updateStatus 会写入 storage
             taskStorageWriter
-              .updateStatus(task.id, TaskStatus.PROCESSING)
+              .updateStatus(task.id, TaskStatus.PROCESSING, undefined, {
+                shouldUpdate: isCurrentPollingAttempt,
+              })
               .catch(() => undefined);
             taskStorageWriter
-              .updateProgress(task.id, mappedProgress)
+              .updateProgress(task.id, mappedProgress, undefined, undefined, {
+                shouldUpdate: isCurrentPollingAttempt,
+              })
               .catch(() => undefined);
           }
-        }
+        },
+        recoveryController.signal,
+        isCurrentPollingAttempt
       );
+      if (!isCurrentPollingAttempt()) return;
 
       // 缓存远程 URL
       const cachedVidUrl = await cacheRemoteUrl(
@@ -1232,6 +1632,7 @@ export class FallbackMediaExecutor implements IMediaExecutor {
         'video',
         'mp4'
       );
+      if (!isCurrentPollingAttempt()) return;
 
       const duration = task.params.duration as string | undefined;
 
@@ -1242,18 +1643,22 @@ export class FallbackMediaExecutor implements IMediaExecutor {
         duration: duration ? parseInt(duration, 10) : undefined,
       };
 
-      // 始终先写入 IndexedDB，确保持久化
-      await taskStorageWriter.completeTask(task.id, completionResult);
-
-      // 再通知内存状态同步
       if (onTaskUpdate) {
         onTaskUpdate(task.id, TaskStatus.COMPLETED, {
           result: completionResult,
           progress: 100,
           completedAt: Date.now(),
         });
+      } else {
+        await taskStorageWriter.completeTask(
+          task.id,
+          completionResult,
+          undefined,
+          { shouldUpdate: isCurrentPollingAttempt }
+        );
       }
     } catch (error: any) {
+      if (!isCurrentPollingAttempt()) return;
       console.error(
         `[FallbackMediaExecutor] Failed to resume task ${task.id}:`,
         error
@@ -1264,22 +1669,23 @@ export class FallbackMediaExecutor implements IMediaExecutor {
         message: error.message || 'Failed to resume task',
       };
 
-      // 始终先写入 IndexedDB，确保持久化
-      await taskStorageWriter
-        .failTask(task.id, errorInfo)
-        .catch(() => undefined);
-
-      // 再通知内存状态同步
       if (onTaskUpdate) {
         onTaskUpdate(task.id, TaskStatus.FAILED, { error: errorInfo });
       } else {
+        await taskStorageWriter
+          .failTask(task.id, errorInfo, undefined, {
+            shouldUpdate: isCurrentPollingAttempt,
+          })
+          .catch(() => undefined);
         console.warn(
           `[FallbackMediaExecutor] No onTaskUpdate callback for failed task ${task.id}, UI won't update`
         );
       }
     } finally {
       // 无论成功还是失败，都移除标记
-      this.pollingTasks.delete(task.id);
+      if (this.pollingTasks.get(task.id) === pollingAttempt) {
+        this.pollingTasks.delete(task.id);
+      }
     }
   }
 

@@ -36,6 +36,11 @@ import {
   insertAudioFromUrl,
 } from '../../data/audio';
 import { executeCanvasInsertion } from '../../services/canvas-operations';
+import {
+  getImageTaskResultDimensions,
+  resolveImageTaskInsertionDimensions,
+} from '../../utils/task-utils';
+import { bindImageTaskToCanvasInsertion } from '../../utils/canvas-media-preview';
 import { normalizeImageDataUrl } from '@aitu/utils';
 import {
   buildTaskDownloadItems,
@@ -579,6 +584,7 @@ export const TaskQueuePanel: React.FC<TaskQueuePanelProps> = ({
         const promptLabel =
           (task.params.prompt || '').slice(0, 20) || undefined;
         await executeCanvasInsertion({
+          board,
           items: [
             {
               type: 'text',
@@ -603,9 +609,20 @@ export const TaskQueuePanel: React.FC<TaskQueuePanelProps> = ({
         const urls = taskResult.urls?.length
           ? taskResult.urls
           : [taskResult.url];
-        for (const url of urls) {
-          await insertImageFromUrl(board, normalizeImageDataUrl(url));
+        const insertionResult = await executeCanvasInsertion({
+          board,
+          items: urls.map((url) => ({
+            type: 'image',
+            content: normalizeImageDataUrl(url),
+            groupId: urls.length > 1 ? `task-image-${task.id}` : undefined,
+            dimensions: resolveImageTaskInsertionDimensions(task),
+            waitForImageLoad: true,
+          })),
+        });
+        if (!insertionResult.success) {
+          throw new Error(insertionResult.error || '图片插入失败');
         }
+        bindImageTaskToCanvasInsertion(board, insertionResult, task.id);
         MessagePlugin.success(
           urls.length > 1 ? '多图已插入到白板' : '图片已插入到白板'
         );
@@ -624,6 +641,7 @@ export const TaskQueuePanel: React.FC<TaskQueuePanelProps> = ({
             (task.params.prompt || '').slice(0, 20) ||
             undefined;
           await executeCanvasInsertion({
+            board,
             items: [
               {
                 type: 'text',
@@ -671,6 +689,7 @@ export const TaskQueuePanel: React.FC<TaskQueuePanelProps> = ({
           await insertAudioFromUrl(board, urls[0], baseMetadata);
         } else {
           await executeCanvasInsertion({
+            board,
             items: urls.map((audioUrl, index) => ({
               type: 'audio',
               content: audioUrl,
@@ -710,6 +729,7 @@ export const TaskQueuePanel: React.FC<TaskQueuePanelProps> = ({
         const promptLabel =
           (task.params.prompt || '').slice(0, 20) || undefined;
         await executeCanvasInsertion({
+          board,
           items: [
             {
               type: 'text',
@@ -724,8 +744,9 @@ export const TaskQueuePanel: React.FC<TaskQueuePanelProps> = ({
       onTaskAction?.('insert', taskId);
     } catch (error) {
       console.error('Failed to insert to board:', error);
+      const message = error instanceof Error ? error.message : '未知错误';
       MessagePlugin.error(
-        `插入失败: ${error instanceof Error ? error.message : '未知错误'}`
+        message.startsWith('插入失败') ? message : `插入失败: ${message}`
       );
     }
   };
@@ -892,6 +913,7 @@ export const TaskQueuePanel: React.FC<TaskQueuePanelProps> = ({
           task.type === TaskType.VIDEO
             ? ('video' as const)
             : ('image' as const);
+        const dimensions = getImageTaskResultDimensions(task);
 
         for (let i = 0; i < urls.length; i++) {
           const normalizedUrl =
@@ -900,6 +922,8 @@ export const TaskQueuePanel: React.FC<TaskQueuePanelProps> = ({
             id: urls.length > 1 ? `${task.id}-${i}` : task.id,
             url: normalizedUrl,
             type: mediaType,
+            width: dimensions?.width,
+            height: dimensions?.height,
             title:
               urls.length > 1 ? `${title} (${i + 1}/${urls.length})` : title,
           });

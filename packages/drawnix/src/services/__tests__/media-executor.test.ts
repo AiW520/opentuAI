@@ -18,12 +18,15 @@ import type {
   ImageModelAdapter,
   VideoModelAdapter,
 } from '../model-adapters/types';
+import { TaskStatus, TaskType, type Task } from '../../types/task.types';
 
 describe('Media Executor Module', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.doUnmock('../media-executor/task-storage-writer');
     vi.doUnmock('../media-executor/fallback-adapter-routes');
+    vi.doUnmock('../media-executor/fallback-utils');
+    vi.doUnmock('../media-api');
     vi.doUnmock('../../utils/settings-manager');
     vi.doUnmock('../sw-channel/client');
     vi.doUnmock('../task-storage-reader');
@@ -32,6 +35,7 @@ describe('Media Executor Module', () => {
     vi.doUnmock('../../utils/api-auth-error-event');
     vi.doUnmock('../model-adapters');
     vi.doUnmock('../provider-routing');
+    vi.doUnmock('../task-invocation-route');
   });
 
   describe('IMediaExecutor Interface', () => {
@@ -185,6 +189,23 @@ describe('Media Executor Module', () => {
     }, 15000);
 
     it('passes GPT Image edit schema through fallback adapter routes', async () => {
+      const actualInvocationRoute = {
+        operation: 'image' as const,
+        providerProfileId: 'tuzi-profile',
+        modelId: 'gpt-image-2',
+        binding: {
+          id: 'tuzi-image-edit',
+          protocol: 'openai.images.edits',
+          submitPath: '/images/edits',
+          baseUrlStrategy: 'ensure-v1' as const,
+        },
+      };
+      const createTaskInvocationRouteSnapshot = vi.fn(
+        () => actualInvocationRoute
+      );
+      vi.doMock('../task-invocation-route', () => ({
+        createTaskInvocationRouteSnapshot,
+      }));
       vi.doMock('../media-executor/llm-api-logger', () => ({
         startLLMApiLog: vi.fn(() => 'log-id'),
         completeLLMApiLog: vi.fn(),
@@ -223,6 +244,8 @@ describe('Media Executor Module', () => {
             apiKey: 'test-key',
             authType: 'bearer',
             binding: {
+              id: 'tuzi-image-edit',
+              protocol: 'openai.images.edits',
               requestSchema: 'openai.image.gpt-edit-form',
               submitPath: '/images/edits',
             },
@@ -238,7 +261,8 @@ describe('Media Executor Module', () => {
         id: 'gpt-image-adapter',
         label: 'GPT Image',
         kind: 'image',
-        async generateImage() {
+        async generateImage(context) {
+          await context.onSubmissionAttempt?.();
           return {
             url: 'https://example.com/out.png',
             format: 'png',
@@ -246,15 +270,21 @@ describe('Media Executor Module', () => {
         },
       };
       const generateSpy = vi.spyOn(adapter, 'generateImage');
+      const onSubmissionAttempt = vi.fn();
 
-      await executeImageViaAdapter('task-1', adapter, {
-        prompt: 'Edit this',
-        model: 'gpt-image-2',
-        referenceImages: ['data:image/png;base64,source'],
-        generationMode: 'image_edit',
-        maskImage: 'data:image/png;base64,mask',
-        outputFormat: 'png',
-      });
+      await executeImageViaAdapter(
+        'task-1',
+        adapter,
+        {
+          prompt: 'Edit this',
+          model: 'gpt-image-2',
+          referenceImages: ['data:image/png;base64,source'],
+          generationMode: 'image_edit',
+          maskImage: 'data:image/png;base64,mask',
+          outputFormat: 'png',
+        },
+        { onSubmissionAttempt }
+      );
 
       expect(modelAdapters.getAdapterContextFromSettings).toHaveBeenCalledWith(
         'image',
@@ -267,7 +297,9 @@ describe('Media Executor Module', () => {
         }
       );
       expect(generateSpy).toHaveBeenCalledWith(
-        expect.any(Object),
+        expect.objectContaining({
+          requestId: 'task-1',
+        }),
         expect.objectContaining({
           generationMode: 'image_edit',
           referenceImages: ['data:image/png;base64,abc'],
@@ -275,6 +307,315 @@ describe('Media Executor Module', () => {
           outputFormat: 'png',
         })
       );
+      expect(createTaskInvocationRouteSnapshot).toHaveBeenCalledWith(
+        'image',
+        'gpt-image-2',
+        { bindingId: 'tuzi-image-edit' }
+      );
+      expect(onSubmissionAttempt).toHaveBeenCalledWith(actualInvocationRoute);
+    }, 15000);
+
+    it('passes remote references through Tuzi JSON image requests without browser fetch', async () => {
+      const getImageForAI = vi.fn();
+      vi.doMock('../media-executor/llm-api-logger', () => ({
+        startLLMApiLog: vi.fn(() => 'log-id'),
+        completeLLMApiLog: vi.fn(),
+        failLLMApiLog: vi.fn(),
+      }));
+      vi.doMock('../media-executor/task-storage-writer', () => ({
+        taskStorageWriter: {
+          completeTask: vi.fn(async () => true),
+          failTask: vi.fn(async () => {}),
+        },
+      }));
+      vi.doMock('../unified-cache-service', () => ({
+        unifiedCacheService: {
+          getImageForAI,
+          isCached: vi.fn(async () => false),
+          cacheMediaFromBlob: vi.fn(async () => undefined),
+        },
+      }));
+      vi.doMock('../../utils/api-auth-error-event', () => ({
+        classifyApiCredentialError: vi.fn(() => null),
+        dispatchApiAuthError: vi.fn(),
+      }));
+      vi.doMock('../model-adapters', async (importOriginal) => {
+        const actual = await importOriginal<
+          typeof import('../model-adapters')
+        >();
+        return {
+          ...actual,
+          getAdapterContextFromSettings: vi.fn(() => ({
+            baseUrl: 'https://api.tu-zi.com/v1',
+            apiKey: 'test-key',
+            authType: 'bearer',
+            binding: {
+              requestSchema: 'tuzi.image.gpt-edit-json',
+              submitPath: '/images/generations',
+            },
+          })),
+        };
+      });
+
+      const { executeImageViaAdapter } = await import(
+        '../media-executor/fallback-adapter-routes'
+      );
+      const adapter: ImageModelAdapter = {
+        id: 'tuzi-gpt-image-adapter',
+        label: 'Tuzi GPT Image',
+        kind: 'image',
+        generateImage: vi.fn(async () => ({
+          url: 'data:image/png;base64,cG5n',
+          format: 'png',
+        })),
+      };
+      const remoteReference =
+        'https://apioss28.sydney-ai.com/img/generated-reference.png';
+
+      await executeImageViaAdapter('task-remote-reference', adapter, {
+        prompt: 'Edit this',
+        model: 'gpt-image-2',
+        referenceImages: [remoteReference],
+        generationMode: 'image_edit',
+      });
+
+      expect(adapter.generateImage).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.objectContaining({ referenceImages: [remoteReference] })
+      );
+      expect(getImageForAI).not.toHaveBeenCalled();
+    }, 15000);
+
+    it('uses the local task ID for direct image submissions', async () => {
+      const actualInvocationRoute = {
+        operation: 'image' as const,
+        providerProfileId: 'provider-test',
+        modelId: 'legacy-image-model',
+        modelRef: {
+          profileId: 'provider-test',
+          modelId: 'legacy-image-model',
+        },
+        binding: {
+          id: 'direct-image-binding',
+          protocol: 'openai.images.generations',
+          submitPath: '/images/generations',
+        },
+      };
+      const createTaskInvocationRouteSnapshot = vi.fn(
+        () => actualInvocationRoute
+      );
+      vi.doMock('../task-invocation-route', () => ({
+        createTaskInvocationRouteSnapshot,
+      }));
+      let submittedResponse: Response | undefined;
+      const send = vi.fn(async () => {
+        submittedResponse = new Response(
+          JSON.stringify({
+            data: [{ url: 'https://example.com/out.png' }],
+          }),
+          {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }
+        );
+        return submittedResponse;
+      });
+      let bodyUsedAtDownloadProgress = false;
+      const onProgress = vi.fn((update: { progress: number }) => {
+        if (update.progress === 80) {
+          bodyUsedAtDownloadProgress = submittedResponse?.bodyUsed === true;
+        }
+      });
+      const onSubmissionAttempt = vi.fn();
+
+      vi.doMock('../media-executor/llm-api-logger', () => ({
+        startLLMApiLog: vi.fn(() => 'log-id'),
+        completeLLMApiLog: vi.fn(),
+        failLLMApiLog: vi.fn(),
+      }));
+      vi.doMock('../media-executor/task-storage-writer', () => ({
+        taskStorageWriter: {
+          updateStatus: vi.fn(async () => {}),
+          completeTask: vi.fn(async () => {}),
+          failTask: vi.fn(async () => {}),
+        },
+      }));
+      vi.doMock('../unified-cache-service', () => ({
+        unifiedCacheService: {
+          getImageForAI: vi.fn(),
+          isCached: vi.fn(async () => false),
+          cacheMediaFromBlob: vi.fn(async () => {}),
+        },
+      }));
+      vi.doMock('../../utils/api-auth-error-event', () => ({
+        classifyApiCredentialError: vi.fn(() => null),
+        dispatchApiAuthError: vi.fn(),
+      }));
+      vi.doMock('../../utils/settings-manager', async (importOriginal) => {
+        const actual = await importOriginal<
+          typeof import('../../utils/settings-manager')
+        >();
+        return {
+          ...actual,
+          resolveInvocationRoute: vi.fn((operation: string) => ({
+            routeType: operation,
+            modelId: operation === 'image' ? 'legacy-image-model' : '',
+            profileId: 'provider-test',
+            profileName: 'Test Provider',
+            providerType: 'custom',
+            baseUrl: 'https://api.example.com/v1',
+            apiKey: 'test-key',
+            source: 'preset',
+          })),
+        };
+      });
+      vi.doMock('../provider-routing', async (importOriginal) => {
+        const actual = await importOriginal<
+          typeof import('../provider-routing')
+        >();
+        const imagePlan = {
+          provider: {
+            profileId: 'provider-test',
+            profileName: 'Test Provider',
+            providerType: 'custom',
+            baseUrl: 'https://api.example.com/v1',
+            apiKey: 'test-key',
+            authType: 'bearer' as const,
+          },
+          modelRef: {
+            profileId: 'provider-test',
+            modelId: 'legacy-image-model',
+          },
+          binding: {
+            id: 'direct-image-binding',
+            profileId: 'provider-test',
+            modelId: 'legacy-image-model',
+            operation: 'image' as const,
+            protocol: 'openai.images.generations',
+            requestSchema: 'openai.image.basic-json',
+            responseSchema: 'openai.image',
+            submitPath: '/images/generations',
+            priority: 100,
+            confidence: 'high' as const,
+            source: 'manual' as const,
+          },
+        };
+        return {
+          ...actual,
+          providerTransport: { send },
+          resolveInvocationPlanFromRoute: vi.fn((operation: string) =>
+            operation === 'image' ? imagePlan : null
+          ),
+        };
+      });
+      vi.doMock('../model-adapters', () => ({
+        resolveAdapterForInvocation: vi.fn(() => undefined),
+        GPT_IMAGE_EDIT_REQUEST_SCHEMAS: ['openai.image.gpt-edit-form'],
+      }));
+
+      const { FallbackMediaExecutor } = await import(
+        '../media-executor/fallback-executor'
+      );
+      const executor = new FallbackMediaExecutor();
+
+      await executor.generateImage(
+        {
+          taskId: 'task-direct-image-1',
+          prompt: '生成一只兔子',
+          model: 'legacy-image-model',
+        },
+        { onProgress, onSubmissionAttempt }
+      );
+
+      expect(send).toHaveBeenCalledWith(
+        expect.objectContaining({
+          baseUrl: 'https://api.example.com/v1',
+        }),
+        expect.objectContaining({
+          path: '/images/generations',
+          method: 'POST',
+          requestId: 'task-direct-image-1',
+        })
+      );
+      expect(bodyUsedAtDownloadProgress).toBe(true);
+      expect(createTaskInvocationRouteSnapshot).toHaveBeenCalledWith(
+        'image',
+        {
+          profileId: 'provider-test',
+          modelId: 'legacy-image-model',
+        },
+        { bindingId: 'direct-image-binding' }
+      );
+      expect(onSubmissionAttempt).toHaveBeenCalledWith(actualInvocationRoute);
+    }, 15000);
+
+    it('propagates an ambiguous adapter submission without failing it', async () => {
+      const failTask = vi.fn(async () => true);
+      const adapter = {
+        id: 'tuzi-gpt-image-adapter',
+        kind: 'image',
+        generateImage: vi.fn(async () => {
+          throw Object.assign(new Error('submission response lost'), {
+            code: 'IMAGE_SUBMISSION_OUTCOME_UNKNOWN',
+          });
+        }),
+      } as unknown as ImageModelAdapter;
+
+      vi.doMock('../media-executor/llm-api-logger', () => ({
+        startLLMApiLog: vi.fn(() => 'log-id'),
+        completeLLMApiLog: vi.fn(),
+        failLLMApiLog: vi.fn(),
+      }));
+      vi.doMock('../media-executor/task-storage-writer', () => ({
+        taskStorageWriter: {
+          completeTask: vi.fn(async () => true),
+          failTask,
+        },
+      }));
+      vi.doMock('../unified-cache-service', () => ({
+        unifiedCacheService: {
+          getImageForAI: vi.fn(),
+        },
+      }));
+      vi.doMock('../../utils/api-auth-error-event', () => ({
+        classifyApiCredentialError: vi.fn(() => null),
+        dispatchApiAuthError: vi.fn(),
+      }));
+      vi.doMock('../model-adapters', async (importOriginal) => {
+        const actual = await importOriginal<
+          typeof import('../model-adapters')
+        >();
+        return {
+          ...actual,
+          getAdapterContextFromSettings: vi.fn(() => ({
+            baseUrl: 'https://bus.tu-zi.com/v1',
+            apiKey: 'test-key',
+            authType: 'bearer',
+          })),
+        };
+      });
+
+      const { executeImageViaAdapter } = await import(
+        '../media-executor/fallback-adapter-routes'
+      );
+
+      await expect(
+        executeImageViaAdapter(
+          'task-unknown-outcome',
+          adapter,
+          {
+            requestId: 'request-unknown-outcome',
+            prompt: '生成一只兔子',
+            model: 'gpt-image-2',
+          },
+          undefined,
+          Date.now()
+        )
+      ).rejects.toMatchObject({
+        code: 'IMAGE_SUBMISSION_OUTCOME_UNKNOWN',
+      });
+
+      expect(failTask).not.toHaveBeenCalled();
     }, 15000);
 
     it('routes Midjourney runtime image models through the MJ adapter', async () => {
@@ -321,9 +662,15 @@ describe('Media Executor Module', () => {
           },
         };
       });
-      vi.doMock('../provider-routing', () => ({
-        resolveInvocationPlanFromRoute: vi.fn(() => null),
-      }));
+      vi.doMock('../provider-routing', async (importOriginal) => {
+        const actual = await importOriginal<
+          typeof import('../provider-routing')
+        >();
+        return {
+          ...actual,
+          resolveInvocationPlanFromRoute: vi.fn(() => null),
+        };
+      });
       vi.doMock('../model-adapters', () => ({
         resolveAdapterForInvocation,
         getAdapterContextFromSettings: vi.fn(),
@@ -376,6 +723,726 @@ describe('Media Executor Module', () => {
         undefined,
         expect.any(Number)
       );
+    }, 15000);
+
+    it('uses manual text binding submit path for text generation', async () => {
+      const send = vi.fn(async () => ({
+        ok: true,
+        text: async () => JSON.stringify({ output: { text: 'hello' } }),
+      }));
+
+      vi.doMock('../media-executor/llm-api-logger', () => ({
+        startLLMApiLog: vi.fn(() => 'log-id'),
+        completeLLMApiLog: vi.fn(),
+        failLLMApiLog: vi.fn(),
+      }));
+      vi.doMock('../media-executor/task-storage-writer', () => ({
+        taskStorageWriter: {
+          updateStatus: vi.fn(async () => {}),
+          updateProgress: vi.fn(async () => {}),
+          completeTask: vi.fn(async () => {}),
+          failTask: vi.fn(async () => {}),
+        },
+      }));
+      vi.doMock('../unified-cache-service', () => ({
+        unifiedCacheService: {
+          getImageForAI: vi.fn(),
+          isCached: vi.fn(async () => false),
+          cacheMediaFromBlob: vi.fn(async () => {}),
+        },
+      }));
+      vi.doMock('../../utils/api-auth-error-event', () => ({
+        classifyApiCredentialError: vi.fn(() => null),
+        dispatchApiAuthError: vi.fn(),
+      }));
+      vi.doMock('../../utils/settings-manager', async (importOriginal) => {
+        const actual = await importOriginal<
+          typeof import('../../utils/settings-manager')
+        >();
+        return {
+          ...actual,
+          resolveInvocationRoute: vi.fn(() => ({
+            routeType: 'text',
+            modelId: 'custom-chat-model',
+            profileId: 'provider-manual',
+            profileName: 'Manual Provider',
+            providerType: 'openai-compatible',
+            baseUrl: 'https://api.example.com/v1',
+            apiKey: 'manual-key',
+            source: 'preset',
+          })),
+        };
+      });
+      vi.doMock('../provider-routing', async (importOriginal) => {
+        const actual = await importOriginal<
+          typeof import('../provider-routing')
+        >();
+        return {
+          ...actual,
+          providerTransport: {
+            send,
+          },
+          resolveInvocationPlanFromRoute: vi.fn(() => ({
+            provider: {
+              profileId: 'provider-manual',
+              profileName: 'Manual Provider',
+              providerType: 'openai-compatible',
+              baseUrl: 'https://api.example.com/v1',
+              apiKey: 'manual-key',
+              authType: 'bearer',
+            },
+            modelRef: {
+              profileId: 'provider-manual',
+              modelId: 'custom-chat-model',
+            },
+            binding: {
+              id: 'provider-manual:custom-chat-model:text:manual:openai.chat.messages',
+              profileId: 'provider-manual',
+              modelId: 'custom-chat-model',
+              operation: 'text',
+              protocol: 'custom-http',
+              requestSchema: 'custom-http',
+              responseSchema: 'custom-http.text',
+              submitPath: '/v1/custom/chat',
+              baseUrlStrategy: 'trim-v1',
+              priority: 900,
+              confidence: 'high',
+              source: 'manual',
+              metadata: {
+                manualHttp: {
+                  method: 'POST',
+                  bodyTemplate:
+                    '{"model":"{{model}}","prompt":"{{prompt}}","messages":"{{messages}}"}',
+                  responsePaths: {
+                    text: 'output.text',
+                  },
+                },
+              },
+            },
+          })),
+        };
+      });
+
+      const { FallbackMediaExecutor } = await import(
+        '../media-executor/fallback-executor'
+      );
+      const executor = new FallbackMediaExecutor();
+
+      const result = await executor.generateText({
+        taskId: 'task-text-1',
+        prompt: 'hello',
+        model: 'custom-chat-model',
+        modelRef: {
+          profileId: 'provider-manual',
+          modelId: 'custom-chat-model',
+        },
+      });
+
+      expect(result.content).toBe('hello');
+      expect(send).toHaveBeenCalledWith(
+        expect.objectContaining({
+          profileId: 'provider-manual',
+          apiKey: 'manual-key',
+        }),
+        expect.objectContaining({
+          path: '/v1/custom/chat',
+          baseUrlStrategy: 'trim-v1',
+          method: 'POST',
+          body: JSON.stringify({
+            model: 'custom-chat-model',
+            prompt: 'hello',
+            messages: [
+              {
+                role: 'user',
+                content: [{ type: 'text', text: 'hello' }],
+              },
+            ],
+          }),
+        })
+      );
+    }, 15000);
+
+    it('does not persist a late text response after its execution is replaced', async () => {
+      let resolveSend!: (response: Response) => void;
+      const send = vi.fn(
+        () =>
+          new Promise<Response>((resolve) => {
+            resolveSend = resolve;
+          })
+      );
+      const completeTask = vi.fn(async () => {});
+      const failTask = vi.fn(async () => {});
+
+      vi.doMock('../media-executor/llm-api-logger', () => ({
+        startLLMApiLog: vi.fn(() => 'log-id'),
+        completeLLMApiLog: vi.fn(),
+        failLLMApiLog: vi.fn(),
+      }));
+      vi.doMock('../media-executor/task-storage-writer', () => ({
+        taskStorageWriter: {
+          updateStatus: vi.fn(async () => {}),
+          updateProgress: vi.fn(async () => {}),
+          completeTask,
+          failTask,
+        },
+      }));
+      vi.doMock('../unified-cache-service', () => ({
+        unifiedCacheService: {
+          getImageForAI: vi.fn(),
+          isCached: vi.fn(async () => false),
+          cacheMediaFromBlob: vi.fn(async () => {}),
+        },
+      }));
+      vi.doMock('../../utils/api-auth-error-event', () => ({
+        classifyApiCredentialError: vi.fn(() => null),
+        dispatchApiAuthError: vi.fn(),
+      }));
+      vi.doMock('../../utils/settings-manager', async (importOriginal) => {
+        const actual = await importOriginal<
+          typeof import('../../utils/settings-manager')
+        >();
+        return {
+          ...actual,
+          resolveInvocationRoute: vi.fn((operation: string) => ({
+            routeType: operation,
+            modelId: 'chat-model',
+            profileId: 'provider-text',
+            profileName: 'Text Provider',
+            providerType: 'openai-compatible',
+            baseUrl: 'https://api.example.com/v1',
+            apiKey: 'test-key',
+            source: 'preset',
+          })),
+        };
+      });
+      vi.doMock('../provider-routing', async (importOriginal) => {
+        const actual = await importOriginal<
+          typeof import('../provider-routing')
+        >();
+        return {
+          ...actual,
+          providerTransport: { send },
+          resolveInvocationPlanFromRoute: vi.fn(() => null),
+        };
+      });
+
+      const { FallbackMediaExecutor } = await import(
+        '../media-executor/fallback-executor'
+      );
+      const executor = new FallbackMediaExecutor();
+      let current = true;
+      const execution = executor.generateText(
+        {
+          taskId: 'task-stale-text',
+          prompt: 'Old prompt',
+          model: 'chat-model',
+        },
+        { isCurrentAttempt: () => current }
+      );
+      await vi.waitFor(() => expect(send).toHaveBeenCalledOnce());
+
+      current = false;
+      resolveSend(
+        new Response(
+          JSON.stringify({
+            choices: [{ message: { content: 'Late response' } }],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        )
+      );
+
+      await expect(execution).rejects.toMatchObject({ name: 'AbortError' });
+      expect(completeTask).not.toHaveBeenCalled();
+      expect(failTask).not.toHaveBeenCalled();
+    }, 15000);
+
+    it('does not persist late video adapter callbacks after replacement', async () => {
+      const updateRemoteId = vi.fn(async () => {});
+      const completeTask = vi.fn(async () => {});
+      const failTask = vi.fn(async () => {});
+      let finishAdapter!: () => void;
+      let submitRemoteId!: (remoteId: string) => void;
+
+      vi.doMock('../media-executor/llm-api-logger', () => ({
+        startLLMApiLog: vi.fn(() => 'log-id'),
+        completeLLMApiLog: vi.fn(),
+        failLLMApiLog: vi.fn(),
+      }));
+      vi.doMock('../media-executor/task-storage-writer', () => ({
+        taskStorageWriter: { updateRemoteId, completeTask, failTask },
+      }));
+      vi.doMock('../unified-cache-service', () => ({
+        unifiedCacheService: { getImageForAI: vi.fn() },
+      }));
+      vi.doMock('../../utils/api-auth-error-event', () => ({
+        classifyApiCredentialError: vi.fn(() => null),
+        dispatchApiAuthError: vi.fn(),
+      }));
+      vi.doMock('../model-adapters', async (importOriginal) => {
+        const actual = await importOriginal<
+          typeof import('../model-adapters')
+        >();
+        return {
+          ...actual,
+          getAdapterContextFromSettings: vi.fn(() => ({
+            baseUrl: 'https://api.example.com/v1',
+            apiKey: 'test-key',
+            authType: 'bearer',
+          })),
+        };
+      });
+
+      const adapter: VideoModelAdapter = {
+        id: 'late-video-adapter',
+        label: 'Late video adapter',
+        kind: 'video',
+        generateVideo: vi.fn(
+          async (_context, request) =>
+            new Promise((resolve) => {
+              submitRemoteId = request.params?.onSubmitted as (
+                remoteId: string
+              ) => void;
+              finishAdapter = () =>
+                resolve({
+                  url: 'https://example.com/late.mp4',
+                  format: 'mp4',
+                });
+            })
+        ),
+      };
+      const { executeVideoViaAdapter } = await import(
+        '../media-executor/fallback-adapter-routes'
+      );
+      let current = true;
+      const execution = executeVideoViaAdapter(
+        'task-stale-video-adapter',
+        adapter,
+        { prompt: 'Old video', model: 'video-model' },
+        { isCurrentAttempt: () => current }
+      );
+      await vi.waitFor(() =>
+        expect(adapter.generateVideo).toHaveBeenCalledOnce()
+      );
+
+      current = false;
+      submitRemoteId('remote-old');
+      finishAdapter();
+
+      await expect(execution).rejects.toMatchObject({ name: 'AbortError' });
+      expect(updateRemoteId).not.toHaveBeenCalled();
+      expect(completeTask).not.toHaveBeenCalled();
+      expect(failTask).not.toHaveBeenCalled();
+    }, 15000);
+
+    it('does not persist a stale remote id from a late built-in video submission', async () => {
+      let resolveSubmission!: (remoteId: string) => void;
+      const submitVideoGeneration = vi.fn(
+        () =>
+          new Promise<string>((resolve) => {
+            resolveSubmission = resolve;
+          })
+      );
+      const pollVideoStatus = vi.fn();
+      const updateRemoteId = vi.fn(async () => {});
+      const completeTask = vi.fn(async () => {});
+      const failTask = vi.fn(async () => {});
+
+      vi.doMock('../media-executor/llm-api-logger', () => ({
+        startLLMApiLog: vi.fn(() => 'log-id'),
+        completeLLMApiLog: vi.fn(),
+        failLLMApiLog: vi.fn(),
+        updateLLMApiLogMetadata: vi.fn(),
+      }));
+      vi.doMock('../media-executor/task-storage-writer', () => ({
+        taskStorageWriter: {
+          updateStatus: vi.fn(async () => {}),
+          updateRemoteId,
+          completeTask,
+          failTask,
+        },
+      }));
+      vi.doMock('../unified-cache-service', () => ({
+        unifiedCacheService: {
+          getImageForAI: vi.fn(),
+          isCached: vi.fn(async () => false),
+          cacheMediaFromBlob: vi.fn(async () => {}),
+        },
+      }));
+      vi.doMock('../../utils/api-auth-error-event', () => ({
+        classifyApiCredentialError: vi.fn(() => null),
+        dispatchApiAuthError: vi.fn(),
+      }));
+      vi.doMock('../../utils/settings-manager', async (importOriginal) => {
+        const actual = await importOriginal<
+          typeof import('../../utils/settings-manager')
+        >();
+        return {
+          ...actual,
+          resolveInvocationRoute: vi.fn((operation: string) => ({
+            routeType: operation,
+            modelId: 'video-model',
+            profileId: 'provider-video',
+            profileName: 'Video Provider',
+            providerType: 'openai-compatible',
+            baseUrl: 'https://api.example.com/v1',
+            apiKey: 'test-key',
+            source: 'preset',
+          })),
+        };
+      });
+      vi.doMock('../provider-routing', async (importOriginal) => {
+        const actual = await importOriginal<
+          typeof import('../provider-routing')
+        >();
+        return {
+          ...actual,
+          resolveInvocationPlanFromRoute: vi.fn(() => null),
+        };
+      });
+      vi.doMock('../model-adapters', async (importOriginal) => {
+        const actual = await importOriginal<
+          typeof import('../model-adapters')
+        >();
+        return {
+          ...actual,
+          resolveAdapterForInvocation: vi.fn(() => undefined),
+        };
+      });
+      vi.doMock('../media-api', async (importOriginal) => {
+        const actual = await importOriginal<typeof import('../media-api')>();
+        return { ...actual, submitVideoGeneration };
+      });
+      vi.doMock('../media-executor/fallback-utils', async (importOriginal) => {
+        const actual = await importOriginal<
+          typeof import('../media-executor/fallback-utils')
+        >();
+        return { ...actual, pollVideoStatus };
+      });
+
+      const { FallbackMediaExecutor } = await import(
+        '../media-executor/fallback-executor'
+      );
+      const executor = new FallbackMediaExecutor();
+      let current = true;
+      const execution = executor.generateVideo(
+        {
+          taskId: 'task-stale-built-in-video',
+          prompt: 'Old video',
+          model: 'video-model',
+        },
+        { isCurrentAttempt: () => current }
+      );
+      await vi.waitFor(() =>
+        expect(submitVideoGeneration).toHaveBeenCalledOnce()
+      );
+
+      current = false;
+      resolveSubmission('remote-old');
+      await execution;
+
+      expect(updateRemoteId).not.toHaveBeenCalled();
+      expect(pollVideoStatus).not.toHaveBeenCalled();
+      expect(completeTask).not.toHaveBeenCalled();
+      expect(failTask).not.toHaveBeenCalled();
+    }, 15000);
+
+    it('keeps new video recovery ownership when an old same-id poll finishes late', async () => {
+      const pollResolvers: Array<(result: { url: string }) => void> = [];
+      const pollVideoStatus = vi.fn(
+        () =>
+          new Promise<{ url: string }>((resolve) => {
+            pollResolvers.push(resolve);
+          })
+      );
+      const cacheRemoteUrl = vi.fn(async (url: string) => url);
+
+      vi.doMock('../media-executor/llm-api-logger', () => ({
+        startLLMApiLog: vi.fn(() => 'log-id'),
+        completeLLMApiLog: vi.fn(),
+        failLLMApiLog: vi.fn(),
+        updateLLMApiLogMetadata: vi.fn(),
+      }));
+      vi.doMock('../media-executor/task-storage-writer', () => ({
+        taskStorageWriter: {
+          updateStatus: vi.fn(async () => {}),
+          updateProgress: vi.fn(async () => {}),
+          completeTask: vi.fn(async () => {}),
+          failTask: vi.fn(async () => {}),
+        },
+      }));
+      vi.doMock('../unified-cache-service', () => ({
+        unifiedCacheService: {
+          getImageForAI: vi.fn(),
+          isCached: vi.fn(async () => false),
+          cacheMediaFromBlob: vi.fn(async () => {}),
+        },
+      }));
+      vi.doMock('../../utils/api-auth-error-event', () => ({
+        classifyApiCredentialError: vi.fn(() => null),
+        dispatchApiAuthError: vi.fn(),
+      }));
+      vi.doMock('../../utils/settings-manager', async (importOriginal) => {
+        const actual = await importOriginal<
+          typeof import('../../utils/settings-manager')
+        >();
+        return {
+          ...actual,
+          resolveInvocationRoute: vi.fn((operation: string) => ({
+            routeType: operation,
+            modelId: 'video-model',
+            profileId: 'provider-video',
+            profileName: 'Video Provider',
+            providerType: 'openai-compatible',
+            baseUrl: 'https://api.example.com/v1',
+            apiKey: 'test-key',
+            source: 'preset',
+          })),
+        };
+      });
+      vi.doMock('../provider-routing', async (importOriginal) => {
+        const actual = await importOriginal<
+          typeof import('../provider-routing')
+        >();
+        return {
+          ...actual,
+          resolveInvocationPlanFromRoute: vi.fn(() => null),
+        };
+      });
+      vi.doMock('../media-executor/fallback-utils', async (importOriginal) => {
+        const actual = await importOriginal<
+          typeof import('../media-executor/fallback-utils')
+        >();
+        return { ...actual, pollVideoStatus, cacheRemoteUrl };
+      });
+
+      const { FallbackMediaExecutor } = await import(
+        '../media-executor/fallback-executor'
+      );
+      const executor = new FallbackMediaExecutor();
+      const original: Task = {
+        id: 'task-video-replacement',
+        type: TaskType.VIDEO,
+        status: TaskStatus.PROCESSING,
+        params: { prompt: 'Old video', model: 'video-model' },
+        remoteId: 'remote-old',
+        createdAt: 1,
+        updatedAt: 1,
+        startedAt: 1,
+      };
+      const oldUpdates = vi.fn();
+      const newUpdates = vi.fn();
+      let oldCurrent = true;
+      const oldRecovery = (executor as any).resumeVideoTask(
+        original,
+        oldUpdates,
+        () => oldCurrent
+      );
+      await vi.waitFor(() => expect(pollVideoStatus).toHaveBeenCalledOnce());
+
+      oldCurrent = false;
+      const replacement: Task = {
+        ...original,
+        remoteId: 'remote-new',
+        updatedAt: 2,
+      };
+      const newRecovery = (executor as any).resumeVideoTask(
+        replacement,
+        newUpdates,
+        () => true
+      );
+      await vi.waitFor(() => expect(pollVideoStatus).toHaveBeenCalledTimes(2));
+
+      pollResolvers[0]({ url: 'https://example.com/old.mp4' });
+      await oldRecovery;
+      expect((executor as any).pollingTasks.size).toBe(1);
+      expect(oldUpdates).not.toHaveBeenCalled();
+
+      pollResolvers[1]({ url: 'https://example.com/new.mp4' });
+      await newRecovery;
+
+      expect(newUpdates).toHaveBeenCalledWith(
+        original.id,
+        TaskStatus.COMPLETED,
+        expect.objectContaining({
+          result: expect.objectContaining({
+            url: 'https://example.com/new.mp4',
+          }),
+        })
+      );
+      expect((executor as any).pollingTasks.size).toBe(0);
+    }, 15000);
+
+    it('aborts a hanging recovered video poll when the task is deleted', async () => {
+      let pollingSignal: AbortSignal | undefined;
+      const pollVideoStatus = vi.fn(
+        (
+          _videoId: string,
+          _config: unknown,
+          _onProgress: unknown,
+          signal?: AbortSignal
+        ) =>
+          new Promise<{ url: string }>((_resolve, reject) => {
+            pollingSignal = signal;
+            signal?.addEventListener('abort', () => reject(signal.reason), {
+              once: true,
+            });
+          })
+      );
+
+      vi.doMock('../media-executor/llm-api-logger', () => ({
+        startLLMApiLog: vi.fn(() => 'log-id'),
+        completeLLMApiLog: vi.fn(),
+        failLLMApiLog: vi.fn(),
+        updateLLMApiLogMetadata: vi.fn(),
+      }));
+      vi.doMock('../media-executor/task-storage-writer', () => ({
+        taskStorageWriter: {
+          updateStatus: vi.fn(async () => undefined),
+          updateProgress: vi.fn(async () => undefined),
+          completeTask: vi.fn(async () => undefined),
+          failTask: vi.fn(async () => undefined),
+        },
+      }));
+      vi.doMock('../../utils/settings-manager', async (importOriginal) => {
+        const actual = await importOriginal<
+          typeof import('../../utils/settings-manager')
+        >();
+        return {
+          ...actual,
+          resolveInvocationRoute: vi.fn((operation: string) => ({
+            routeType: operation,
+            modelId: 'video-model',
+            profileId: 'provider-video',
+            profileName: 'Video Provider',
+            providerType: 'openai-compatible',
+            baseUrl: 'https://api.example.com/v1',
+            apiKey: 'test-key',
+            source: 'preset',
+          })),
+        };
+      });
+      vi.doMock('../provider-routing', async (importOriginal) => {
+        const actual = await importOriginal<
+          typeof import('../provider-routing')
+        >();
+        return {
+          ...actual,
+          resolveInvocationPlanFromRoute: vi.fn(() => null),
+        };
+      });
+      vi.doMock('../media-executor/fallback-utils', async (importOriginal) => {
+        const actual = await importOriginal<
+          typeof import('../media-executor/fallback-utils')
+        >();
+        return { ...actual, pollVideoStatus };
+      });
+
+      const { FallbackMediaExecutor } = await import(
+        '../media-executor/fallback-executor'
+      );
+      const executor = new FallbackMediaExecutor();
+      const task: Task = {
+        id: 'task-video-delete-hanging-poll',
+        type: TaskType.VIDEO,
+        status: TaskStatus.PROCESSING,
+        params: { prompt: 'Resume video', model: 'video-model' },
+        remoteId: 'remote-hanging',
+        createdAt: 1,
+        updatedAt: 1,
+        startedAt: 1,
+      };
+      const onTaskUpdate = vi.fn();
+
+      const recovery = (executor as any).resumeVideoTask(
+        task,
+        onTaskUpdate,
+        () => true
+      );
+      await vi.waitFor(() => expect(pollVideoStatus).toHaveBeenCalledOnce());
+
+      executor.cancelPendingTask(task.id);
+
+      expect(pollingSignal?.aborted).toBe(true);
+      await recovery;
+      expect(onTaskUpdate).not.toHaveBeenCalled();
+      expect((executor as any).pollingTasks.size).toBe(0);
+    }, 15000);
+
+    it('fails a resumed video when its persisted invocation route is unavailable', async () => {
+      const pollVideoStatus = vi.fn();
+      vi.doMock('../media-executor/llm-api-logger', () => ({
+        startLLMApiLog: vi.fn(() => 'log-id'),
+        completeLLMApiLog: vi.fn(),
+        failLLMApiLog: vi.fn(),
+        updateLLMApiLogMetadata: vi.fn(),
+      }));
+      vi.doMock('../media-executor/task-storage-writer', () => ({
+        taskStorageWriter: {
+          updateStatus: vi.fn(async () => {}),
+          updateProgress: vi.fn(async () => {}),
+          completeTask: vi.fn(async () => {}),
+          failTask: vi.fn(async () => {}),
+        },
+      }));
+      vi.doMock('../unified-cache-service', () => ({
+        unifiedCacheService: {
+          getImageForAI: vi.fn(),
+          isCached: vi.fn(async () => false),
+          cacheMediaFromBlob: vi.fn(async () => {}),
+        },
+      }));
+      vi.doMock('../task-invocation-route', async (importOriginal) => {
+        const actual = await importOriginal<
+          typeof import('../task-invocation-route')
+        >();
+        return {
+          ...actual,
+          shouldUseStrictTaskInvocationRoute: vi.fn(() => true),
+          assertTaskInvocationRouteAvailable: vi.fn(() => {
+            throw Object.assign(new Error('Provider route unavailable'), {
+              code: 'INVOCATION_ROUTE_UNAVAILABLE',
+            });
+          }),
+        };
+      });
+      vi.doMock('../media-executor/fallback-utils', async (importOriginal) => {
+        const actual = await importOriginal<
+          typeof import('../media-executor/fallback-utils')
+        >();
+        return { ...actual, pollVideoStatus };
+      });
+
+      const { FallbackMediaExecutor } = await import(
+        '../media-executor/fallback-executor'
+      );
+      const executor = new FallbackMediaExecutor();
+      const task: Task = {
+        id: 'task-video-missing-route',
+        type: TaskType.VIDEO,
+        status: TaskStatus.PROCESSING,
+        params: { prompt: 'Resume video', model: 'removed-model' },
+        remoteId: 'remote-missing-route',
+        invocationRoute: {
+          operation: 'video',
+          providerProfileId: 'removed-provider',
+          modelId: 'removed-model',
+        },
+        createdAt: 1,
+        updatedAt: 1,
+        startedAt: 1,
+      };
+      const onTaskUpdate = vi.fn();
+
+      await (executor as any).resumeVideoTask(task, onTaskUpdate, () => true);
+
+      expect(pollVideoStatus).not.toHaveBeenCalled();
+      expect(onTaskUpdate).toHaveBeenCalledWith(task.id, TaskStatus.FAILED, {
+        error: {
+          code: 'INVOCATION_ROUTE_UNAVAILABLE',
+          message: 'Provider route unavailable',
+        },
+      });
+      expect((executor as any).pollingTasks.size).toBe(0);
     }, 15000);
 
     it('passes video adapter progress through fallback adapter routes', async () => {
@@ -462,7 +1529,9 @@ describe('Media Executor Module', () => {
         expect.objectContaining({
           operation: 'video',
           modelId: 'happyhorse-1.0-t2v',
-        })
+        }),
+        undefined,
+        expect.objectContaining({ shouldUpdate: expect.any(Function) })
       );
       expect(onProgress).toHaveBeenCalledWith({
         progress: 30,
@@ -473,7 +1542,9 @@ describe('Media Executor Module', () => {
         expect.objectContaining({
           url: 'https://example.com/out.mp4',
           format: 'mp4',
-        })
+        }),
+        undefined,
+        expect.objectContaining({ shouldUpdate: expect.any(Function) })
       );
     }, 15000);
   });

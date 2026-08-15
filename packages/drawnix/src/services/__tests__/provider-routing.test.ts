@@ -645,7 +645,7 @@ describe('provider routing', () => {
     expect(prepared.headers['X-Request-Id']).toBe('public-task-id');
   });
 
-  it('keeps desktop Request-ID submissions on the configured Tuzi API node', () => {
+  it('keeps desktop submissions on the configured node without a blocked Request-ID header', () => {
     const originalTauriInternals = (
       window as Window & {
         __TAURI_INTERNALS__?: unknown;
@@ -655,14 +655,21 @@ describe('provider routing', () => {
       {};
 
     try {
-      const prepared = providerTransport.prepareRequest(tuziTransportContext, {
+      const request = {
         path: '/images/generations',
         method: 'POST',
         requestId: 'desktop-task-id',
-      });
+      } as const;
+      const prepared = providerTransport.prepareRequest(
+        tuziTransportContext,
+        request
+      );
 
       expect(prepared.url).toBe('https://api.tu-zi.com/v1/images/generations');
-      expect(prepared.headers['X-Request-Id']).toBe('desktop-task-id');
+      expect(
+        canAttachProviderRequestIdHeader(tuziTransportContext, request)
+      ).toBe(false);
+      expect(prepared.headers).not.toHaveProperty('X-Request-Id');
     } finally {
       if (originalTauriInternals === undefined) {
         delete (window as Window & { __TAURI_INTERNALS__?: unknown })

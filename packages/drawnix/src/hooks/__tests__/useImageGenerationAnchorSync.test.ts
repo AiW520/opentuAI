@@ -114,7 +114,8 @@ vi.mock('../../plugins/with-image-generation-anchor', () => ({
       ((board as unknown as { children: unknown[] }).children ?? []).find(
         (anchor) =>
           (anchor as { type?: string }).type === 'generation-anchor' &&
-          (anchor as { workflowId?: string }).workflowId === options.workflowId &&
+          (anchor as { workflowId?: string }).workflowId ===
+            options.workflowId &&
           (anchor as { batchId?: string }).batchId === options.batchId &&
           (anchor as { batchIndex?: number }).batchIndex === options.batchIndex
       ) ?? null,
@@ -262,6 +263,40 @@ describe('useImageGenerationAnchorSync', () => {
     expect(anchor.primaryTaskId).toBe('task-1');
     expect(anchor.phase).toBe('queued');
     expect(anchor.subtitle).toBe('请求已受理，等待执行');
+  });
+
+  it('refreshes active anchor progress while the image task is processing', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-15T08:00:00.000Z'));
+
+    const startedAt = Date.now();
+    const board = createBoard(
+      createAnchor({
+        taskIds: ['task-1'],
+        primaryTaskId: 'task-1',
+        phase: 'generating',
+        progress: 0,
+      })
+    );
+    taskState.tasks = [
+      createTask({
+        status: TaskStatus.PROCESSING,
+        startedAt,
+      }),
+    ];
+
+    renderHook(() => useImageGenerationAnchorSync({ board, enabled: true }));
+
+    const boardState = board as unknown as {
+      children: PlaitImageGenerationAnchor[];
+    };
+    expect(boardState.children[0]?.progress).toBe(0);
+
+    act(() => {
+      vi.advanceTimersByTime(60_000);
+    });
+
+    expect(boardState.children[0]?.progress).toBe(43);
   });
 
   it('only binds a batched task to its matching independent anchor', () => {

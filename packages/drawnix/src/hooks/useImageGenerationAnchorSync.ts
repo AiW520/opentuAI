@@ -30,8 +30,15 @@ export interface UseImageGenerationAnchorSyncOptions {
 }
 
 const COMPLETED_REMOVAL_DELAY = 1600;
+const ACTIVE_ANCHOR_PROGRESS_INTERVAL = 1000;
 const STALE_ANCHOR_CHECK_INTERVAL = 10_000;
 const STALE_ANCHOR_THRESHOLD_MS = 45_000;
+
+function isActiveAnchorPhase(
+  phase: PlaitImageGenerationAnchor['phase']
+): boolean {
+  return phase === 'submitted' || phase === 'queued' || phase === 'generating';
+}
 
 function isImageTask(task: Task): boolean {
   return task.type === TaskType.IMAGE;
@@ -486,14 +493,12 @@ export function useImageGenerationAnchorSync({
       const batchIndex = getImageGenerationAnchorTaskBatchIndex(task);
       let hasExplicitBatchMatch = false;
       if (workflowId && batchId && typeof batchIndex === 'number') {
-        const byBatchSlot = ImageGenerationAnchorTransforms.getAnchorByBatchSlot(
-          board,
-          {
+        const byBatchSlot =
+          ImageGenerationAnchorTransforms.getAnchorByBatchSlot(board, {
             workflowId,
             batchId,
             batchIndex,
-          }
-        );
+          });
         if (byBatchSlot) {
           candidateAnchorIds.add(byBatchSlot.id);
           hasExplicitBatchMatch = true;
@@ -545,6 +550,14 @@ export function useImageGenerationAnchorSync({
         reconcileAllAnchors();
       });
 
+    const progressTimer = setInterval(() => {
+      ImageGenerationAnchorTransforms.getAllAnchors(board).forEach((anchor) => {
+        if (isActiveAnchorPhase(anchor.phase)) {
+          reconcileAnchor(anchor.id);
+        }
+      });
+    }, ACTIVE_ANCHOR_PROGRESS_INTERVAL);
+
     const stalePhaseTimestamps = new Map<string, number>();
     const staleCheckTimer = setInterval(() => {
       const anchors = ImageGenerationAnchorTransforms.getAllAnchors(board);
@@ -591,6 +604,7 @@ export function useImageGenerationAnchorSync({
     return () => {
       taskSubscription.unsubscribe();
       completionSubscription.unsubscribe();
+      clearInterval(progressTimer);
       clearInterval(staleCheckTimer);
       removalTimers.forEach((timer) => clearTimeout(timer));
       removalTimers.clear();

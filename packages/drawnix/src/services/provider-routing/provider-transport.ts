@@ -745,8 +745,9 @@ function routeTuziRequestIdSubmission(
     !isTuziRequestIdSubmission(context, request) ||
     !/^https?:\/\//i.test(resolvedBaseUrl) ||
     isTuziRequestIdCorsBaseUrl(context.baseUrl) ||
-    // Tauri WebViews are not subject to browser CORS preflight. Keep the
-    // request on the configured API node; the CORS bus can reject normal keys.
+    // Keep desktop requests on the configured API node because the CORS bus
+    // can reject normal keys. prepareRequest omits X-Request-Id for this
+    // cross-origin target because WKWebView still enforces CORS preflight.
     isTauriEnvironment()
   ) {
     return context;
@@ -780,8 +781,7 @@ export function canAttachProviderRequestIdHeader(
   return (
     isPostRequestMethod(request.method) &&
     isTrustedTuziRequestTarget(context, request) &&
-    (isTauriEnvironment() ||
-      !/^https?:\/\//i.test(requestUrl) ||
+    (!/^https?:\/\//i.test(requestUrl) ||
       isTuziRequestIdCorsBaseUrl(requestUrl))
   );
 }

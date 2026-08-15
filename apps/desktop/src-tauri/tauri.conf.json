@@ -1,6 +1,6 @@
 {
   "productName": "Opentu",
-  "version": "1.2.8",
+  "version": "1.2.9",
   "identifier": "com.opentu.desktop",
   "build": {
     "frontendDist": "../dist",

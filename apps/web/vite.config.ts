@@ -1008,8 +1008,8 @@ export default defineConfig({
   root: __dirname,
   cacheDir: '../../node_modules/.vite/apps/web',
 
-  // 使用相对路径，静态资源全部走自建服务器，SW 只负责缓存
-  base: process.env.VITE_BASE_URL || './',
+  // CI preview uses an absolute base; packaged/static deployments use relative assets.
+  base: process.env.CI ? '/' : process.env.VITE_BASE_URL || './',
 
   define: {
     'import.meta.env.VITE_APP_VERSION': JSON.stringify(appVersion),

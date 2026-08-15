@@ -15,7 +15,7 @@ jobs:
   main:
     runs-on: ubuntu-latest
     env:
-      NODE_OPTIONS: "--max-old-space-size=8192"
+      NODE_OPTIONS: '--max-old-space-size=8192'
     steps:
       - uses: actions/checkout@v6
         with:
@@ -58,15 +58,6 @@ jobs:
       - name: Install Playwright
         run: npx playwright install --with-deps chromium
 
-      - name: Typecheck shared projects
-        run: pnpm typecheck
-
-      - name: Test shared projects
-        run: pnpm test
-
-      - name: Lint shared projects
-        run: pnpm lint
-
       # 分步骤启动独立进程，确保 Web 构建释放内存后再打包 Desktop。
       - name: Build Web production bundle
         run: pnpm exec nx run web:build --verbose
@@ -76,6 +67,9 @@ jobs:
 
       - name: Build Desktop installer
         run: pnpm exec nx run desktop:build --verbose
+
+      - name: Lint affected projects
+        run: npx nx affected -t lint --exclude=drawnix --base="$NX_BASE" --head="$NX_HEAD" --verbose
 
       # PR 时运行冒烟测试（快速，约2分钟）
       - name: Run Smoke Tests
@@ -89,7 +83,6 @@ jobs:
           path: apps/web-e2e/test-results/
 
       - name: Check Bundle Size
-        if: always()
         run: pnpm run size
 
       - name: Upload Bundle Stats
@@ -103,7 +96,7 @@ jobs:
   visual:
     runs-on: macos-14
     env:
-      NODE_OPTIONS: "--max-old-space-size=8192"
+      NODE_OPTIONS: '--max-old-space-size=8192'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -139,7 +132,7 @@ jobs:
   release-e2e:
     runs-on: ubuntu-latest
     env:
-      NODE_OPTIONS: "--max-old-space-size=8192"
+      NODE_OPTIONS: '--max-old-space-size=8192'
     # 仅在 main 分支 push 或手动触发时运行
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
@@ -205,7 +198,7 @@ jobs:
   visual-regression:
     runs-on: macos-14
     env:
-      NODE_OPTIONS: "--max-old-space-size=8192"
+      NODE_OPTIONS: '--max-old-space-size=8192'
     steps:
       - uses: actions/checkout@v4
 

@@ -11,6 +11,7 @@ import {
   normalizeTuziApiEndpointUrl,
   TUZI_API_REQUEST_ID_CORS_ENDPOINTS,
 } from './tuzi-api-endpoints';
+import { isTauriEnvironment } from '../../utils/tauri-env';
 
 function trimTrailingSlashes(value: string): string {
   return value.replace(/\/+$/, '');
@@ -743,7 +744,10 @@ function routeTuziRequestIdSubmission(
   if (
     !isTuziRequestIdSubmission(context, request) ||
     !/^https?:\/\//i.test(resolvedBaseUrl) ||
-    isTuziRequestIdCorsBaseUrl(context.baseUrl)
+    isTuziRequestIdCorsBaseUrl(context.baseUrl) ||
+    // Tauri WebViews are not subject to browser CORS preflight. Keep the
+    // request on the configured API node; the CORS bus can reject normal keys.
+    isTauriEnvironment()
   ) {
     return context;
   }
@@ -776,7 +780,8 @@ export function canAttachProviderRequestIdHeader(
   return (
     isPostRequestMethod(request.method) &&
     isTrustedTuziRequestTarget(context, request) &&
-    (!/^https?:\/\//i.test(requestUrl) ||
+    (isTauriEnvironment() ||
+      !/^https?:\/\//i.test(requestUrl) ||
       isTuziRequestIdCorsBaseUrl(requestUrl))
   );
 }

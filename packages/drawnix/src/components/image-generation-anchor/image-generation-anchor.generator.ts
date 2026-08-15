@@ -51,13 +51,17 @@ export class ImageGenerationAnchorGenerator {
     this.foreignObject.style.overflow = 'visible';
     this.foreignObject.style.pointerEvents = 'auto';
 
-    this.htmlContainer = document.createElementNS(
-      'http://www.w3.org/1999/xhtml',
-      'div'
-    ) as HTMLElement;
+    // WKWebView can leave a React root created on a namespaced generic element
+    // blank inside foreignObject. A real HTMLElement is rendered consistently.
+    this.htmlContainer = document.createElement('div');
+    this.htmlContainer.setAttribute('xmlns', 'http://www.w3.org/1999/xhtml');
+    this.htmlContainer.className = 'image-generation-anchor-host';
     this.htmlContainer.style.cssText = `
       width: 100%;
       height: 100%;
+      min-width: 0;
+      min-height: 0;
+      display: block;
       pointer-events: auto;
       overflow: visible;
     `;

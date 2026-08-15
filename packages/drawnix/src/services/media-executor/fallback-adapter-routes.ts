@@ -263,7 +263,8 @@ export async function executeImageViaAdapter(
     }
   } catch (error: any) {
     const duration = Date.now() - logStartTime;
-    const originalMessage = error.message || 'Image generation failed (adapter)';
+    const originalMessage =
+      error.message || 'Image generation failed (adapter)';
     const friendlyMessage = formatFriendlyError(error, 'image');
 
     if (options?.isCurrentAttempt?.() === false) {
@@ -289,6 +290,10 @@ export async function executeImageViaAdapter(
       {
         code: 'IMAGE_GENERATION_ERROR',
         message: friendlyMessage,
+        details: {
+          originalError: originalMessage,
+          timestamp: Date.now(),
+        },
       },
       submissionRequestId,
       createStorageWriteGuard(options)
@@ -449,7 +454,8 @@ export async function executeVideoViaAdapter(
     );
   } catch (error: any) {
     const duration = Date.now() - logStartTime;
-    const originalMessage = error.message || 'Video generation failed (adapter)';
+    const originalMessage =
+      error.message || 'Video generation failed (adapter)';
     const friendlyMessage = formatFriendlyError(error, 'video');
 
     if (options?.signal?.aborted || options?.isCurrentAttempt?.() === false) {

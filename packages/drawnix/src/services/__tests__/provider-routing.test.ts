@@ -1,3 +1,5 @@
+// @vitest-environment jsdom
+
 import { describe, expect, it, vi } from 'vitest';
 import {
   getTextBindingMaxImageCount,
@@ -641,6 +643,36 @@ describe('provider routing', () => {
     const prepared = providerTransport.prepareRequest(context, request);
     expect(prepared.url).toBe('https://bus.tu-zi.com/v1/images/generations');
     expect(prepared.headers['X-Request-Id']).toBe('public-task-id');
+  });
+
+  it('keeps desktop Request-ID submissions on the configured Tuzi API node', () => {
+    const originalTauriInternals = (
+      window as Window & {
+        __TAURI_INTERNALS__?: unknown;
+      }
+    ).__TAURI_INTERNALS__;
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ =
+      {};
+
+    try {
+      const prepared = providerTransport.prepareRequest(tuziTransportContext, {
+        path: '/images/generations',
+        method: 'POST',
+        requestId: 'desktop-task-id',
+      });
+
+      expect(prepared.url).toBe('https://api.tu-zi.com/v1/images/generations');
+      expect(prepared.headers['X-Request-Id']).toBe('desktop-task-id');
+    } finally {
+      if (originalTauriInternals === undefined) {
+        delete (window as Window & { __TAURI_INTERNALS__?: unknown })
+          .__TAURI_INTERNALS__;
+      } else {
+        (
+          window as Window & { __TAURI_INTERNALS__?: unknown }
+        ).__TAURI_INTERNALS__ = originalTauriInternals;
+      }
+    }
   });
 
   it('does not mix Request-ID CORS nodes into normal Tuzi fallback routing', () => {

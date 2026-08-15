@@ -576,6 +576,10 @@ export class FallbackMediaExecutor implements IMediaExecutor {
         {
           code: 'IMAGE_GENERATION_ERROR',
           message: friendlyMessage,
+          details: {
+            originalError: originalMessage,
+            timestamp: Date.now(),
+          },
         },
         requestId,
         createStorageWriteGuard(options)
@@ -762,6 +766,10 @@ export class FallbackMediaExecutor implements IMediaExecutor {
         {
           code: 'ASYNC_IMAGE_GENERATION_ERROR',
           message: friendlyMessage,
+          details: {
+            originalError: originalMessage,
+            timestamp: Date.now(),
+          },
         },
         submissionRequestId,
         createStorageWriteGuard(options)

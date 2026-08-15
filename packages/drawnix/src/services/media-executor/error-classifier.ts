@@ -39,6 +39,8 @@ export interface ClassifiedError {
   friendlyMessage: string;
   /** HTTP 状态码（如果有） */
   httpStatus?: number;
+  /** 上游请求 ID（如果有） */
+  requestId?: string;
   /** 是否建议重试 */
   retryable: boolean;
 }
@@ -46,24 +48,16 @@ export interface ClassifiedError {
 // ==================== 友好提示映射 ====================
 
 const FRIENDLY_MESSAGES: Record<ErrorCategory, string> = {
-  [ErrorCategory.AUTH]:
-    'API Key 无效或已过期，请在设置页面检查并更新 API Key',
-  [ErrorCategory.NETWORK]:
-    '网络连接失败，请检查网络连接后重试',
+  [ErrorCategory.AUTH]: 'API Key 无效或已过期，请在设置页面检查并更新 API Key',
+  [ErrorCategory.NETWORK]: '网络连接失败，请检查网络连接后重试',
   [ErrorCategory.TIMEOUT]:
     '请求超时，可能是网络不稳定或图片过大，建议缩小图片尺寸后重试',
-  [ErrorCategory.SERVER]:
-    '服务暂时不可用，请稍后重试',
-  [ErrorCategory.RATE_LIMIT]:
-    '请求过于频繁，请稍等片刻后重试',
-  [ErrorCategory.VALIDATION]:
-    '请求参数有误，请检查模型和参数设置是否正确',
-  [ErrorCategory.CONTENT_TOO_LARGE]:
-    '上传的图片过大，请压缩后重试',
-  [ErrorCategory.CANCELLED]:
-    '任务已取消',
-  [ErrorCategory.UNKNOWN]:
-    '操作失败，请重试或联系技术支持',
+  [ErrorCategory.SERVER]: '服务暂时不可用，请稍后重试',
+  [ErrorCategory.RATE_LIMIT]: '请求过于频繁，请稍等片刻后重试',
+  [ErrorCategory.VALIDATION]: '请求参数有误，请检查模型和参数设置是否正确',
+  [ErrorCategory.CONTENT_TOO_LARGE]: '上传的图片过大，请压缩后重试',
+  [ErrorCategory.CANCELLED]: '任务已取消',
+  [ErrorCategory.UNKNOWN]: '操作失败，请重试或联系技术支持',
 };
 
 // ==================== 上下文提示 ====================
@@ -99,6 +93,38 @@ function classifyByHttpStatus(status: number): ErrorCategory {
 function extractHttpStatus(message: string): number | undefined {
   const match = message.match(/HTTP\s*(\d{3})/i);
   return match ? parseInt(match[1], 10) : undefined;
+}
+
+/**
+ * 从错误消息中提取上游请求 ID
+ */
+function extractRequestId(message: string): string | undefined {
+  const match = message.match(
+    /(?:request[\s_-]*id|请求\s*(?:id|编号))\s*[:：=]?\s*([A-Za-z0-9][A-Za-z0-9._-]{5,127})/i
+  );
+  return match?.[1];
+}
+
+/**
+ * 判断是否为认证错误。部分兼容接口会以 400 返回中文错误，不能只依赖状态码。
+ */
+function isAuthError(error: Error): boolean {
+  const message = error.message.toLowerCase();
+  return (
+    message.includes('无效的令牌') ||
+    message.includes('令牌无效') ||
+    message.includes('无效的 api key') ||
+    message.includes('api key 无效') ||
+    message.includes('认证失败') ||
+    message.includes('鉴权失败') ||
+    message.includes('invalid token') ||
+    message.includes('invalid api key') ||
+    message.includes('incorrect api key') ||
+    message.includes('invalid_api_key') ||
+    message.includes('authentication failed') ||
+    message.includes('authentication_error') ||
+    message.includes('unauthorized')
+  );
 }
 
 /**
@@ -151,12 +177,15 @@ export function classifyError(
   const originalMessage = error.message || '未知错误';
   let category = ErrorCategory.UNKNOWN;
   let httpStatus: number | undefined;
+  const requestId = extractRequestId(originalMessage);
 
   // 1. 按优先级检测错误类型
   if (isCancelledError(error)) {
     category = ErrorCategory.CANCELLED;
   } else if (isTimeoutError(error)) {
     category = ErrorCategory.TIMEOUT;
+  } else if (isAuthError(error)) {
+    category = ErrorCategory.AUTH;
   } else if (isNetworkError(error)) {
     category = ErrorCategory.NETWORK;
   } else {
@@ -186,6 +215,7 @@ export function classifyError(
     originalMessage,
     friendlyMessage,
     httpStatus,
+    requestId,
     retryable,
   };
 }
@@ -194,12 +224,11 @@ export function classifyError(
  * 格式化错误消息（包含原始消息和友好提示）
  * 用于在 taskStorageWriter.failTask 中设置 message 字段
  */
-export function formatFriendlyError(
-  error: Error,
-  taskType?: string
-): string {
+export function formatFriendlyError(error: Error, taskType?: string): string {
   const classified = classifyError(error, taskType);
-  return `${classified.friendlyMessage}`;
+  return classified.requestId
+    ? `${classified.friendlyMessage}（请求 ID：${classified.requestId}）`
+    : classified.friendlyMessage;
 }
 
 /**

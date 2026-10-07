@@ -4,14 +4,15 @@
 - [ ] Confirm preview or official delivery.
 
 ## 2. Implementation
-- [ ] Add responsive download page with real product imagery.
-- [ ] Resolve platform assets and truthful loading/error/unavailable states.
-- [ ] Configure page build/deployment and selected desktop delivery workflow.
-- [ ] Update desktop version consistently.
+- [x] Add responsive download page with real product imagery.
+- [x] Resolve platform assets and truthful loading/error/unavailable states.
+- [x] Configure page packaging and unsigned verification artifact build workflow.
+- [x] Update desktop version consistently to 1.2.11.
 
 ## 3. Verification And Delivery
-- [ ] Verify desktop/mobile appearance and asset selection.
-- [ ] Build page and desktop artifacts.
-- [ ] Inspect changes for accidental credential inclusion.
-- [ ] Commit and push to requested repository.
+- [x] Verify desktop/mobile appearance and asset selection.
+- [x] Build page and local macOS app/DMG artifacts.
+- [x] Inspect changes for accidental credential inclusion.
+- [x] Commit and push to requested repository branch.
 - [ ] Run remote build and verify downloadable artifacts.
+- [ ] Arrange public hosting for private-repository downloads and signing/notarization for official delivery.

@@ -13,4 +13,4 @@ Desktop users need a clear download entry that reflects actual release assets. T
 ## Impact
 - Affected specs: desktop-download.
 - Affected code: download page, GitHub workflows, desktop version metadata.
-- Approval: pending user's selection of preview or official delivery.
+- Page and source build scope: requested directly by the user. Public preview versus signed official delivery remains pending the user's selection.

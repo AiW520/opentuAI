@@ -70,7 +70,6 @@ import {
   TUZI_CODEX_PROVIDER_PROFILE_ID,
   TUZI_ORIGINAL_PROVIDER_PROFILE_ID,
   TUZI_PROVIDER_DEFAULT_BASE_URL,
-  updateActiveInvocationRouteModel,
   type ImageApiCompatibility,
   type InvocationPreset,
   type ModelRef,
@@ -97,11 +96,24 @@ import { useConfirmDialog } from '../dialog/ConfirmDialog';
 import { ModelDropdown } from '../ai-input-bar/ModelDropdown';
 import { WinBoxWindow } from '../winbox';
 import { TtsSettingsPanel } from '../project-drawer/TtsSettingsPanel';
+import { TuziAccountPanel } from './TuziAccountPanel';
+import {
+  isTuziEmbeddedMode,
+  tuziEmbeddedConfig,
+} from '../../services/tuzi-embedded-config';
+import {
+  requestTuziParentContext,
+  getTuziBridgeContext,
+  getTuziBridgeError,
+  TUZI_BRIDGE_EVENT,
+} from '../../services/tuzi-postmessage-bridge';
+import { syncTuziSessionProviders } from '../../services/tuzi-session-provider-sync';
+import { hasTuziSystemToken } from '../../services/tuzi-token-auth';
 import { openModelBenchmarkTool } from '../../services/model-benchmark-launcher';
 import {
   analytics,
   getProviderEndpointAnalytics,
-} from '../../utils/posthog-analytics';
+} from '../../utils/umami-analytics';
 import { modelBenchmarkService } from '../../services/model-benchmark-service';
 import { HoverTip } from '../shared/hover';
 import { createProviderProfileDraft } from './provider-profile-draft';
@@ -117,11 +129,21 @@ import {
   TUZI_API_FALLBACK_ENDPOINTS,
   type TuziApiEndpointSource,
 } from '../../services/provider-routing/tuzi-api-endpoints';
+import {
+  canDisableProvider,
+  isManagedProviderProfile,
+  shouldShowProviderProfile,
+} from './provider-toggle-utils';
+import {
+  SETTINGS_PROVIDER_NAV_EVENT,
+  TUZI_GROUPS_ADDED_EVENT,
+  type ProviderNavigationIntent,
+} from './provider-settings-navigation';
 
 export { IMAGE_MODEL_GROUPED_SELECT_OPTIONS as IMAGE_MODEL_GROUPED_OPTIONS } from '../../constants/model-config';
 export { VIDEO_MODEL_SELECT_OPTIONS as VIDEO_MODEL_OPTIONS } from '../../constants/model-config';
 
-type SettingsView = 'providers' | 'presets' | 'canvas' | 'speech' | 'storage';
+type SettingsView = 'providers' | 'presets' | 'canvas' | 'speech' | 'storage' | 'tuzi-account';
 type CompactPanelMode = 'catalog' | 'detail';
 type EndpointSelectionMode = 'auto' | 'manual';
 type EndpointLatency = number | 'failed' | null;
@@ -138,11 +160,6 @@ type CustomModelInterfacePreset =
   | 'seedance-video'
   | 'happyhorse-video'
   | 'tuzi-suno-music';
-type ProviderNavigationIntent =
-  | { action: 'select'; profileId: string }
-  | { action: 'create' };
-
-const SETTINGS_PROVIDER_NAV_EVENT = 'aitu:settings:provider-nav';
 const SETTINGS_DIALOG_COMPACT_BREAKPOINT = 980;
 const TUZI_PROVIDER_PROFILE_IDS = new Set([
   LEGACY_DEFAULT_PROVIDER_PROFILE_ID,
@@ -166,6 +183,7 @@ function isTuziProviderProfile(profile?: ProviderProfile | null): boolean {
   return Boolean(
     profile &&
       (TUZI_PROVIDER_PROFILE_IDS.has(profile.id) ||
+        isTuziManagedProviderProfileId(profile.id) ||
         isTrustedTuziApiBaseUrl(profile.baseUrl))
   );
 }
@@ -182,6 +200,10 @@ function tauriInvoke<T>(command: string, args?: Record<string, unknown>): Promis
   return internals.invoke(command, args);
 }
 
+function isTuziManagedProviderProfileId(profileId?: string | null): boolean {
+  return Boolean(profileId?.startsWith('tuzi-managed-'));
+}
+
 const VIEW_SECTIONS: Array<{ value: SettingsView; label: string }> = [
   { value: 'providers', label: '供应商' },
   { value: 'presets', label: '模型预设' },
@@ -189,6 +211,11 @@ const VIEW_SECTIONS: Array<{ value: SettingsView; label: string }> = [
   { value: 'speech', label: '语音播放' },
   ...(isDesktopTauri ? [{ value: 'storage' as SettingsView, label: '存储路径' }] : []),
 ];
+
+const TUZI_ACCOUNT_SECTION: { value: SettingsView; label: string } = {
+  value: 'tuzi-account',
+  label: 'Tuzi 账户',
+};
 
 const PROVIDER_TYPE_OPTIONS: ProviderProfile['providerType'][] = [
   'openai-compatible',
@@ -936,16 +963,6 @@ function inferAuthTypeForProviderType(
   return 'bearer';
 }
 
-function isManagedProviderProfile(profileId: string): boolean {
-  return (
-    profileId === LEGACY_DEFAULT_PROVIDER_PROFILE_ID ||
-    profileId === TUZI_ORIGINAL_PROVIDER_PROFILE_ID ||
-    profileId === TUZI_MIX_PROVIDER_PROFILE_ID ||
-    profileId === TUZI_CODEX_PROVIDER_PROFILE_ID ||
-    profileId === TUZI_BUSINESS_PROVIDER_PROFILE_ID
-  );
-}
-
 const ProviderAvatar = ({
   profile,
   size = 'regular',
@@ -1137,8 +1154,44 @@ export const SettingsDialog = ({
   } = useDeviceType();
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const [dialogWidth, setDialogWidth] = useState(0);
+  const [tuziMode, setTuziMode] = useState(
+    () =>
+      isTuziEmbeddedMode() ||
+      (tuziEmbeddedConfig.enabled && window.parent !== window)
+  );
+  const [accountBoundary, setAccountBoundary] = useState('');
+  useEffect(() => {
+    const syncBridgeMode = () => {
+      setTuziMode(
+        isTuziEmbeddedMode() ||
+          (tuziEmbeddedConfig.enabled && window.parent !== window)
+      );
+      const context = getTuziBridgeContext();
+      const boundary = `${context?.userId || ''}:${context?.status || ''}:${
+        getTuziBridgeError() || ''
+      }`;
+      setAccountBoundary(boundary);
+    };
+    window.addEventListener(TUZI_BRIDGE_EVENT, syncBridgeMode);
 
-  const [activeView, setActiveView] = useState<SettingsView>('providers');
+    if (appState.openSettings || window.parent !== window) {
+      void requestTuziParentContext({ refresh: appState.openSettings }).finally(
+        syncBridgeMode
+      );
+    }
+    syncBridgeMode();
+
+    return () => window.removeEventListener(TUZI_BRIDGE_EVENT, syncBridgeMode);
+  }, [appState.openSettings]);
+  const settingsSections = tuziMode
+    ? [TUZI_ACCOUNT_SECTION, ...VIEW_SECTIONS]
+    : VIEW_SECTIONS;
+
+  const [activeView, setActiveView] = useState<SettingsView>(() =>
+    tuziMode ? 'tuzi-account' : 'providers'
+  );
+  const [tuziGroupPickerRequest, setTuziGroupPickerRequest] = useState(0);
+  const groupPickerReturnTo = useRef<string | undefined>(undefined);
   const [selectedProfileId, setSelectedProfileId] = useState(
     LEGACY_DEFAULT_PROVIDER_PROFILE_ID
   );
@@ -1257,6 +1310,10 @@ export const SettingsDialog = ({
   );
 
   const enabledProfiles = profilesDraft.filter((profile) => profile.enabled);
+  const showTuziProviders =
+    tuziMode &&
+    getTuziBridgeContext()?.status === 'ready' &&
+    hasTuziSystemToken();
   const isCompactLayout =
     isMobileDevice || viewportWidth <= SETTINGS_DIALOG_COMPACT_BREAKPOINT;
 
@@ -1349,7 +1406,7 @@ export const SettingsDialog = ({
     };
   }, [appState.openSettings]);
 
-  const handleViewChange = (nextView: SettingsView) => {
+  const handleViewChange = async (nextView: SettingsView) => {
     analytics.trackUIInteraction({
       area: 'settings',
       action: 'view_changed',
@@ -1358,6 +1415,31 @@ export const SettingsDialog = ({
       source: 'settings_dialog',
     });
     setActiveView(nextView);
+
+    if (nextView === 'providers' && tuziMode) {
+      const safeProfiles = cloneValue(providerProfilesSettings.get());
+      setProfilesDraft(safeProfiles);
+      setSelectedProfileId((currentProfileId) =>
+        safeProfiles.some((profile) => profile.id === currentProfileId)
+          ? currentProfileId
+          : safeProfiles[0]?.id || LEGACY_DEFAULT_PROVIDER_PROFILE_ID
+      );
+
+      void syncTuziSessionProviders({ discoverModels: false }).then(
+        (synchronized) => {
+          if (!synchronized) return;
+          const nextProfiles = cloneValue(providerProfilesSettings.get());
+          setProfilesDraft(nextProfiles);
+          setInitialProfiles(nextProfiles);
+          setSelectedProfileId((currentProfileId) =>
+            nextProfiles.some((profile) => profile.id === currentProfileId)
+              ? currentProfileId
+              : nextProfiles[0]?.id || LEGACY_DEFAULT_PROVIDER_PROFILE_ID
+          );
+          syncPersistedBaseline();
+        }
+      );
+    }
 
     if (!isCompactLayout) {
       return;
@@ -1440,6 +1522,35 @@ export const SettingsDialog = ({
     );
   };
 
+  const handleTuziProvidersChanged = () => {
+    const nextProfiles = cloneValue(providerProfilesSettings.get());
+    setProfilesDraft(nextProfiles);
+    setInitialProfiles(nextProfiles);
+    setSelectedProfileId((currentProfileId) => {
+      const currentIsVisible = nextProfiles.some(
+        (profile) =>
+          profile.id === currentProfileId &&
+          shouldShowProviderProfile(
+            profile.id,
+            hasTuziSystemToken(),
+            Boolean(profile.apiKey?.trim())
+          )
+      );
+      if (currentIsVisible) return currentProfileId;
+
+      return (
+        nextProfiles.find((profile) =>
+          shouldShowProviderProfile(
+            profile.id,
+            hasTuziSystemToken(),
+            Boolean(profile.apiKey?.trim())
+          )
+        )?.id || LEGACY_DEFAULT_PROVIDER_PROFILE_ID
+      );
+    });
+    syncPersistedBaseline();
+  };
+
   useEffect(() => {
     if (!appState.openSettings) {
       return;
@@ -1460,19 +1571,17 @@ export const SettingsDialog = ({
         (profile) => profile.id === pendingProviderIntent.profileId
       )
         ? pendingProviderIntent.profileId
+        : nextProfiles.some(
+            (profile) => profile.id === LEGACY_DEFAULT_PROVIDER_PROFILE_ID
+          )
+        ? LEGACY_DEFAULT_PROVIDER_PROFILE_ID
         : nextProfiles[0]?.id || LEGACY_DEFAULT_PROVIDER_PROFILE_ID;
 
     setProfilesDraft(nextProfiles);
     setPresetsDraft(nextPresets);
     setInitialProfiles(nextProfiles);
     setActivePresetIdDraft(nextActivePresetId);
-    setSelectedProfileId((currentProfileId) =>
-      pendingProviderIntent
-        ? nextSelectedProfileId
-        : nextProfiles.some((profile) => profile.id === currentProfileId)
-        ? currentProfileId
-        : nextProfiles[0]?.id || LEGACY_DEFAULT_PROVIDER_PROFILE_ID
-    );
+    setSelectedProfileId(nextSelectedProfileId);
     setSelectedPresetId((currentPresetId) =>
       nextPresets.some((preset) => preset.id === currentPresetId)
         ? currentPresetId
@@ -1491,7 +1600,10 @@ export const SettingsDialog = ({
     }
     setShowWorkZoneCard(nextShowWorkZoneCard);
 
-    setActiveView('providers');
+    const nextActiveView: SettingsView = tuziMode
+      ? 'tuzi-account'
+      : 'providers';
+    setActiveView(nextActiveView);
     setCompactProviderMode(
       pendingProviderIntent && isCompactLayout ? 'detail' : 'catalog'
     );
@@ -1511,10 +1623,10 @@ export const SettingsDialog = ({
       })
     );
 
-    if (pendingProviderIntent?.action === 'create') {
+    if (pendingProviderIntent) {
       applyProviderNavigationIntent(pendingProviderIntent, nextProfiles);
     }
-  }, [appState.openSettings]);
+  }, [appState.openSettings, tuziMode]);
 
   useEffect(() => {
     if (!selectedProfileId && profilesDraft[0]) {
@@ -1525,11 +1637,27 @@ export const SettingsDialog = ({
     if (
       selectedProfileId &&
       profilesDraft.length > 0 &&
-      !profilesDraft.some((profile) => profile.id === selectedProfileId)
+      (!profilesDraft.some((profile) => profile.id === selectedProfileId) ||
+        !shouldShowProviderProfile(
+          selectedProfileId,
+          showTuziProviders,
+          Boolean(
+            profilesDraft
+              .find((profile) => profile.id === selectedProfileId)
+              ?.apiKey?.trim()
+          )
+        ))
     ) {
-      setSelectedProfileId(profilesDraft[0].id);
+      const firstVisibleProfile = profilesDraft.find((profile) =>
+        shouldShowProviderProfile(
+          profile.id,
+          showTuziProviders,
+          Boolean(profile.apiKey?.trim())
+        )
+      );
+      if (firstVisibleProfile) setSelectedProfileId(firstVisibleProfile.id);
     }
-  }, [profilesDraft, selectedProfileId]);
+  }, [profilesDraft, selectedProfileId, showTuziProviders]);
 
   useEffect(() => {
     if (!selectedPresetId && presetsDraft[0]) {
@@ -1713,14 +1841,8 @@ export const SettingsDialog = ({
         ...profile,
         baseUrl: normalizedApiBaseUrl,
       }));
-      if (selectedProfile.id === LEGACY_DEFAULT_PROVIDER_PROFILE_ID) {
-        void geminiSettings.update({
-          ...geminiSettings.get(),
-          baseUrl: normalizedApiBaseUrl,
-        });
-      }
     },
-    [endpointOptions, selectedProfile?.id]
+    [selectedProfile?.id]
   );
 
   const handleEndpointAutoSelectChange = useCallback(
@@ -1861,16 +1983,17 @@ export const SettingsDialog = ({
         persistedGemini.chatModel ||
         getDefaultTextModel();
 
-      await invocationPresetsSettings.update(cloneValue(nextPresets));
-      await invocationPresetsSettings.setActivePresetId(
-        effectiveActivePresetId
-      );
-      await geminiSettings.update({
-        audioModelName: nextAudioModelName,
-        imageModelName: nextImageModelName,
-        videoModelName: nextVideoModelName,
-        textModelName: nextTextModelName,
-        chatModel: nextTextModelName,
+      await settingsManager.updateSettings({
+        invocationPresets: cloneValue(nextPresets),
+        activePresetId: effectiveActivePresetId,
+        gemini: {
+          ...persistedGemini,
+          audioModelName: nextAudioModelName,
+          imageModelName: nextImageModelName,
+          videoModelName: nextVideoModelName,
+          textModelName: nextTextModelName,
+          chatModel: nextTextModelName,
+        },
       });
 
       setPresetsDraft(nextPresets);
@@ -1926,7 +2049,6 @@ export const SettingsDialog = ({
       return false;
     }
 
-    await updateActiveInvocationRouteModel(modelType, nextModelRef);
     setPresetsDraft((current) =>
       current.map((preset) =>
         preset.id === targetPresetId
@@ -1940,10 +2062,12 @@ export const SettingsDialog = ({
     return true;
   };
 
-  const handleProviderEnabledChange = async (
-    profileId: string,
-    enabled: boolean
-  ) => {
+  const handleProviderEnabledChange = (profileId: string, enabled: boolean) => {
+    if (!enabled && !canDisableProvider(profilesDraft, profileId)) {
+      MessagePlugin.warning('至少需要保留一个启用的供应商');
+      return;
+    }
+
     analytics.trackUIInteraction({
       area: 'settings',
       action: 'provider_enabled_changed',
@@ -1960,27 +2084,6 @@ export const SettingsDialog = ({
         profile.id === profileId ? { ...profile, enabled } : profile
       )
     );
-
-    if (!initialProfiles.some((profile) => profile.id === profileId)) {
-      return;
-    }
-
-    try {
-      await providerProfilesSettings.update(
-        cloneValue(providerProfilesSettings.get()).map((profile) =>
-          profile.id === profileId ? { ...profile, enabled } : profile
-        )
-      );
-      syncPersistedBaseline();
-    } catch (error) {
-      console.error('Failed to persist provider enabled state:', error);
-      setProfilesDraft((current) =>
-        current.map((profile) =>
-          profile.id === profileId ? { ...profile, enabled: !enabled } : profile
-        )
-      );
-      MessagePlugin.error('供应商状态保存失败，请重试');
-    }
   };
 
   const handleCanvasVisibilityChange = async (checked: boolean) => {
@@ -2009,6 +2112,13 @@ export const SettingsDialog = ({
     baseProfiles?: ProviderProfile[]
   ) => {
     const sourceProfiles = baseProfiles || profilesDraft;
+
+    if (intent.action === 'tuzi-groups') {
+      groupPickerReturnTo.current = intent.returnTo;
+      setActiveView('tuzi-account');
+      setTuziGroupPickerRequest((current) => current + 1);
+      return sourceProfiles;
+    }
 
     setActiveView('providers');
     if (isCompactLayout) {
@@ -2729,6 +2839,7 @@ export const SettingsDialog = ({
   };
 
   const closeSettingsDialog = () => {
+    groupPickerReturnTo.current = undefined;
     setAppState((prev) => ({ ...prev, openSettings: false }));
   };
 
@@ -2970,125 +3081,125 @@ export const SettingsDialog = ({
     handleCancel();
   };
 
-  const renderProviderList = () => (
-    <div className="settings-dialog__sidebar-shell settings-dialog__sidebar-shell--catalog">
-      <div className="settings-dialog__sidebar-summary">
-        <div className="settings-dialog__sidebar-summary-row">
-          <span className="settings-dialog__sidebar-summary-title">
-            供应商目录
-          </span>
-          {isCompactLayout ? (
-            <button
-              type="button"
-              className="settings-dialog__sidebar-summary-action"
-              onClick={handleAddProfile}
-            >
-              新增供应商
-            </button>
-          ) : null}
-        </div>
-        {isCompactLayout ? (
-          <span className="settings-dialog__sidebar-summary-text">
-            先从列表里选择供应商，再进入对应的配置页面。
-          </span>
-        ) : null}
-      </div>
+  const renderProviderRow = (profile: ProviderProfile) => {
+    const isSelected = profile.id === selectedProfile?.id;
 
-      <div className="settings-dialog__sidebar-list">
-        {profilesDraft.map((profile) => {
-          const isSelected = profile.id === selectedProfile?.id;
-
-          return (
-            <div
-              key={profile.id}
-              className={`settings-dialog__provider-row ${
-                isSelected ? 'settings-dialog__provider-row--active' : ''
-              } ${
-                profile.enabled ? '' : 'settings-dialog__provider-row--disabled'
-              }`}
-              onContextMenu={(event) => {
-                event.preventDefault();
-                providerContextMenu.open(event, profile.id);
-              }}
-            >
-              <button
-                type="button"
-                className="settings-dialog__provider-select"
-                onClick={() => handleSelectProfile(profile.id)}
-                aria-pressed={isSelected}
-              >
-                <span className="settings-dialog__provider-select-main">
-                  <ProviderAvatar profile={profile} />
-                  <span className="settings-dialog__provider-copy">
-                    <span className="settings-dialog__provider-name-row">
-                      <span className="settings-dialog__provider-name">
-                        {profile.name}
-                      </span>
-                      {profile.id === LEGACY_DEFAULT_PROVIDER_PROFILE_ID ? (
-                        <span className="settings-dialog__provider-tag">
-                          默认
-                        </span>
-                      ) : null}
-                    </span>
-                    {isCompactLayout ? (
-                      <span className="settings-dialog__provider-meta">
-                        <span>
-                          {PROVIDER_TYPE_META[profile.providerType].label}
-                        </span>
-                        <span>{profile.enabled ? '启用' : '停用'}</span>
-                      </span>
-                    ) : null}
-                  </span>
-                </span>
-                {isCompactLayout ? (
-                  <ChevronRight
-                    size={16}
-                    className="settings-dialog__provider-arrow"
-                    aria-hidden="true"
-                  />
-                ) : null}
-              </button>
-
-              <div className="settings-dialog__provider-switch">
-                <span className="settings-dialog__provider-switch-copy">
-                  {profile.enabled ? '启用' : '停用'}
-                </span>
-                <Switch
-                  size="small"
-                  value={profile.enabled}
-                  disabled={profile.id === LEGACY_DEFAULT_PROVIDER_PROFILE_ID}
-                  onChange={(checked) =>
-                    void handleProviderEnabledChange(
-                      profile.id,
-                      checked as boolean
-                    )
-                  }
-                />
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      <ContextMenu
-        state={providerContextMenu.contextMenu}
-        items={providerContextMenuItems}
-        onClose={providerContextMenu.close}
-        zIndex={20000}
-      />
-
-      {!isCompactLayout ? (
+    return (
+      <div
+        key={profile.id}
+        className={`settings-dialog__provider-row ${
+          isSelected ? 'settings-dialog__provider-row--active' : ''
+        } ${profile.enabled ? '' : 'settings-dialog__provider-row--disabled'}`}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          providerContextMenu.open(event, profile.id);
+        }}
+      >
         <button
           type="button"
-          className="settings-dialog__sidebar-add"
-          onClick={handleAddProfile}
+          className="settings-dialog__provider-select"
+          onClick={() => handleSelectProfile(profile.id)}
+          aria-pressed={isSelected}
         >
-          <span className="settings-dialog__sidebar-add-icon">+</span>
-          <span>新增供应商</span>
+          <span className="settings-dialog__provider-select-main">
+            <ProviderAvatar profile={profile} />
+            <span className="settings-dialog__provider-copy">
+              <span className="settings-dialog__provider-name-row">
+                <span className="settings-dialog__provider-name">
+                  {profile.name}
+                </span>
+                {profile.id === LEGACY_DEFAULT_PROVIDER_PROFILE_ID ? (
+                  <span className="settings-dialog__provider-tag">默认</span>
+                ) : null}
+              </span>
+              {isCompactLayout ? (
+                <span className="settings-dialog__provider-meta">
+                  <span>{PROVIDER_TYPE_META[profile.providerType].label}</span>
+                  <span>{profile.enabled ? '启用' : '停用'}</span>
+                </span>
+              ) : null}
+            </span>
+          </span>
+          {isCompactLayout ? (
+            <ChevronRight
+              size={16}
+              className="settings-dialog__provider-arrow"
+              aria-hidden="true"
+            />
+          ) : null}
         </button>
-      ) : null}
-    </div>
-  );
+
+        <div className="settings-dialog__provider-switch">
+          <span className="settings-dialog__provider-switch-copy">
+            {profile.enabled ? '启用' : '停用'}
+          </span>
+          <Switch
+            size="small"
+            value={profile.enabled}
+            onChange={(checked) =>
+              void handleProviderEnabledChange(profile.id, checked as boolean)
+            }
+          />
+        </div>
+      </div>
+    );
+  };
+
+  const renderProviderList = () => {
+    const accountProfiles = showTuziProviders
+      ? profilesDraft.filter((profile) =>
+          isTuziManagedProviderProfileId(profile.id)
+        )
+      : [];
+    const customProfiles = profilesDraft.filter(
+      (profile) =>
+        shouldShowProviderProfile(
+          profile.id,
+          showTuziProviders,
+          Boolean(profile.apiKey?.trim())
+        ) && !isTuziManagedProviderProfileId(profile.id)
+    );
+
+    return (
+      <div className="settings-dialog__sidebar-shell settings-dialog__sidebar-shell--catalog">
+        <div className="settings-dialog__provider-groups">
+          <section className="settings-dialog__provider-group">
+            <div className="settings-dialog__provider-group-heading">
+              <span>自定义供应商</span>
+              <button
+                type="button"
+                className="settings-dialog__sidebar-summary-action"
+                onClick={handleAddProfile}
+              >
+                新增供应商
+              </button>
+            </div>
+            <div className="settings-dialog__provider-group-list">
+              {customProfiles.map(renderProviderRow)}
+            </div>
+          </section>
+
+          {accountProfiles.length > 0 ? (
+            <section className="settings-dialog__provider-group settings-dialog__provider-group--account">
+              <div className="settings-dialog__provider-group-heading">
+                <span>Tuzi 账户分组</span>
+              </div>
+              <div className="settings-dialog__provider-group-list">
+                {accountProfiles.map(renderProviderRow)}
+              </div>
+            </section>
+          ) : null}
+        </div>
+
+        <ContextMenu
+          state={providerContextMenu.contextMenu}
+          items={providerContextMenuItems}
+          onClose={providerContextMenu.close}
+          zIndex={20000}
+        />
+      </div>
+    );
+  };
 
   const renderPresetList = () => (
     <div className="settings-dialog__sidebar-shell">
@@ -3182,9 +3293,20 @@ export const SettingsDialog = ({
   );
 
   const renderProviderForm = (compactMode = false) => {
-    if (!selectedProfile) {
+    if (
+      !selectedProfile ||
+      !shouldShowProviderProfile(
+        selectedProfile.id,
+        showTuziProviders,
+        Boolean(selectedProfile.apiKey?.trim())
+      )
+    ) {
       return (
-        <div className="settings-dialog__empty-panel">请选择一个供应商。</div>
+        <div className="settings-dialog__empty-panel">
+          {showTuziProviders
+            ? '请选择一个供应商。'
+            : '配置 Tuzi 系统访问令牌后才能管理 Tuzi 供应商。'}
+        </div>
       );
     }
 
@@ -3381,13 +3503,6 @@ export const SettingsDialog = ({
                     ...profile,
                     preferAsyncImageEndpoint: value,
                   }));
-                  providerProfilesSettings.update(
-                    cloneValue(providerProfilesSettings.get()).map((profile) =>
-                      profile.id === selectedProfile.id
-                        ? { ...profile, preferAsyncImageEndpoint: value }
-                        : profile
-                    )
-                  );
                 }}
               />
               <span
@@ -4863,7 +4978,7 @@ export const SettingsDialog = ({
       <aside className="settings-dialog__nav">
         <div className="settings-dialog__nav-shell">
           <div className="settings-dialog__nav-list">
-            {VIEW_SECTIONS.map((item) => (
+            {settingsSections.map((item) => (
               <button
                 key={item.value}
                 type="button"
@@ -4886,6 +5001,28 @@ export const SettingsDialog = ({
   };
 
   const renderActiveView = () => {
+    if (activeView === 'tuzi-account') {
+      return (
+        <TuziAccountPanel
+          key={accountBoundary}
+          onGroupsAdded={() => {
+            const returnTo = groupPickerReturnTo.current;
+            groupPickerReturnTo.current = undefined;
+            if (returnTo) {
+              closeSettingsDialog();
+              window.dispatchEvent(
+                new CustomEvent(TUZI_GROUPS_ADDED_EVENT, {
+                  detail: { returnTo },
+                })
+              );
+            }
+          }}
+          onProvidersChanged={handleTuziProvidersChanged}
+          onSetupCompleted={closeSettingsDialog}
+          openProviderSelectionRequest={tuziGroupPickerRequest}
+        />
+      );
+    }
     if (activeView === 'canvas') {
       return renderCanvasSettings();
     }

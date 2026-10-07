@@ -120,6 +120,8 @@ export interface ImageGenerationParams {
   sourceTaskId?: string;
   /** 目标替换任务的来源提示词 */
   sourcePrompt?: string;
+  /** 是否由支持永久跟随开关的 AI 任务栏目标提交 */
+  boundTargetFollowControlled?: boolean;
   /** 是否自动插入画布 */
   autoInsertToCanvas?: boolean;
   /** 提示词历史轻量元数据 */
@@ -128,6 +130,8 @@ export interface ImageGenerationParams {
   assetMetadata?: GenerationParams['assetMetadata'];
   /** 本次生成使用的知识库笔记轻量引用 */
   knowledgeContextRefs?: KnowledgeContextRef[];
+  /** 本次生成显式提及的画布元素轻量引用 */
+  canvasAssociations?: GenerationParams['canvasAssociations'];
   /** 连环画生成器动作元数据 */
   comicCreatorAction?: 'page-image';
   /** 连环画记录 ID */
@@ -258,12 +262,16 @@ async function executeAsync(
         format: format === 'bin' ? result.format || 'png' : format,
         prompt,
         size: size || '1x1',
+        requestId,
       },
       type: 'image',
     };
   } catch (error: any) {
     console.error('[ImageGenerationTool] Generation failed:', error);
-    return wrapApiError(error, '图片生成失败');
+    return {
+      ...wrapApiError(error, '图片生成失败'),
+      data: { requestId },
+    };
   }
 }
 
@@ -307,9 +315,11 @@ function getImageQueueConfig(params: ImageGenerationParams) {
         anchorId: params.anchorId,
         sourceTaskId: params.sourceTaskId,
         sourcePrompt: params.sourcePrompt,
+        boundTargetFollowControlled: params.boundTargetFollowControlled,
         promptMeta: params.promptMeta,
         assetMetadata: params.assetMetadata,
         knowledgeContextRefs: params.knowledgeContextRefs,
+        canvasAssociations: params.canvasAssociations,
         comicCreatorAction: params.comicCreatorAction,
         comicCreatorRecordId: params.comicCreatorRecordId,
         comicCreatorPageId: params.comicCreatorPageId,

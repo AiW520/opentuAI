@@ -26,6 +26,7 @@ import {
 import { isDesktopAssetUrl } from './desktop-asset-url';
 import { isVirtualMediaUrl } from './virtual-media-url';
 import { writeDesktopBinaryFile } from './desktop-binary-writer';
+import { unifiedCacheService } from '../services/unified-cache-service';
 
 export interface SmartDownloadResult {
   openedCount: number;
@@ -406,6 +407,100 @@ function getTypeFallbackExtension(type: BatchDownloadItem['type']): string {
   return 'mp3';
 }
 
+function readBlobHeader(blob: Blob, byteLength: number): Promise<Uint8Array> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result;
+      resolve(
+        result instanceof ArrayBuffer
+          ? new Uint8Array(result)
+          : new Uint8Array()
+      );
+    };
+    reader.onerror = () =>
+      reject(reader.error || new Error('无法读取媒体文件头'));
+    reader.readAsArrayBuffer(blob.slice(0, byteLength));
+  });
+}
+
+async function sniffMediaExtension(
+  blob: Blob,
+  type: BatchDownloadItem['type'],
+  sourceUrl: string
+): Promise<string> {
+  const normalizedMimeType = blob.type.toLowerCase().split(';')[0].trim();
+  if (
+    normalizedMimeType === 'text/html' ||
+    normalizedMimeType === 'application/json'
+  ) {
+    throw new Error('下载地址返回的不是媒体文件');
+  }
+
+  const header = await readBlobHeader(blob, 16);
+  if (
+    header.length >= 8 &&
+    header[4] === 0x66 &&
+    header[5] === 0x74 &&
+    header[6] === 0x79 &&
+    header[7] === 0x70
+  ) {
+    return 'mp4';
+  }
+  if (
+    header.length >= 4 &&
+    header[0] === 0x1a &&
+    header[1] === 0x45 &&
+    header[2] === 0xdf &&
+    header[3] === 0xa3
+  ) {
+    return 'webm';
+  }
+  if (
+    header.length >= 4 &&
+    header[0] === 0x4f &&
+    header[1] === 0x67 &&
+    header[2] === 0x67 &&
+    header[3] === 0x53
+  ) {
+    return 'ogg';
+  }
+
+  const mimeExtension = getFileExtension('', normalizedMimeType);
+  if (mimeExtension !== 'bin') {
+    return mimeExtension;
+  }
+
+  return resolveDownloadExtension(
+    sourceUrl,
+    getTypeFallbackExtension(type)
+  );
+}
+
+function replaceFilenameExtension(filename: string, extension: string): string {
+  const dotIndex = filename.lastIndexOf('.');
+  const baseName = dotIndex > 0 ? filename.slice(0, dotIndex) : filename;
+  return `${baseName}.${extension}`;
+}
+
+async function readDownloadBlob(item: BatchDownloadItem): Promise<Blob> {
+  if (isVirtualMediaUrl(item.url)) {
+    const cachedBlob = await unifiedCacheService.getCachedBlob(item.url);
+    if (!cachedBlob?.size) {
+      throw new Error('本地媒体缓存不可用，请重新生成');
+    }
+    return cachedBlob;
+  }
+
+  const assetUrl =
+    item.type === 'image' ? normalizeImageDataUrl(item.url) : item.url;
+  const response = await fetch(assetUrl, { referrerPolicy: 'no-referrer' });
+  if (!response.ok) {
+    throw new Error(`Failed to fetch ${assetUrl}: ${response.status}`);
+  }
+  return response.blob();
+}
+
 function resolveDownloadExtension(
   primaryValue: string | undefined,
   fallbackExtension: string,
@@ -561,7 +656,8 @@ export function buildTaskDownloadItems(
 export async function downloadAsZip(
   items: BatchDownloadItem[],
   zipFilename?: string,
-  onProgress?: DownloadProgressCallback
+  onProgress?: DownloadProgressCallback,
+  extraFiles?: Array<{ filename: string; content: Blob | string }>
 ): Promise<SmartDownloadResult> {
   if (items.length === 0) {
     throw new Error('No files to download');
@@ -593,7 +689,7 @@ export async function downloadAsZip(
       try {
         const assetUrl =
           item.type === 'image' ? normalizeImageDataUrl(item.url) : item.url;
-        const sourceBlob = await getSourceBlobForDownload(assetUrl);
+        const sourceBlob = await readDownloadBlob(item);
         const blob =
           item.type === 'audio'
             ? await applyAudioMetadataToBlob(
@@ -602,7 +698,7 @@ export async function downloadAsZip(
                 assetUrl
               )
             : sourceBlob;
-        const ext = getFileExtension(assetUrl, blob.type);
+        const ext = await sniffMediaExtension(blob, item.type, assetUrl);
 
         const prefix =
           item.type === 'image'
@@ -613,7 +709,9 @@ export async function downloadAsZip(
             ? 'file'
             : 'audio';
         const filename = getUniqueFilename(
-          item.filename || `${prefix}_${index + 1}.${ext}`,
+          item.filename
+            ? replaceFilenameExtension(item.filename, ext)
+            : `${prefix}_${index + 1}.${ext}`,
           seenFilenames
         );
 
@@ -635,6 +733,10 @@ export async function downloadAsZip(
   if (addedCount === 0) {
     throw new Error('No files available to download');
   }
+
+  extraFiles?.forEach(({ filename, content }) => {
+    zip.file(filename, content);
+  });
 
   // 生成 ZIP 并下载
   const content = await zip.generateAsync({ type: 'blob' }, (metadata) => {
@@ -724,7 +826,6 @@ export async function smartDownload(
         return result;
       }
     }
-
     if (item.type === 'audio') {
       const result = await runSingleDownloadWithFallback(assetUrl, async () => {
         const response = await fetch(assetUrl, {
@@ -742,6 +843,20 @@ export async function smartDownload(
         const ext = getFileExtension(assetUrl, blob.type) || 'mp3';
         const filename = item.filename || `${item.type}_download.${ext}`;
         downloadFromBlob(blob, filename);
+      });
+      reportProgress(onProgress, 100);
+      return result;
+    }
+
+    if (item.type === 'video' || isVirtualMediaUrl(assetUrl)) {
+      const result = await runSingleDownloadWithFallback(assetUrl, async () => {
+        const sourceBlob = await readDownloadBlob(item);
+        const ext = await sniffMediaExtension(sourceBlob, item.type, assetUrl);
+        const filename = replaceFilenameExtension(
+          item.filename || `${item.type}_download.${ext}`,
+          ext
+        );
+        downloadFromBlob(sourceBlob, filename);
       });
       reportProgress(onProgress, 100);
       return result;

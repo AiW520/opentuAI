@@ -1,12 +1,26 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { callGoogleGenerateContentRaw } from './apiCalls';
+// @vitest-environment jsdom
 
-const { sendMock, analyticsMock } = vi.hoisted(() => ({
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  callApiRaw,
+  callApiWithRetry,
+  callApiStreamRaw,
+  callGoogleGenerateContentRaw,
+} from './apiCalls';
+
+const { sendMock, analyticsMock, getCachedBlobMock } = vi.hoisted(() => ({
   sendMock: vi.fn(),
+  getCachedBlobMock: vi.fn(),
   analyticsMock: {
     trackAPICallStart: vi.fn(),
     trackAPICallSuccess: vi.fn(),
     trackAPICallFailure: vi.fn(),
+  },
+}));
+
+vi.mock('../../services/unified-cache-service', () => ({
+  unifiedCacheService: {
+    getCachedBlob: (...args: unknown[]) => getCachedBlobMock(...args),
   },
 }));
 
@@ -19,7 +33,7 @@ vi.mock('../../services/provider-routing', () => ({
   readProviderResponseText: (response: Response) => response.text(),
 }));
 
-vi.mock('../posthog-analytics', () => ({
+vi.mock('../umami-analytics', () => ({
   analytics: analyticsMock,
   getProviderEndpointAnalytics: (baseUrl?: string | null) => {
     if (!baseUrl) return null;
@@ -38,6 +52,7 @@ describe('callGoogleGenerateContentRaw', () => {
     analyticsMock.trackAPICallStart.mockReset();
     analyticsMock.trackAPICallSuccess.mockReset();
     analyticsMock.trackAPICallFailure.mockReset();
+    getCachedBlobMock.mockReset();
 
     sendMock.mockResolvedValue(
       new Response(
@@ -57,6 +72,115 @@ describe('callGoogleGenerateContentRaw', () => {
           },
         }
       )
+    );
+  });
+
+  it('forwards AbortSignal through non-stream manual HTTP calls', async () => {
+    const controller = new AbortController();
+    sendMock.mockResolvedValue(
+      new Response(JSON.stringify({ result: { text: 'manual ok' } }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    );
+
+    await callApiRaw(
+      {
+        apiKey: 'secret',
+        baseUrl: 'https://api.example.com',
+        modelName: 'manual-text',
+        binding: {
+          id: 'manual-text-binding',
+          profileId: 'provider-a',
+          modelId: 'manual-text',
+          operation: 'text',
+          protocol: 'custom-http',
+          requestSchema: 'custom-http',
+          responseSchema: 'custom-http.text',
+          submitPath: '/text',
+          priority: 100,
+          confidence: 'high',
+          source: 'manual',
+          metadata: {
+            manualHttp: {
+              method: 'POST',
+              bodyTemplate: '{"prompt":"{{prompt}}"}',
+              responsePaths: { text: 'result.text' },
+            },
+          },
+        },
+      },
+      [
+        {
+          role: 'user',
+          content: [{ type: 'text', text: 'build an outline' }],
+        },
+      ],
+      controller.signal
+    );
+
+    expect(sendMock).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({ signal: controller.signal })
+    );
+  });
+
+  it('forwards an already-aborted signal through non-stream Google calls', async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    await callApiRaw(
+      {
+        apiKey: 'secret',
+        baseUrl: 'https://api.example.com',
+        modelName: 'gemini-text',
+        protocol: 'google.generateContent',
+      },
+      [
+        {
+          role: 'user',
+          content: [{ type: 'text', text: 'build an outline' }],
+        },
+      ],
+      controller.signal
+    );
+
+    const [, request] = sendMock.mock.calls[0];
+    expect((request as { signal?: AbortSignal }).signal?.aborted).toBe(true);
+  });
+
+  it('forwards AbortSignal through the non-stream OpenAI wrapper', async () => {
+    const controller = new AbortController();
+    sendMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          choices: [{ message: { role: 'assistant', content: 'openai ok' } }],
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }
+      )
+    );
+
+    await callApiWithRetry(
+      {
+        apiKey: 'secret',
+        baseUrl: 'https://api.example.com',
+        modelName: 'openai-text',
+      },
+      [
+        {
+          role: 'user',
+          content: [{ type: 'text', text: 'build an outline' }],
+        },
+      ],
+      controller.signal
+    );
+
+    expect(sendMock).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({ signal: controller.signal })
     );
   });
 
@@ -169,6 +293,51 @@ describe('callGoogleGenerateContentRaw', () => {
     expect(body).not.toHaveProperty('messages');
   });
 
+  it('Cache API 不可用时从 unified cache 恢复虚拟图片', async () => {
+    const virtualUrl = '/__aitu_cache__/image/cached-reference.png';
+    const fetchMock = vi.fn();
+    getCachedBlobMock.mockResolvedValue(
+      new Blob(['cached-image'], { type: 'image/png' })
+    );
+    vi.stubGlobal('caches', undefined);
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      await callGoogleGenerateContentRaw(
+        {
+          apiKey: 'secret',
+          baseUrl: 'https://api.example.com/v1',
+          modelName: 'gemini-3.1-pro-preview-thinking',
+          protocol: 'google.generateContent',
+          authType: 'bearer',
+        },
+        [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: '分析这张图' },
+              { type: 'image_url', image_url: { url: virtualUrl } },
+            ],
+          },
+        ],
+        { stream: false }
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    const [, request] = sendMock.mock.calls[0];
+    const body = JSON.parse(String((request as { body: string }).body));
+    expect(getCachedBlobMock).toHaveBeenCalledWith(virtualUrl);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(body.contents[0].parts[1]).toEqual({
+      inline_data: {
+        mime_type: 'image/png',
+        data: 'Y2FjaGVkLWltYWdl',
+      },
+    });
+  });
+
   it('normalizes legacy generateContent paths missing the models segment', async () => {
     await callGoogleGenerateContentRaw(
       {
@@ -238,6 +407,127 @@ describe('callGoogleGenerateContentRaw', () => {
           'Content-Type': 'application/json',
         },
         requestId: 'task-google-image-1',
+      })
+    );
+  });
+
+  it('uses manual chat binding submit path for non-stream calls', async () => {
+    sendMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          choices: [{ message: { role: 'assistant', content: 'ok' } }],
+        }),
+        {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        }
+      )
+    );
+
+    await callApiRaw(
+      {
+        apiKey: 'secret',
+        baseUrl: 'https://api.example.com/v1',
+        modelName: 'custom-chat',
+        authType: 'bearer',
+        binding: {
+          id: 'binding',
+          profileId: 'provider-a',
+          modelId: 'custom-chat',
+          operation: 'text',
+          protocol: 'openai.chat.completions',
+          requestSchema: 'openai.chat.messages',
+          responseSchema: 'openai.chat.choices',
+          submitPath: '/custom/chat',
+          baseUrlStrategy: 'trim-v1',
+          priority: 900,
+          confidence: 'high',
+          source: 'manual',
+        },
+      },
+      [
+        {
+          role: 'user',
+          content: [{ type: 'text', text: 'hello' }],
+        },
+      ]
+    );
+
+    expect(sendMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        baseUrl: 'https://api.example.com/v1',
+      }),
+      expect.objectContaining({
+        path: '/custom/chat',
+        baseUrlStrategy: 'trim-v1',
+        method: 'POST',
+      })
+    );
+  });
+
+  it('uses manual chat binding submit path for stream calls', async () => {
+    const encoder = new TextEncoder();
+    sendMock.mockResolvedValue(
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode(
+                'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'
+              )
+            );
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.close();
+          },
+        }),
+        {
+          status: 200,
+          headers: {
+            'Content-Type': 'text/event-stream',
+          },
+        }
+      )
+    );
+
+    await callApiStreamRaw(
+      {
+        apiKey: 'secret',
+        baseUrl: 'https://api.example.com/v1',
+        modelName: 'custom-chat',
+        authType: 'bearer',
+        binding: {
+          id: 'binding',
+          profileId: 'provider-a',
+          modelId: 'custom-chat',
+          operation: 'text',
+          protocol: 'openai.chat.completions',
+          requestSchema: 'openai.chat.messages',
+          responseSchema: 'openai.chat.choices',
+          submitPath: '/custom/stream-chat',
+          baseUrlStrategy: 'trim-v1',
+          priority: 900,
+          confidence: 'high',
+          source: 'manual',
+        },
+      },
+      [
+        {
+          role: 'user',
+          content: [{ type: 'text', text: 'hello' }],
+        },
+      ]
+    );
+
+    expect(sendMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        baseUrl: 'https://api.example.com/v1',
+      }),
+      expect.objectContaining({
+        path: '/custom/stream-chat',
+        baseUrlStrategy: 'trim-v1',
+        method: 'POST',
       })
     );
   });

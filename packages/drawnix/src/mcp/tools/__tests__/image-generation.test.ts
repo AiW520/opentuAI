@@ -172,6 +172,7 @@ describe('image-generation MCP tool', () => {
         format: 'webp',
         prompt: 'Create an edited image',
         size: '16x9',
+        requestId: 'workflow-image-request-1',
       },
       type: 'image',
     });
@@ -274,6 +275,33 @@ describe('image-generation MCP tool', () => {
       targetFrameDimensions: { width: 1920, height: 1080 },
       pptSlideImage: true,
       pptReplaceElementId: 'old-image',
+    });
+  });
+
+  it('passes taskbar follow control metadata into queue task params', async () => {
+    mocks.createQueueTask.mockReturnValue({
+      success: true,
+      type: 'image',
+      taskId: 'task-1',
+    });
+
+    await imageGenerationTool.execute(
+      {
+        prompt: 'Generate a new target variant',
+        replaceElementId: 'image-target',
+        targetElementId: 'image-target',
+        boundTargetFollowControlled: true,
+      },
+      { mode: 'queue' }
+    );
+
+    const queueConfig = mocks.createQueueTask.mock.calls[0]?.[2];
+
+    expect(queueConfig.buildTaskPayload()).toMatchObject({
+      prompt: 'Generate a new target variant',
+      replaceElementId: 'image-target',
+      targetElementId: 'image-target',
+      boundTargetFollowControlled: true,
     });
   });
 });

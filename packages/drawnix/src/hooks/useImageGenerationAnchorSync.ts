@@ -187,15 +187,17 @@ function hasElementPoints(value: unknown): value is { points: [Point, Point] } {
 
 function getActualInsertedElementGeometry(
   board: PlaitBoard,
+  anchor: PlaitImageGenerationAnchor,
   postProcessingResult?: WorkflowPostProcessingResult
 ): { position: Point; size: { width: number; height: number } } | undefined {
-  if (!postProcessingResult?.firstElementId) {
+  const resultElementId =
+    postProcessingResult?.firstElementId || anchor.resultElementId;
+  if (!resultElementId) {
     return undefined;
   }
 
   const element = board.children.find(
-    (child) =>
-      (child as { id?: string }).id === postProcessingResult.firstElementId
+    (child) => (child as { id?: string }).id === resultElementId
   );
 
   if (!hasElementPoints(element)) {
@@ -210,6 +212,14 @@ function getActualInsertedElementGeometry(
       height: rect.height,
     },
   };
+}
+
+function readTaskParamString(
+  task: Task | null,
+  key: string
+): string | undefined {
+  const value = task?.params?.[key];
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
 function getAnchorResultDimensions(
@@ -389,6 +399,7 @@ export function useImageGenerationAnchorSync({
       );
       const actualInsertedGeometry = getActualInsertedElementGeometry(
         board,
+        anchor,
         primaryPostProcessingResult
       );
 
@@ -436,6 +447,55 @@ export function useImageGenerationAnchorSync({
 
       if ((anchor.previewImageUrl ?? '') !== (nextPreviewImageUrl ?? '')) {
         patch.previewImageUrl = nextPreviewImageUrl;
+      }
+
+      const nextResultElementId =
+        primaryPostProcessingResult?.firstElementId || anchor.resultElementId;
+      if (
+        nextResultElementId &&
+        nextResultElementId !== anchor.resultElementId
+      ) {
+        patch.resultElementId = nextResultElementId;
+      }
+
+      const nextPrompt = readTaskParamString(primaryTask, 'prompt');
+      if (nextPrompt && nextPrompt !== anchor.prompt) {
+        patch.prompt = nextPrompt;
+      }
+
+      const nextLatestTaskId = primaryTask?.id;
+      if (nextLatestTaskId && nextLatestTaskId !== anchor.latestTaskId) {
+        patch.latestTaskId = nextLatestTaskId;
+      }
+
+      const nextSourceTaskId =
+        readTaskParamString(primaryTask, 'sourceTaskId') || anchor.sourceTaskId;
+      if (nextSourceTaskId && nextSourceTaskId !== anchor.sourceTaskId) {
+        patch.sourceTaskId = nextSourceTaskId;
+      }
+
+      const taskTargetElementId =
+        readTaskParamString(primaryTask, 'targetElementId') ||
+        readTaskParamString(primaryTask, 'replaceElementId');
+      const replacementWasSuppressed =
+        primaryTask?.params.boundTargetFollowControlled === true &&
+        Boolean(
+          taskTargetElementId &&
+            nextResultElementId &&
+            taskTargetElementId !== nextResultElementId
+        );
+      const nextTargetElementId = replacementWasSuppressed
+        ? undefined
+        : taskTargetElementId || anchor.targetElementId;
+      if (replacementWasSuppressed) {
+        if (anchor.targetElementId !== undefined) {
+          patch.targetElementId = undefined;
+        }
+      } else if (
+        nextTargetElementId &&
+        nextTargetElementId !== anchor.targetElementId
+      ) {
+        patch.targetElementId = nextTargetElementId;
       }
 
       const geometryPatch = buildAnchorGeometryPatch(

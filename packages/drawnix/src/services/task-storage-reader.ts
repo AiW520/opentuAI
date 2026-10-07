@@ -1,11 +1,11 @@
 /**
  * Task Storage Reader Service
- * 
+ *
  * 主线程直接读取 IndexedDB 中的任务数据，避免通过 postMessage 与 SW 通信的限制：
  * - postMessage 有 1MB 大小限制
  * - 通信可能超时或失败
  * - 需要复杂的分页和重试逻辑
- * 
+ *
  * 注意：这个模块只负责读取操作，写操作仍然通过 SW 进行以确保数据一致性
  */
 
@@ -14,7 +14,11 @@ import {
   TaskStatus,
   TaskType,
   GenerationParams,
+  isUserVisibleTask,
+  isUserVisibleTaskResult,
   type TaskInvocationRouteSnapshot,
+  type TaskResultVisibility,
+  type ImageRecoveryInfo,
 } from '../types/task.types';
 import { BaseStorageReader } from './base-storage-reader';
 import { normalizeImageDataUrl } from '@aitu/utils';
@@ -44,6 +48,7 @@ interface SWTask {
     format: string;
     size: number;
     resultKind?: 'image' | 'video' | 'audio' | 'lyrics' | 'character' | 'chat';
+    resultVisibility?: TaskResultVisibility;
     width?: number;
     height?: number;
     duration?: number;
@@ -85,6 +90,7 @@ interface SWTask {
   remoteId?: string;
   invocationRoute?: TaskInvocationRouteSnapshot;
   executionPhase?: string;
+  imageRecovery?: ImageRecoveryInfo;
   savedToLibrary?: boolean;
   insertedToCanvas?: boolean;
   syncedFromRemote?: boolean;
@@ -215,6 +221,7 @@ function convertSWTaskToTask(swTask: SWTask): Task {
     remoteId: swTask.remoteId,
     invocationRoute: swTask.invocationRoute,
     executionPhase: swTask.executionPhase as Task['executionPhase'],
+    imageRecovery: swTask.imageRecovery,
     savedToLibrary: swTask.savedToLibrary,
     insertedToCanvas: swTask.insertedToCanvas,
     syncedFromRemote: swTask.syncedFromRemote,
@@ -257,7 +264,10 @@ function getSWTaskResultUrls(swTask: SWTask): string[] {
 }
 
 function swImageTaskMatchesUrl(swTask: SWTask, targetUrl: string): boolean {
-  if (swTask.type !== TaskType.IMAGE) {
+  if (
+    swTask.type !== TaskType.IMAGE ||
+    !isUserVisibleTaskResult(swTask.result)
+  ) {
     return false;
   }
 
@@ -268,6 +278,7 @@ function swImageTaskMatchesUrl(swTask: SWTask, targetUrl: string): boolean {
 
 function convertSWTaskToAssetTask(swTask: SWTask): AssetTaskRecord | null {
   if (
+    !isUserVisibleTaskResult(swTask.result) ||
     (swTask.type !== TaskType.IMAGE &&
       swTask.type !== TaskType.VIDEO &&
       swTask.type !== TaskType.AUDIO) ||
@@ -346,7 +357,11 @@ function hasPromptHistoryPrompt(swTask: SWTask): boolean {
 function convertSWTaskToPromptHistorySummary(
   swTask: SWTask
 ): PromptHistoryTaskSummary | null {
-  if (!hasPromptHistoryPrompt(swTask)) {
+  if (
+    !isUserVisibleTask(swTask) ||
+    !isUserVisibleTaskResult(swTask.result) ||
+    !hasPromptHistoryPrompt(swTask)
+  ) {
     return null;
   }
 
@@ -442,13 +457,15 @@ class TaskStorageReader extends BaseStorageReader<TaskCache> {
       return this.dbPromise;
     }
 
-    this.dbPromise = getAppDB().then(db => {
-      this.db = db;
-      return db;
-    }).catch(error => {
-      this.dbPromise = null;
-      throw error;
-    });
+    this.dbPromise = getAppDB()
+      .then((db) => {
+        this.db = db;
+        return db;
+      })
+      .catch((error) => {
+        this.dbPromise = null;
+        throw error;
+      });
 
     return this.dbPromise;
   }
@@ -456,7 +473,12 @@ class TaskStorageReader extends BaseStorageReader<TaskCache> {
   /**
    * 获取活跃任务（排除已归档，带 limit，使用 cursor 按 createdAt 倒序）
    */
-  async getAllTasks(options?: { status?: TaskStatus; type?: TaskType; limit?: number; includeArchived?: boolean }): Promise<Task[]> {
+  async getAllTasks(options?: {
+    status?: TaskStatus;
+    type?: TaskType;
+    limit?: number;
+    includeArchived?: boolean;
+  }): Promise<Task[]> {
     const hasTypeFilter = options?.type !== undefined;
     const hasStatusFilter = options?.status !== undefined;
     const includeArchived = options?.includeArchived ?? false;
@@ -535,7 +557,10 @@ class TaskStorageReader extends BaseStorageReader<TaskCache> {
   /**
    * 为素材库读取轻量任务记录，避免把聊天/分析等大字段整体拉入内存。
    */
-  async getAssetTasks(options?: { limit?: number; includeArchived?: boolean }): Promise<AssetTaskRecord[]> {
+  async getAssetTasks(options?: {
+    limit?: number;
+    includeArchived?: boolean;
+  }): Promise<AssetTaskRecord[]> {
     const includeArchived = options?.includeArchived ?? false;
     const limit = options?.limit ?? MAX_ACTIVE_LOAD;
 
@@ -581,12 +606,77 @@ class TaskStorageReader extends BaseStorageReader<TaskCache> {
         };
 
         cursorReq.onerror = () => {
-          reject(new Error(`Failed to get asset tasks: ${cursorReq.error?.message}`));
+          reject(
+            new Error(`Failed to get asset tasks: ${cursorReq.error?.message}`)
+          );
         };
       });
     } catch (error) {
       console.error('[TaskStorageReader] Error getting asset tasks:', error);
       return [];
+    }
+  }
+
+  /**
+   * 批量解析缓存关联任务中的内部结果，供素材库补充路径过滤。
+   * 使用单个 cursor，避免按缓存条目逐个读取 IndexedDB。
+   */
+  async getInternalResultTaskIds(
+    taskIds: Iterable<string>
+  ): Promise<Set<string>> {
+    const pendingIds = new Set<string>();
+    for (const taskId of taskIds) {
+      if (typeof taskId !== 'string') continue;
+      const normalizedTaskId = taskId.trim();
+      if (normalizedTaskId) pendingIds.add(normalizedTaskId);
+    }
+    if (pendingIds.size === 0) {
+      return new Set();
+    }
+
+    try {
+      const db = await this.getDB();
+      if (!db.objectStoreNames.contains(TASKS_STORE)) {
+        return new Set();
+      }
+
+      return await new Promise<Set<string>>((resolve, reject) => {
+        const transaction = db.transaction(TASKS_STORE, 'readonly');
+        const store = transaction.objectStore(TASKS_STORE);
+        const internalIds = new Set<string>();
+        const cursorReq = store.openCursor();
+
+        cursorReq.onsuccess = () => {
+          const cursor = cursorReq.result;
+          if (!cursor || pendingIds.size === 0) {
+            resolve(internalIds);
+            return;
+          }
+
+          const task = cursor.value as SWTask;
+          if (
+            pendingIds.delete(task.id) &&
+            !isUserVisibleTaskResult(task.result)
+          ) {
+            internalIds.add(task.id);
+          }
+          cursor.continue();
+        };
+
+        cursorReq.onerror = () => {
+          reject(
+            new Error(
+              `Failed to get internal result task IDs: ${cursorReq.error?.message}`
+            )
+          );
+        };
+      });
+    } catch (error) {
+      console.error(
+        '[TaskStorageReader] Error getting internal result task IDs:',
+        error
+      );
+      return new Set();
     }
   }
 
@@ -606,7 +696,11 @@ class TaskStorageReader extends BaseStorageReader<TaskCache> {
     const typeFilter = options?.types?.length ? new Set(options.types) : null;
     const statusFilter = options?.statuses?.length
       ? new Set(options.statuses)
-      : new Set([TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED]);
+      : new Set([
+          TaskStatus.COMPLETED,
+          TaskStatus.FAILED,
+          TaskStatus.CANCELLED,
+        ]);
 
     try {
       const db = await this.getDB();
@@ -677,7 +771,10 @@ class TaskStorageReader extends BaseStorageReader<TaskCache> {
         };
       });
     } catch (error) {
-      console.error('[TaskStorageReader] Error getting prompt history tasks:', error);
+      console.error(
+        '[TaskStorageReader] Error getting prompt history tasks:',
+        error
+      );
       return { items: [], nextOffset: offset, hasMore: false };
     }
   }
@@ -695,7 +792,7 @@ class TaskStorageReader extends BaseStorageReader<TaskCache> {
       const total = allTasks.length;
       const paginatedTasks = allTasks.slice(offset, offset + limit);
       const hasMore = offset + limit < total;
-      
+
       return { tasks: paginatedTasks, total, hasMore };
     } catch {
       return { tasks: [], total: 0, hasMore: false };
@@ -734,12 +831,17 @@ class TaskStorageReader extends BaseStorageReader<TaskCache> {
             cursor.continue();
             return;
           }
+          const convertedTask = convertSWTaskToTask(task);
+          if (!isUserVisibleTask(convertedTask)) {
+            cursor.continue();
+            return;
+          }
           if (skipped < offset) {
             skipped++;
             cursor.continue();
             return;
           }
-          results.push(convertSWTaskToTask(task));
+          results.push(convertedTask);
           cursor.continue();
         };
 
@@ -775,7 +877,7 @@ class TaskStorageReader extends BaseStorageReader<TaskCache> {
           }
 
           const task = cursor.value as SWTask;
-          if (task.archived) {
+          if (task.archived && isUserVisibleTask(convertSWTaskToTask(task))) {
             count++;
           }
           cursor.continue();
@@ -803,6 +905,18 @@ class TaskStorageReader extends BaseStorageReader<TaskCache> {
   async findImageTaskIdByResultUrl(
     imageUrl: string,
     options?: { includeArchived?: boolean; limit?: number }
+  ): Promise<string | null> {
+    return this.findMediaTaskIdByResultUrl(imageUrl, TaskType.IMAGE, options);
+  }
+
+  async findMediaTaskIdByResultUrl(
+    imageUrl: string,
+    type: TaskType.IMAGE | TaskType.VIDEO | TaskType.AUDIO,
+    options?: {
+      includeArchived?: boolean;
+      limit?: number;
+      throwOnError?: boolean;
+    }
   ): Promise<string | null> {
     const includeArchived = options?.includeArchived ?? true;
     const limit = options?.limit ?? STORAGE_LIMITS.MAX_RETAINED_TASKS * 10;
@@ -833,13 +947,18 @@ class TaskStorageReader extends BaseStorageReader<TaskCache> {
             cursor.continue();
             return;
           }
-          if (task.type !== TaskType.IMAGE) {
+          if (task.type !== type) {
             cursor.continue();
             return;
           }
 
           scannedImageTasks++;
-          if (swImageTaskMatchesUrl(task, targetUrl)) {
+          const matches = type === TaskType.IMAGE
+            ? swImageTaskMatchesUrl(task, targetUrl)
+            : isUserVisibleTaskResult(task.result) && getSWTaskResultUrls(task).some(
+                (url) => normalizeComparableImageTaskUrl(url) === targetUrl
+              );
+          if (matches) {
             resolve(task.id);
             return;
           }
@@ -856,6 +975,7 @@ class TaskStorageReader extends BaseStorageReader<TaskCache> {
         };
       });
     } catch (error) {
+      if (options?.throwOnError) throw error;
       console.error('[TaskStorageReader] Error finding image task:', error);
       return null;
     }

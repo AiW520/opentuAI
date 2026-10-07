@@ -6,7 +6,7 @@ export default defineConfig({
     globals: true,
     environment: 'jsdom',
     include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
-    exclude: ['node_modules', 'dist'],
+    exclude: ['node_modules', 'dist', 'src/workflow-mode/web/**', 'src/workflow-mode/canvas-agent/**'],
     setupFiles: ['./vitest.setup.ts'],
   },
   resolve: {

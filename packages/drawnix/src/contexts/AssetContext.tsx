@@ -45,7 +45,7 @@ import {
   AssetCategory as AssetCategoryEnum,
   DEFAULT_FILTER_STATE,
 } from '../types/asset.types';
-import { TaskType } from '../types/task.types';
+import { isUserVisibleTaskResult, TaskType } from '../types/task.types';
 import { AssetContext } from './asset-context-instance';
 import { audioPlaylistService } from '../services/audio-playlist-service';
 import { setGlobalAssetMap } from '../stores/asset-map-store';
@@ -630,11 +630,25 @@ export function AssetProvider({ children }: AssetProviderProps) {
                 })()
           )
         );
+        const internalResultTaskIds =
+          await taskStorageReader.getInternalResultTaskIds(
+            cachedMediaList.flatMap((item) =>
+              item.metadata?.taskId ? [item.metadata.taskId] : []
+            )
+          );
 
         const assets: Asset[] = [];
         const metadataByNormalizedUrl = new Map<string, CachedMedia>();
 
         for (const item of cachedMediaList) {
+          if (
+            !isUserVisibleTaskResult(item.metadata) ||
+            (item.metadata?.taskId &&
+              internalResultTaskIds.has(item.metadata.taskId))
+          ) {
+            continue;
+          }
+
           // 统一使用 pathname
           const pathname = item.url.startsWith('/')
             ? item.url

@@ -28,6 +28,7 @@ import {
   readProviderResponseText,
 } from '../provider-routing/provider-transport';
 import { IMAGE_GENERATION_TIMEOUT_MS } from '../../constants/TASK_CONSTANTS';
+import { notifyTaskSubmitted } from '../submission-persistence';
 import { prepareReferenceImageForMultipart } from '../reference-image-form-data';
 import { mapWithConcurrency } from '../../utils/map-with-concurrency';
 
@@ -300,7 +301,7 @@ export async function generateImageAsync(
   }
 
   // 通知调用方保存 remoteId（用于页面刷新后恢复轮询）
-  await onSubmitted?.(taskRemoteId);
+  await notifyTaskSubmitted(taskRemoteId, onSubmitted);
   onProgress?.(10);
   // 轮询等待结果
   let progress = submitData.progress ?? 0;

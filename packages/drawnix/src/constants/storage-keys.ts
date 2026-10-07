@@ -37,10 +37,15 @@ export const LS_KEYS = {
   AI_VIDEO_AUTO_INSERT: 'aitu_video_auto_insert_canvas',
   /** 底部 AI 输入栏参数偏好 */
   AI_INPUT_PREFERENCES: 'aitu_ai_input_preferences',
-  /** 图片目标任务栏关闭提示累计次数 */
+  /** 生成目标任务栏关闭提示累计次数 */
   AI_BOUND_TARGET_DISMISS_HINT_COUNT: 'aitu_ai_bound_target_dismiss_hint_count',
-  /** 图片目标任务栏是否跟随目标位置 */
+  /** 生成目标任务栏是否跟随目标位置 */
   AI_BOUND_TARGET_FOLLOW_ENABLED: 'aitu_ai_bound_target_follow_enabled',
+  /** AI 任务栏是否允许从画布拾取联想引用 */
+  AI_CANVAS_ASSOCIATION_ENABLED: 'aitu_ai_canvas_association_enabled',
+  /** 点击图片后是否自动将画布居中到图片 */
+  AI_CENTER_IMAGE_ON_CLICK_ENABLED: 'aitu_ai_center_image_on_click_enabled',
+  AI_IMAGE_DETAILS_ON_CLICK_ENABLED: 'aitu_ai_image_details_on_click_enabled',
   /** 提示词优化文本模型选择 */
   PROMPT_OPTIMIZE_TEXT_MODEL: 'aitu_prompt_optimize_text_model',
   /** 提示词优化补充要求历史 */

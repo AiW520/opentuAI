@@ -6,6 +6,7 @@ import type {
 } from '../types/task.types';
 import { TaskExecutionPhase, TaskStatus, TaskType } from '../types/task.types';
 import { CryptoUtils } from '../utils/crypto-utils';
+import { isDocumentBatchTaskScopeCurrent } from './media-executor/task-storage-writer';
 import { createModelRef } from '../utils/settings-manager';
 import {
   providerTransport,
@@ -18,9 +19,10 @@ import {
   resolveManualHttpRequestMethod,
 } from './provider-routing/manual-http-template';
 import {
+  isTuziRequestRecoveryBaseUrl,
   isTrustedTuziApiBaseUrl,
+  loadTuziApiEndpointBaseUrls,
   normalizeTuziApiEndpointUrl,
-  TUZI_API_REQUEST_ID_CORS_ENDPOINTS,
 } from './provider-routing/tuzi-api-endpoints';
 
 const DEFAULT_CONCURRENCY = 4;
@@ -75,6 +77,7 @@ interface ImageGenerationRecoveryFailure {
 }
 
 interface ImageGenerationRecoveryCallbacks {
+  assertAvailable?: () => Promise<void>;
   onSucceeded(
     result: ImageGenerationRecoverySuccess,
     signal: AbortSignal
@@ -119,6 +122,7 @@ interface ImageGenerationRecoveryServiceOptions {
   fetcher?: typeof fetch;
   resolveInvocationPlan?: InvocationResolver;
   transport?: RequestPreparer;
+  loadEndpointBaseUrls?: () => Promise<string[]>;
 }
 
 interface RecoveryRouteDescriptor {
@@ -158,6 +162,7 @@ interface RecoveryEntry {
   releaseTerminalWait?: () => void;
   controller?: AbortController;
   terminalDelivery?: () => Promise<void>;
+  scopeGuard?: () => boolean;
 }
 
 interface ProcessingOutcome {
@@ -517,6 +522,7 @@ export class ImageGenerationRecoveryService {
   private readonly fetcher: typeof fetch;
   private readonly resolveInvocationPlan: InvocationResolver;
   private readonly transport: RequestPreparer;
+  private readonly loadEndpointBaseUrls: () => Promise<string[]>;
 
   private readonly entries = new Map<string, RecoveryEntry>();
   private queue: RecoveryEntry[] = [];
@@ -549,6 +555,8 @@ export class ImageGenerationRecoveryService {
     this.resolveInvocationPlan =
       options.resolveInvocationPlan ?? resolveInvocationPlanFromRoute;
     this.transport = options.transport ?? providerTransport;
+    this.loadEndpointBaseUrls =
+      options.loadEndpointBaseUrls ?? loadTuziApiEndpointBaseUrls;
   }
 
   canRecover(task: ImageGenerationRecoveryTask): boolean {
@@ -564,6 +572,9 @@ export class ImageGenerationRecoveryService {
     task: ImageGenerationRecoveryTask,
     callbacks: ImageGenerationRecoveryCallbacks
   ): ImageGenerationRecoveryStartResult {
+    if (!isDocumentBatchTaskScopeCurrent(task)) {
+      return { status: 'rejected', reason: 'invalid-task' };
+    }
     const descriptor = this.createTaskDescriptor(task);
     if (!descriptor) {
       return { status: 'rejected', reason: 'invalid-task' };
@@ -600,6 +611,9 @@ export class ImageGenerationRecoveryService {
       state: 'queued',
       failureStreak: 0,
       terminalDeliveryAttempts: 0,
+      scopeGuard: task.params.documentBatch || task.params.workflow
+        ? () => isDocumentBatchTaskScopeCurrent(task)
+        : undefined,
     };
     this.entries.set(descriptor.taskId, entry);
     this.queue.push(entry);
@@ -722,27 +736,10 @@ export class ImageGenerationRecoveryService {
       plan.modelRef.modelId !== task.route.modelId ||
       !plan.provider.apiKey?.trim() ||
       CryptoUtils.isEncrypted(plan.provider.apiKey.trim()) ||
-      !isTrustedTuziApiBaseUrl(plan.provider.baseUrl) ||
+      !isTuziRequestRecoveryBaseUrl(plan.provider.baseUrl) ||
       !isSynchronousImageBinding(resolvedBinding) ||
       !isSameRecoveryBinding(task.route.binding, resolvedBinding)
     ) {
-      return null;
-    }
-
-    try {
-      const preparedSubmission = this.transport.prepareRequest(plan.provider, {
-        path: resolvedBinding.submitPath,
-        method: resolvedBinding.method,
-        baseUrlStrategy: resolvedBinding.baseUrlStrategy,
-        requestId: task.requestId,
-      });
-      const preparedRequestId = Object.entries(preparedSubmission.headers).find(
-        ([name]) => name.toLowerCase() === 'x-request-id'
-      )?.[1];
-      if (preparedRequestId !== task.requestId) {
-        return null;
-      }
-    } catch {
       return null;
     }
 
@@ -751,6 +748,10 @@ export class ImageGenerationRecoveryService {
 
   private isCurrent(entry: RecoveryEntry): boolean {
     const taskId = entry.task?.taskId;
+    if (entry.scopeGuard && !entry.scopeGuard()) {
+      this.stopEntry(entry);
+      return false;
+    }
     return Boolean(taskId && this.entries.get(taskId) === entry);
   }
 
@@ -823,6 +824,7 @@ export class ImageGenerationRecoveryService {
     entry: RecoveryEntry,
     task: RecoveryTaskDescriptor
   ): Promise<PollOutcome> {
+    if (entry.callbacks?.assertAvailable) await entry.callbacks.assertAvailable();
     const plan = this.resolveTrustedInvocationPlan(task);
     if (!plan) {
       return {
@@ -837,6 +839,12 @@ export class ImageGenerationRecoveryService {
     }
 
     const queryTargets = this.createQueryTargets(plan);
+    let fallbackTargetsLoaded = false;
+    const appendFallbackTargets = async () => {
+      if (fallbackTargetsLoaded) return;
+      fallbackTargetsLoaded = true;
+      queryTargets.push(...(await this.createFallbackQueryTargets(plan)));
+    };
     for (const target of queryTargets) {
       if (!this.isCurrent(entry)) {
         return { type: 'transient' };
@@ -888,6 +896,7 @@ export class ImageGenerationRecoveryService {
         }
         if (isNodeFallbackStatus(response.status)) {
           releaseResponseBody(response);
+          await appendFallbackTargets();
           continue;
         }
         if (!response.ok) {
@@ -918,6 +927,7 @@ export class ImageGenerationRecoveryService {
         if (!this.isCurrent(entry)) {
           return { type: 'transient' };
         }
+        await appendFallbackTargets();
       } finally {
         if (entry.requestTimer) {
           clearTimeout(entry.requestTimer);
@@ -935,23 +945,28 @@ export class ImageGenerationRecoveryService {
   private createQueryTargets(
     plan: InvocationPlan
   ): Array<{ url: string; isOriginalProvider: boolean }> {
-    const targets = [
-      { url: plan.provider.baseUrl, isOriginalProvider: true },
-      ...TUZI_API_REQUEST_ID_CORS_ENDPOINTS.map((endpoint) => ({
-        url: endpoint.url,
-        isOriginalProvider: false,
-      })),
-    ];
-    const seenOrigins = new Set<string>();
+    return [{ url: plan.provider.baseUrl, isOriginalProvider: true }];
+  }
 
-    return targets.filter((target) => {
-      const origin = normalizeTuziApiEndpointUrl(target.url);
-      if (!origin || seenOrigins.has(origin)) {
-        return false;
-      }
-      seenOrigins.add(origin);
-      return true;
-    });
+  private async createFallbackQueryTargets(
+    plan: InvocationPlan
+  ): Promise<Array<{ url: string; isOriginalProvider: boolean }>> {
+    const originalUrl = plan.provider.baseUrl;
+    const originalOrigin = normalizeTuziApiEndpointUrl(originalUrl);
+    const versionSuffix = /\/v\d+(?:beta\d*)?\/?$/i.test(originalUrl.trim())
+      ? originalUrl.trim().match(/(\/v\d+(?:beta\d*)?)\/?$/i)?.[1] || ''
+      : '';
+    const fallbackUrls = await this.loadEndpointBaseUrls();
+    return [...new Set(fallbackUrls)]
+      .filter(
+        (url) =>
+          isTrustedTuziApiBaseUrl(url) &&
+          normalizeTuziApiEndpointUrl(url) !== originalOrigin
+      )
+      .map((url) => ({
+        url: `${url}${versionSuffix}`,
+        isOriginalProvider: false,
+      }));
   }
 
   private prepareNodeRequest(
@@ -971,6 +986,7 @@ export class ImageGenerationRecoveryService {
         method: 'GET',
         baseUrlStrategy: 'ensure-v1',
         query: { request_id: requestId },
+        requestId,
         signal,
       }
     );
@@ -1310,6 +1326,10 @@ export const imageGenerationRecoveryService =
   new ImageGenerationRecoveryService();
 
 export function isImageRequestRecoveryCandidate(task: Task): boolean {
+  // Batch attempts are conservative after refresh: their submission ticket is
+  // scoped to the batch scheduler, so generic recovery must not issue a query
+  // using whatever account happens to be active.
+  if (task.params.documentBatch) return false;
   const route = task.invocationRoute;
   const binding = createRecoveryBindingFingerprint(route?.binding);
   return (

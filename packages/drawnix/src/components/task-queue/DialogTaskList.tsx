@@ -11,7 +11,6 @@ import { VirtualTaskList } from './VirtualTaskList';
 import { useFilteredTaskQueue } from '../../hooks/useFilteredTaskQueue';
 import { Task, TaskType, TaskStatus } from '../../types/task.types';
 import { useDrawnix, DialogType } from '../../hooks/use-drawnix';
-import { insertVideoFromUrl } from '../../data/video';
 import { MessagePlugin, Input, Button } from 'tdesign-react';
 import { SearchIcon, DeleteIcon } from 'tdesign-icons-react';
 import { normalizeImageDataUrl } from '@aitu/utils';
@@ -37,6 +36,7 @@ import {
 } from '../shared/media-preview';
 import './dialog-task-list.scss';
 import { HoverTip } from '../shared';
+import { createMiniMaxH3RegenerationTask } from '../../services/minimax-h3-regeneration-service';
 
 export interface DialogTaskListProps {
   /** Task IDs to display. If not provided, shows all tasks (subject to taskType filter) */
@@ -248,12 +248,32 @@ export const DialogTaskList: React.FC<DialogTaskListProps> = ({
           urls.length > 1 ? '多图已插入到白板' : '图片已插入到白板'
         );
       } else if (task.type === TaskType.VIDEO) {
-        await insertVideoFromUrl(board, task.result.url);
+        const insertionResult = await executeCanvasInsertion({
+          board,
+          items: [
+            {
+              type: 'video',
+              content: task.result.url,
+              metadata: {
+                prompt: task.params.prompt,
+                generationTaskId: task.id,
+              },
+            },
+          ],
+        });
+        if (!insertionResult.success) {
+          throw new Error(insertionResult.error || '视频插入失败');
+        }
         MessagePlugin.success('视频已插入到白板');
       }
     } catch (error) {
       console.error('Failed to insert to board:', error);
-      const message = error instanceof Error ? error.message : '未知错误';
+      const message =
+        error instanceof Error && error.message.trim()
+          ? error.message
+          : typeof error === 'string' && error.trim()
+          ? error
+          : '未知错误';
       MessagePlugin.error(
         message.startsWith('插入失败') ? message : `插入失败: ${message}`
       );
@@ -298,6 +318,24 @@ export const DialogTaskList: React.FC<DialogTaskListProps> = ({
       );
     }
     MessagePlugin.success('已回填历史提示词和参考图，请手动发送');
+  };
+
+  const handleUpgradeTo2K = async (taskId: string) => {
+    try {
+      const sourceTask =
+        (await taskStorageReader.getTask(taskId)) ||
+        taskQueueService.getTask(taskId) ||
+        tasks.find((item) => item.id === taskId);
+      if (!sourceTask) {
+        throw new Error('未找到源视频任务');
+      }
+      createMiniMaxH3RegenerationTask(sourceTask);
+      MessagePlugin.success('已提交升至 2K 的视频重制任务');
+    } catch (error) {
+      MessagePlugin.error(
+        error instanceof Error ? error.message : '视频升至 2K 提交失败'
+      );
+    }
   };
 
   const handleEdit = async (taskId: string) => {
@@ -411,6 +449,7 @@ export const DialogTaskList: React.FC<DialogTaskListProps> = ({
                   ? clip.duration
                   : task.result?.duration,
               prompt: task.params.prompt,
+              generationTaskId: task.id,
               tags:
                 typeof task.params.tags === 'string'
                   ? task.params.tags
@@ -437,6 +476,7 @@ export const DialogTaskList: React.FC<DialogTaskListProps> = ({
                 posterUrl: task.result?.previewImageUrl,
                 duration: task.result?.duration,
                 prompt: task.params.prompt,
+                generationTaskId: task.id,
                 tags:
                   typeof task.params.tags === 'string'
                     ? task.params.tags
@@ -465,23 +505,14 @@ export const DialogTaskList: React.FC<DialogTaskListProps> = ({
             height: dimensions?.height,
             title:
               urls.length > 1 ? `${title} (${i + 1}/${urls.length})` : title,
+            prompt: task.params.prompt,
+            generationTaskId: task.id,
           });
         }
       }
-
-      const taskItemCount = items.length - startIndex;
       configMap.set(task.id, {
-        mode:
-          task.type === TaskType.AUDIO && taskItemCount > 1
-            ? 'compare'
-            : 'single',
-        index:
-          task.type === TaskType.AUDIO && taskItemCount > 1
-            ? Array.from(
-                { length: Math.min(taskItemCount, 4) },
-                (_, offset) => startIndex + offset
-              )
-            : startIndex,
+        mode: 'single',
+        index: startIndex,
       });
     }
 
@@ -555,6 +586,7 @@ export const DialogTaskList: React.FC<DialogTaskListProps> = ({
           onInsert={handleInsert}
           onEdit={handleEdit}
           onRegenerate={handleRegenerate}
+          onUpgradeTo2K={handleUpgradeTo2K}
           onPreviewOpen={handlePreviewOpen}
           onExtractCharacter={handleExtractCharacter}
           hasMore={hasMore && !searchText.trim()}

@@ -12,6 +12,7 @@ import {
 
 const mocks = vi.hoisted(() => ({
   storedTasks: [] as Task[],
+  memoryTasks: [] as Task[],
   restoreTasks: vi.fn(),
   updateTaskStatus: vi.fn(),
   markImageAttemptRecovering: vi.fn(),
@@ -26,6 +27,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('../../services/task-queue', () => ({
   taskQueueService: {
+    getAllTasks: vi.fn(() => mocks.memoryTasks),
     restoreTasks: mocks.restoreTasks,
     isTaskExecutionActive: mocks.isTaskExecutionActive,
     getTaskExecutionToken: mocks.getTaskExecutionToken,
@@ -43,7 +45,8 @@ vi.mock('../../services/task-storage-reader', () => ({
   },
 }));
 
-vi.mock('../../services/app-database', () => ({
+vi.mock('../../services/app-database', async (importOriginal) => ({
+  ...await importOriginal<object>(),
   migrateFromLegacyDB: vi.fn(async () => undefined),
 }));
 
@@ -115,6 +118,38 @@ function createImageTask(
   };
 }
 
+function createPptExplainerTask(
+  stage:
+    | 'preparing'
+    | 'snapshotting'
+    | 'scripting'
+    | 'submitting'
+    | 'polling'
+    | 'finalizing',
+  remoteId?: string
+): Task {
+  return {
+    id: `ppt-explainer-${stage}`,
+    type: TaskType.VIDEO,
+    status: TaskStatus.PROCESSING,
+    params: {
+      prompt: 'PPT 讲解视频',
+      pptExplainer: {
+        schemaVersion: 1,
+        stage,
+        remoteId,
+      },
+    },
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    startedAt: Date.now(),
+    remoteId,
+    executionPhase: remoteId
+      ? TaskExecutionPhase.POLLING
+      : TaskExecutionPhase.SUBMITTING,
+  };
+}
+
 describe('useTaskStorage image request recovery', () => {
   beforeEach(() => {
     vi.resetModules();
@@ -131,6 +166,7 @@ describe('useTaskStorage image request recovery', () => {
     mocks.resolveInvocationPlanFromRoute.mockReset();
     mocks.prepareRequest.mockReset();
     mocks.storedTasks = [];
+    mocks.memoryTasks = [];
   });
 
   it('does not treat an in-page active request as a refreshed task', async () => {
@@ -145,6 +181,32 @@ describe('useTaskStorage image request recovery', () => {
 
     expect(mocks.markImageAttemptRecovering).not.toHaveBeenCalled();
     expect(mocks.failImageAttempt).not.toHaveBeenCalled();
+    expect(mocks.updateTaskStatus).not.toHaveBeenCalled();
+  });
+
+  it('does not restore or interrupt a text request created while deferred storage initializes', async () => {
+    const liveTask: Task = {
+      id: 'live-text-task',
+      type: TaskType.CHAT,
+      status: TaskStatus.PROCESSING,
+      params: {
+        prompt: '帮我写一个图片的提示词',
+        model: 'deepseek-v4-flash-0731',
+      },
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      startedAt: Date.now(),
+      executionPhase: TaskExecutionPhase.SUBMITTING,
+    };
+    mocks.storedTasks = [{ ...liveTask }];
+    mocks.memoryTasks = [liveTask];
+
+    const { useTaskStorage } = await import('../useTaskStorage');
+    const { result } = renderHook(() => useTaskStorage());
+
+    await waitFor(() => expect(result.current).toBe(true));
+
+    expect(mocks.restoreTasks).toHaveBeenCalledWith([]);
     expect(mocks.updateTaskStatus).not.toHaveBeenCalled();
   });
 
@@ -232,7 +294,9 @@ describe('useTaskStorage image request recovery', () => {
   });
 
   it('fails an expired recovery task even when settings initialization never settles', async () => {
-    mocks.waitForInitialization.mockReturnValue(new Promise<void>(() => {}));
+    mocks.waitForInitialization.mockReturnValue(
+      new Promise<void>(() => undefined)
+    );
     const expiredTask = createImageTask(
       TaskStatus.PROCESSING,
       true,
@@ -311,6 +375,38 @@ describe('useTaskStorage image request recovery', () => {
     );
     expect(mocks.failImageAttempt).not.toHaveBeenCalled();
   });
+
+  it.each(['preparing', 'snapshotting', 'scripting', 'submitting'] as const)(
+    'keeps a refreshed PPT explainer in the dedicated %s recovery path before remote submission',
+    async (stage) => {
+      const task = createPptExplainerTask(stage);
+      mocks.storedTasks = [task];
+      const { useTaskStorage } = await import('../useTaskStorage');
+      const { result } = renderHook(() => useTaskStorage());
+
+      await waitFor(() => expect(result.current).toBe(true));
+
+      expect(mocks.restoreTasks).toHaveBeenCalledWith([task]);
+      expect(mocks.updateTaskStatus).not.toHaveBeenCalled();
+      expect(mocks.failImageAttempt).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each(['polling', 'finalizing'] as const)(
+    'keeps a refreshed PPT explainer with remoteId in the dedicated %s recovery path',
+    async (stage) => {
+      const task = createPptExplainerTask(stage, 'ppt-remote-1');
+      mocks.storedTasks = [task];
+      const { useTaskStorage } = await import('../useTaskStorage');
+      const { result } = renderHook(() => useTaskStorage());
+
+      await waitFor(() => expect(result.current).toBe(true));
+
+      expect(mocks.restoreTasks).toHaveBeenCalledWith([task]);
+      expect(mocks.updateTaskStatus).not.toHaveBeenCalled();
+      expect(mocks.failImageAttempt).not.toHaveBeenCalled();
+    }
+  );
 
   it('continues restoring later tasks after individual persistence failures', async () => {
     const asyncBinding = createBinding({

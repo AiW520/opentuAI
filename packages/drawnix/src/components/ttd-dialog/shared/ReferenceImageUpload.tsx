@@ -9,7 +9,14 @@
  * - Drag and drop
  */
 
-import React, { useCallback, useState, useRef, useEffect } from 'react';
+import React, {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+} from 'react';
 import ReactDOM from 'react-dom';
 import { Button, MessagePlugin } from 'tdesign-react';
 import { X } from 'lucide-react';
@@ -43,6 +50,10 @@ export interface ReferenceImage {
   slot?: number;
 }
 
+export interface ReferenceImageUploadHandle {
+  importFiles: (files: FileList | File[], targetSlot?: number) => Promise<void>;
+}
+
 interface ReferenceImageUploadProps {
   /** Current images */
   images: ReferenceImage[];
@@ -66,18 +77,24 @@ interface ReferenceImageUploadProps {
   pasteScopeRef?: React.RefObject<HTMLElement>;
 }
 
-export const ReferenceImageUpload: React.FC<ReferenceImageUploadProps> = ({
-  images,
-  onImagesChange,
-  language = 'zh',
-  disabled = false,
-  multiple = true,
-  maxCount = 10,
-  label,
-  slotLabels,
-  onError,
-  pasteScopeRef,
-}) => {
+export const ReferenceImageUpload = forwardRef<
+  ReferenceImageUploadHandle,
+  ReferenceImageUploadProps
+>(function ReferenceImageUpload(
+  {
+    images,
+    onImagesChange,
+    language = 'zh',
+    disabled = false,
+    multiple = true,
+    maxCount = 10,
+    label,
+    slotLabels,
+    onError,
+    pasteScopeRef,
+  },
+  ref
+) {
   const [showMediaLibrary, setShowMediaLibrary] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [currentSlot, setCurrentSlot] = useState<number>(0);
@@ -144,6 +161,9 @@ export const ReferenceImageUpload: React.FC<ReferenceImageUploadProps> = ({
   const assetToReferenceImage = useCallback(
     async (asset: Asset): Promise<ReferenceImage> => {
       if (asset.type !== AssetType.IMAGE) {
+        throw new Error(`Asset is not an image: ${asset.name}`);
+      }
+      if (asset.mimeType && !asset.mimeType.toLowerCase().startsWith('image/')) {
         throw new Error(`Asset is not an image: ${asset.name}`);
       }
 
@@ -241,7 +261,6 @@ export const ReferenceImageUpload: React.FC<ReferenceImageUploadProps> = ({
         reader.onerror = reject;
         reader.readAsDataURL(blob);
       });
-
       return {
         url: dataUrl,
         name: asset.name,
@@ -457,6 +476,10 @@ export const ReferenceImageUpload: React.FC<ReferenceImageUploadProps> = ({
     ]
   );
 
+  useImperativeHandle(ref, () => ({
+    importFiles: (files, targetSlot) => handleFiles(files, targetSlot),
+  }), [handleFiles]);
+
   const handleDesktopLocalSelect = useCallback(
     async (targetSlot?: number) => {
       if (!isTauriEnvironment()) return false;
@@ -650,7 +673,6 @@ export const ReferenceImageUpload: React.FC<ReferenceImageUploadProps> = ({
             onImagesChange(newImages.slice(0, 1));
           }
         }
-
         setShowMediaLibrary(false);
         onError?.(
           newImages.length === selectedAssets.length ? null : t.loadFailed
@@ -769,7 +791,7 @@ export const ReferenceImageUpload: React.FC<ReferenceImageUploadProps> = ({
     return () => {
       document.removeEventListener('paste', handlePaste);
     };
-  }, [disabled, handleFiles, pasteScopeRef]);
+  }, [currentSlot, disabled, handleFiles, pasteScopeRef, slotLabels]);
 
   // Remove image
   const handleRemove = useCallback(
@@ -1030,6 +1052,6 @@ export const ReferenceImageUpload: React.FC<ReferenceImageUploadProps> = ({
       </div>
     </>
   );
-};
+});
 
 export default ReferenceImageUpload;

@@ -25,6 +25,8 @@ import {
 } from '@plait/core';
 import { PlaitDrawElement } from '@plait/draw';
 import { isVideoElement } from '../../../plugins/with-video';
+import { isWorkZoneElement } from '../../../plugins/workzone-transforms';
+import { isImageGenerationAnchorElement } from '../../../types/image-generation-anchor.types';
 import { MessagePlugin } from 'tdesign-react';
 import { loadFromJSON, saveAsJSON } from '../../../data/json';
 import MenuItem from '../../menu/menu-item';
@@ -34,8 +36,11 @@ import { useI18n } from '../../../i18n';
 import { useLatestRelease } from '../../../hooks/useLatestRelease';
 import Menu from '../../menu/menu';
 import { useContext, useState, useCallback } from 'react';
+import { Workflow as WorkflowIcon } from 'lucide-react';
 import { MenuContentPropsContext } from '../../menu/common';
 import { EVENT } from '../../../constants';
+import { queueProviderSettingsNavigation } from '../../settings-dialog/provider-settings-navigation';
+import { LEGACY_DEFAULT_PROVIDER_PROFILE_ID } from '../../../utils/settings-manager';
 
 export const SaveToFile = () => {
   const board = useBoard();
@@ -50,7 +55,9 @@ export const SaveToFile = () => {
       icon={<SaveFileIcon />}
       aria-label={t('menu.saveFile')}
       shortcut={`Cmd+S`}
-    >{t('menu.saveFile')}</MenuItem>
+    >
+      {t('menu.saveFile')}
+    </MenuItem>
   );
 };
 SaveToFile.displayName = 'SaveToFile';
@@ -92,7 +99,9 @@ export const OpenFile = () => {
       }}
       icon={<OpenFileIcon />}
       aria-label={t('menu.open')}
-    >{t('menu.open')}</MenuItem>
+    >
+      {t('menu.open')}
+    </MenuItem>
   );
 };
 OpenFile.displayName = 'OpenFile';
@@ -110,13 +119,15 @@ export const SaveAsImage = () => {
         saveAsImage(board, true);
       }}
       submenu={
-        <Menu onSelect={() => {
-          const itemSelectEvent = new CustomEvent(EVENT.MENU_ITEM_SELECT, {
-            bubbles: true,
-            cancelable: true,
-          });
-          menuContentProps.onSelect?.(itemSelectEvent);
-        }}>
+        <Menu
+          onSelect={() => {
+            const itemSelectEvent = new CustomEvent(EVENT.MENU_ITEM_SELECT, {
+              bubbles: true,
+              cancelable: true,
+            });
+            menuContentProps.onSelect?.(itemSelectEvent);
+          }}
+        >
           <MenuItem
             data-track="toolbar_click_menu_export_png"
             onSelect={() => {
@@ -207,6 +218,26 @@ export const CloudSync = ({
 };
 CloudSync.displayName = 'CloudSync';
 
+export const WorkflowModeMenuItem = ({
+  onOpenWorkflowMode,
+}: {
+  onOpenWorkflowMode: () => void;
+}) => {
+  const { t } = useI18n();
+  return (
+    <MenuItem
+      icon={<WorkflowIcon size={18} />}
+      data-testid="workflow-mode-button"
+      data-track="toolbar_click_menu_workflow_mode"
+      onSelect={onOpenWorkflowMode}
+      aria-label={t('menu.workflowMode')}
+    >
+      {t('menu.workflowMode')}
+    </MenuItem>
+  );
+};
+WorkflowModeMenuItem.displayName = 'WorkflowModeMenuItem';
+
 export const DebugPanel = () => {
   const { t } = useI18n();
   return (
@@ -225,17 +256,18 @@ export const DebugPanel = () => {
 DebugPanel.displayName = 'DebugPanel';
 
 export const Settings = () => {
-  const { appState, setAppState } = useDrawnix();
+  const { setAppState } = useDrawnix();
   const { t } = useI18n();
   return (
     <MenuItem
       icon={<SettingsIcon />}
       data-track="toolbar_click_menu_settings"
       onSelect={() => {
-        setAppState({
-          ...appState,
-          openSettings: true,
+        queueProviderSettingsNavigation({
+          action: 'select',
+          profileId: LEGACY_DEFAULT_PROVIDER_PROFILE_ID,
         });
+        setAppState((prev) => ({ ...prev, openSettings: true }));
       }}
       aria-label={t('menu.settings')}
     >
@@ -332,8 +364,17 @@ export const VersionInfo = () => {
       onSelect={() => {}}
       aria-label={t('menu.version')}
     >
-      <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
-        <span style={{ color: '#666' }}>{t('menu.version')}：{version}</span>
+      <span
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          width: '100%',
+        }}
+      >
+        <span style={{ color: '#666' }}>
+          {t('menu.version')}：{version}
+        </span>
         <span style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
           {latest && (
             <span
@@ -440,6 +481,25 @@ async function checkUrlValidity(url: string): Promise<boolean> {
 }
 
 /**
+ * 判断画布上的生成占位卡片是否已经进入失败终态。
+ * 这类元素没有可供 HEAD/GET 检查的媒体 URL，但仍属于失效生成内容。
+ */
+function isFailedGenerationElement(element: PlaitElement): boolean {
+  if (isImageGenerationAnchorElement(element)) {
+    return element.phase === 'failed';
+  }
+
+  if (isWorkZoneElement(element)) {
+    return (
+      element.workflow?.status === 'failed' ||
+      element.workflow?.steps?.some((step) => step.status === 'failed') === true
+    );
+  }
+
+  return false;
+}
+
+/**
  * 清除失效链接菜单项
  */
 export const CleanInvalidLinks = () => {
@@ -451,20 +511,32 @@ export const CleanInvalidLinks = () => {
     if (isScanning) return;
 
     setIsScanning(true);
-    const loadingInstance = MessagePlugin.loading(t('menu.cleanInvalidLinks.scanning'), 0);
+    const loadingInstance = MessagePlugin.loading(
+      t('menu.cleanInvalidLinks.scanning'),
+      0
+    );
 
     try {
-      // 收集所有媒体元素
+      // 收集所有媒体元素，以及已经失败的生成占位卡片
       const mediaElements: { element: PlaitElement; index: number; url: string }[] = [];
+      const invalidElements: { element: PlaitElement; index: number }[] = [];
 
       for (let i = 0; i < board.children.length; i++) {
         const element = board.children[i];
+
+        if (isFailedGenerationElement(element)) {
+          invalidElements.push({ element, index: i });
+          continue;
+        }
+
         const url = (element as any).url;
 
         if (!url || typeof url !== 'string') continue;
 
         // 检查是否为图片或视频元素
-        const isImage = PlaitDrawElement.isDrawElement(element) && PlaitDrawElement.isImage(element);
+        const isImage =
+          PlaitDrawElement.isDrawElement(element) &&
+          PlaitDrawElement.isImage(element);
         const isVideo = isVideoElement(element);
 
         if (isImage || isVideo) {
@@ -473,8 +545,6 @@ export const CleanInvalidLinks = () => {
       }
 
       // 检查每个媒体元素的 URL 有效性
-      const invalidElements: { element: PlaitElement; index: number }[] = [];
-
       await Promise.all(
         mediaElements.map(async ({ element, index, url }) => {
           const isValid = await checkUrlValidity(url);

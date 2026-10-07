@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  buildBenchmarkSelectionKey,
+  buildBenchmarkTarget,
+} from '../model-benchmark-service';
+import {
   applyShiftRangeSelection,
   getDefaultPromptPreset,
   reconcileSelection,
@@ -28,7 +32,7 @@ describe('model-benchmark-service', () => {
     vi.doUnmock('../kv-storage-service');
     vi.doUnmock('../utils/gemini-api');
     vi.doUnmock('../utils/settings-manager');
-    vi.doUnmock('../utils/posthog-analytics');
+    vi.doUnmock('../utils/umami-analytics');
     vi.doUnmock('../model-adapters');
   });
 
@@ -42,8 +46,16 @@ describe('model-benchmark-service', () => {
   it('prefers faster completed entries in speed mode', () => {
     const ranked = rankBenchmarkEntries(
       [
-        createEntry({ id: 'slow', firstResponseMs: 3200, totalDurationMs: 4500 }),
-        createEntry({ id: 'fast', firstResponseMs: 900, totalDurationMs: 1300 }),
+        createEntry({
+          id: 'slow',
+          firstResponseMs: 3200,
+          totalDurationMs: 4500,
+        }),
+        createEntry({
+          id: 'fast',
+          firstResponseMs: 900,
+          totalDurationMs: 1300,
+        }),
         createEntry({ id: 'failed', status: 'failed', firstResponseMs: null }),
       ],
       'speed'
@@ -83,7 +95,13 @@ describe('model-benchmark-service', () => {
       applyShiftRangeSelection(['a'], ['a', 'b', 'c', 'd'], 'a', 'c', true)
     ).toEqual(['a', 'b', 'c']);
     expect(
-      applyShiftRangeSelection(['a', 'b', 'c'], ['a', 'b', 'c', 'd'], 'a', 'c', false)
+      applyShiftRangeSelection(
+        ['a', 'b', 'c'],
+        ['a', 'b', 'c', 'd'],
+        'a',
+        'c',
+        false
+      )
     ).toEqual([]);
   });
 
@@ -109,7 +127,7 @@ describe('model-benchmark-service', () => {
         modelId,
       }),
     }));
-    vi.doMock('../utils/posthog-analytics', () => ({
+    vi.doMock('../utils/umami-analytics', () => ({
       analytics: { track: vi.fn() },
     }));
     vi.doMock('../model-adapters', () => ({
@@ -152,6 +170,23 @@ describe('model-benchmark-service', () => {
     expect(generateImage).toHaveBeenCalledWith(
       expect.objectContaining({ requestId: entryId }),
       expect.objectContaining({ model: 'image-model' })
+    );
+  });
+
+  it('keeps manual benchmark targets scoped to their provider profile', () => {
+    const target = buildBenchmarkTarget('provider-custom', 'Custom Provider', {
+      id: 'image-2',
+      label: 'image-2',
+      shortLabel: 'image-2',
+      type: 'image',
+      vendor: ModelVendor.OTHER,
+      tags: ['runtime', 'manual'],
+    });
+
+    expect(target.profileId).toBe('provider-custom');
+    expect(target.modelId).toBe('image-2');
+    expect(target.selectionKey).toBe(
+      buildBenchmarkSelectionKey('provider-custom', 'image-2')
     );
   });
 });

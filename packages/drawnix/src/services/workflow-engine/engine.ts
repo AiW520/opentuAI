@@ -196,6 +196,10 @@ export class WorkflowEngine {
       // 执行步骤
       await this.executeSteps(workflow, abortController?.signal);
 
+      if (this.destroyed) {
+        return;
+      }
+
       // 检查是否所有步骤都完成
       if (this.destroyed) {
         return;
@@ -570,6 +574,7 @@ export class WorkflowEngine {
       case 'generate_grid_image':
       case 'generate_inspiration_board':
       case 'generate_ppt':
+      case 'generate_ppt_explainer_video':
       case 'split_image':
       case 'generate_long_video':
       case 'insert_mermaid':

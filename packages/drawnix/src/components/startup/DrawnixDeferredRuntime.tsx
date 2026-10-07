@@ -10,6 +10,7 @@ import { useProviderProfiles } from '../../hooks/use-provider-profiles';
 import { initializeAssetIntegration } from '../../services/asset-integration-service';
 import { fontManagerService } from '../../services/font-manager-service';
 import { modelPricingService } from '../../utils/model-pricing-service';
+import { isPptExplainerTask } from '../../services/ppt-explainer/validation';
 
 export interface DrawnixDeferredRuntimeProps {
   board: DrawnixBoard | null;
@@ -56,13 +57,9 @@ export function DrawnixDeferredRuntime({
       return;
     }
 
-    const timer = window.setTimeout(() => {
+    return runWhenIdle(() => {
       modelPricingService.warmupProfiles(providerProfiles);
-    }, 0);
-
-    return () => {
-      window.clearTimeout(timer);
-    };
+    }, 5_000);
   }, [providerProfiles]);
 
   useEffect(() => {
@@ -152,7 +149,7 @@ export function DrawnixDeferredRuntime({
             (taskId, status, updates) => {
               taskQueueService.updateTaskStatus(taskId, status, updates);
             },
-            tasks,
+            tasks.filter((task) => !isPptExplainerTask(task)),
             (taskId) => {
               const token = taskQueueService.getTaskExecutionToken(taskId);
               return () =>
@@ -168,12 +165,17 @@ export function DrawnixDeferredRuntime({
           .subscribe((event) => {
             const task = event.task;
             if (event.type === 'taskDeleted') {
-              fallbackMediaExecutor.cancelPendingTask(task.id);
+              if (!isPptExplainerTask(task)) {
+                fallbackMediaExecutor.cancelPendingTask(task.id);
+              }
             } else if (event.type === 'taskCreated') {
-              void resumeVideoTasks([task]);
+              if (!isPptExplainerTask(task)) {
+                void resumeVideoTasks([task]);
+              }
             } else if (
               event.type === 'taskUpdated' &&
               task.type === 'video' &&
+              !isPptExplainerTask(task) &&
               task.status === 'processing' &&
               task.remoteId
             ) {
@@ -257,6 +259,7 @@ export function DrawnixDeferredRuntime({
                 'generate_grid_image',
                 'generate_inspiration_board',
                 'generate_ppt',
+                'generate_ppt_explainer_video',
               ];
               if (
                 step.mcp === 'ai_analyze' ||

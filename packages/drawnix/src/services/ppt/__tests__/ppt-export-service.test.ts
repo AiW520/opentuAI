@@ -18,6 +18,8 @@ const pptxMockState = vi.hoisted(() => ({
   }>,
 }));
 
+vi.mock('../../../utils/download-utils', () => ({ smartDownload: vi.fn(async () => ({ downloadedCount: 1, openedCount: 0, failedCount: 0 })) }));
+
 vi.mock('pptxgenjs', () => {
   return {
     default: vi.fn().mockImplementation(() => {
@@ -116,6 +118,8 @@ describe('ppt-export-service media export', () => {
   beforeEach(() => {
     pptxMockState.instances.length = 0;
     vi.clearAllMocks();
+    URL.createObjectURL = vi.fn(() => 'blob:ppt-test');
+    URL.revokeObjectURL = vi.fn();
     mockFetchBlob(new Blob(['media-bytes'], { type: 'video/mp4' }), {
       headers: {
         'content-type': 'video/mp4',

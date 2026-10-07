@@ -1,6 +1,32 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 describe('audio-api-service', () => {
+  it('cancels the polling delay immediately without another query', async () => {
+    const { audioAPIService } = await import('../audio-api-service');
+    const query = vi.spyOn(audioAPIService, 'queryAudioTask').mockResolvedValue({ taskId: 'remote', status: 'submitted', clips: [], failReason: '', raw: { task_id: 'remote', status: 'SUBMITTED' } } as Awaited<ReturnType<typeof audioAPIService.queryAudioTask>>);
+    const controller = new AbortController();
+    vi.useFakeTimers();
+    try {
+      const pending = audioAPIService.resumePolling('remote', { requestContext: { signal: controller.signal } });
+      const rejection = expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+      await vi.advanceTimersByTimeAsync(0);
+      controller.abort();
+      await rejection;
+      expect(query).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { query.mockRestore(); vi.useRealTimers(); }
+  });
+  it.each([false, true])('does not retry a confirmed audio failure (already failed: %s)', async immediate => {
+    const { audioAPIService } = await import('../audio-api-service');
+    const query = vi.spyOn(audioAPIService, 'queryAudioTask');
+    const response = (status: string) => ({ taskId: 'remote', status: status.toLowerCase(), clips: [], failReason: 'provider rejected', raw: { task_id: 'remote', status, fail_reason: 'provider rejected' } }) as Awaited<ReturnType<typeof audioAPIService.queryAudioTask>>;
+    if (!immediate) query.mockResolvedValueOnce(response('SUBMITTED'));
+    query.mockResolvedValue(response('FAILED'));
+    try {
+      await expect(audioAPIService.resumePolling('remote', { interval: 0, maxAttempts: 1 })).rejects.toMatchObject({ workflowProviderFailure: true });
+      expect(query).toHaveBeenCalledTimes(immediate ? 1 : 2);
+    } finally { query.mockRestore(); }
+  });
   beforeEach(() => {
     vi.resetModules();
   });
@@ -52,6 +78,7 @@ describe('audio-api-service', () => {
     });
 
     vi.doMock('../../utils/settings-manager', () => ({
+      providerPricingCacheSettings: { get: () => null, update: vi.fn() },
       resolveInvocationRoute: () => ({
         profileId: 'runtime',
         profileName: 'Runtime',
@@ -62,15 +89,20 @@ describe('audio-api-service', () => {
       }),
     }));
 
-    const { audioAPIService, extractAudioGenerationResult } = await import('../audio-api-service');
+    const { audioAPIService, extractAudioGenerationResult } = await import(
+      '../audio-api-service'
+    );
 
-    const result = await audioAPIService.generateAudioWithPolling({
-      model: 'suno_music',
-      prompt: 'write a heavy metal song',
-    }, {
-      interval: 1,
-      maxAttempts: 2,
-    });
+    const result = await audioAPIService.generateAudioWithPolling(
+      {
+        model: 'suno_music',
+        prompt: 'write a heavy metal song',
+      },
+      {
+        interval: 1,
+        maxAttempts: 2,
+      }
+    );
 
     expect(sendMock).toHaveBeenCalledTimes(2);
     expect(sendMock.mock.calls[0]?.[1]).toMatchObject({
@@ -112,6 +144,7 @@ describe('audio-api-service', () => {
     });
 
     vi.doMock('../../utils/settings-manager', () => ({
+      providerPricingCacheSettings: { get: () => null, update: vi.fn() },
       resolveInvocationRoute: () => ({
         profileId: 'runtime',
         profileName: 'Runtime',
@@ -187,6 +220,7 @@ describe('audio-api-service', () => {
     });
 
     vi.doMock('../../utils/settings-manager', () => ({
+      providerPricingCacheSettings: { get: () => null, update: vi.fn() },
       resolveInvocationRoute: () => ({
         profileId: 'runtime',
         profileName: 'Runtime',
@@ -197,7 +231,9 @@ describe('audio-api-service', () => {
       }),
     }));
 
-    const { audioAPIService, extractAudioGenerationResult } = await import('../audio-api-service');
+    const { audioAPIService, extractAudioGenerationResult } = await import(
+      '../audio-api-service'
+    );
 
     const result = await audioAPIService.resumePolling(taskId, {
       interval: 1,
@@ -261,6 +297,7 @@ describe('audio-api-service', () => {
     });
 
     vi.doMock('../../utils/settings-manager', () => ({
+      providerPricingCacheSettings: { get: () => null, update: vi.fn() },
       resolveInvocationRoute: () => ({
         profileId: 'runtime',
         profileName: 'Runtime',
@@ -277,6 +314,7 @@ describe('audio-api-service', () => {
       {
         model: 'suno_music',
         prompt: '继续完善副歌',
+        instrumental: true,
         continueClipId: 'clip-continue-1',
         continueTaskId: 'task-continue-1',
         continueAt: 32,
@@ -294,8 +332,11 @@ describe('audio-api-service', () => {
       path: '/suno/submit/music',
       method: 'POST',
     });
-    expect(JSON.parse(sendMock.mock.calls[0]?.[1]?.body as string)).toMatchObject({
+    expect(
+      JSON.parse(sendMock.mock.calls[0]?.[1]?.body as string)
+    ).toMatchObject({
       prompt: '继续完善副歌',
+      make_instrumental: true,
       continue_clip_id: 'clip-continue-1',
       task_id: 'task-continue-1',
       continue_at: 32,
@@ -389,6 +430,7 @@ describe('audio-api-service', () => {
     });
 
     vi.doMock('../../utils/settings-manager', () => ({
+      providerPricingCacheSettings: { get: () => null, update: vi.fn() },
       resolveInvocationRoute: () => ({
         profileId: 'runtime',
         profileName: 'Runtime',
@@ -399,7 +441,9 @@ describe('audio-api-service', () => {
       }),
     }));
 
-    const { audioAPIService, extractAudioGenerationResult } = await import('../audio-api-service');
+    const { audioAPIService, extractAudioGenerationResult } = await import(
+      '../audio-api-service'
+    );
 
     const result = await audioAPIService.generateAudioWithPolling(
       {
@@ -469,6 +513,7 @@ describe('audio-api-service', () => {
     });
 
     vi.doMock('../../utils/settings-manager', () => ({
+      providerPricingCacheSettings: { get: () => null, update: vi.fn() },
       resolveInvocationRoute: () => ({
         profileId: 'runtime',
         profileName: 'Runtime',
@@ -479,7 +524,9 @@ describe('audio-api-service', () => {
       }),
     }));
 
-    const { audioAPIService, extractAudioGenerationResult } = await import('../audio-api-service');
+    const { audioAPIService, extractAudioGenerationResult } = await import(
+      '../audio-api-service'
+    );
 
     const result = await audioAPIService.generateAudioWithPolling(
       {
@@ -570,6 +617,7 @@ describe('audio-api-service', () => {
     });
 
     vi.doMock('../../utils/settings-manager', () => ({
+      providerPricingCacheSettings: { get: () => null, update: vi.fn() },
       resolveInvocationRoute: () => ({
         profileId: 'runtime',
         profileName: 'Runtime',
@@ -580,7 +628,9 @@ describe('audio-api-service', () => {
       }),
     }));
 
-    const { audioAPIService, extractAudioGenerationResult } = await import('../audio-api-service');
+    const { audioAPIService, extractAudioGenerationResult } = await import(
+      '../audio-api-service'
+    );
 
     const result = await audioAPIService.generateAudioWithPolling(
       {
@@ -654,6 +704,7 @@ describe('audio-api-service', () => {
     });
 
     vi.doMock('../../utils/settings-manager', () => ({
+      providerPricingCacheSettings: { get: () => null, update: vi.fn() },
       resolveInvocationRoute: () => ({
         profileId: 'runtime',
         profileName: 'Runtime',
@@ -664,7 +715,9 @@ describe('audio-api-service', () => {
       }),
     }));
 
-    const { audioAPIService, extractAudioGenerationResult } = await import('../audio-api-service');
+    const { audioAPIService, extractAudioGenerationResult } = await import(
+      '../audio-api-service'
+    );
 
     const result = await audioAPIService.generateAudioWithPolling(
       {
@@ -688,4 +741,284 @@ describe('audio-api-service', () => {
     expect(extracted.lyricsTitle).toBe('别名歌词');
     expect(extracted.lyricsText).toContain('测试歌词');
   });
+});
+
+describe('audio result recovery regressions', () => {
+  const taskId = 'task-existing-suno';
+  const urls = [
+    'https://cdn.example.com/one.mp3',
+    'https://cdn.example.com/two.mp3',
+  ];
+
+  async function setup(
+    payloads: unknown[],
+    manualHttp?: Record<string, unknown>
+  ) {
+    vi.resetModules();
+    const send = vi.fn();
+    for (const payload of payloads) {
+      send.mockResolvedValueOnce(
+        new Response(JSON.stringify(payload), { status: 200 })
+      );
+    }
+    const provider = {
+      profileId: 'runtime',
+      profileName: 'Runtime',
+      providerType: 'custom',
+      baseUrl: 'https://api.tu-zi.com/v1',
+      apiKey: 'test-key',
+      authType: 'bearer',
+    };
+    vi.doMock('../provider-routing', async () => {
+      const actual = await vi.importActual<object>('../provider-routing');
+      return {
+        ...actual,
+        resolveInvocationPlanFromRoute: () =>
+          manualHttp
+            ? {
+                provider,
+                binding: {
+                  metadata: { manualHttp },
+                  submitPath: '/suno/submit/music',
+                },
+              }
+            : null,
+        providerTransport: { send },
+      };
+    });
+    vi.doMock('../../utils/settings-manager', () => ({
+      providerPricingCacheSettings: { get: () => null, update: vi.fn() },
+      resolveInvocationRoute: () => provider,
+    }));
+    return { ...(await import('../audio-api-service')), send };
+  }
+
+  it.each(['immediate', 'poll', 'submit'] as const)(
+    'retains configured response paths and two unique URLs during %s recovery',
+    async (mode) => {
+      const complete = {
+        output: {
+          phase: 'completed',
+          tracks: urls.map((url) => ({ file: url })),
+        },
+      };
+      const payloads =
+        mode === 'immediate'
+          ? [complete]
+          : mode === 'poll'
+          ? [{ output: { phase: 'processing' } }, complete]
+          : [{ job: taskId }, complete];
+      const { audioAPIService, extractAudioGenerationResult, send } =
+        await setup(payloads, {
+          responsePaths: { taskId: 'job' },
+          pollResponsePaths: {
+            status: 'output.phase',
+            audioUrls: 'output.tracks.*.file',
+          },
+        });
+      const options = { interval: 1, maxAttempts: 1, routeModel: 'suno_music' };
+      const result =
+        mode === 'submit'
+          ? await audioAPIService.generateAudioWithPolling(
+              { model: 'suno_music', prompt: 'test' },
+              options
+            )
+          : await audioAPIService.resumePolling(taskId, options);
+      expect(result.clips.map((clip) => clip.audio_url)).toEqual(urls);
+      expect(extractAudioGenerationResult(result).urls).toEqual(urls);
+      expect(send).toHaveBeenCalledTimes(payloads.length);
+    }
+  );
+
+  it('recovers both camelCase clips in nested result and task wrappers', async () => {
+    const { audioAPIService, extractAudioGenerationResult } = await setup([
+      {
+        data: {
+          result: {
+            task: {
+              clips: urls.map((audioUrl, batchIndex) => ({
+                clipId: `clip-${batchIndex}`,
+                audioUrl,
+                batchIndex,
+                status: 'complete',
+                imageUrl: 'https://cdn.example.com/cover.jpeg',
+              })),
+            },
+          },
+        },
+      },
+    ]);
+    const result = await audioAPIService.resumePolling(taskId, {
+      maxAttempts: 1,
+    });
+    const extracted = extractAudioGenerationResult(result);
+    expect(result.status).toBe('completed');
+    expect(extracted.urls).toEqual(urls);
+    expect(extracted.clipIds).toEqual(['clip-0', 'clip-1']);
+    expect(extracted.imageUrl).toBe('https://cdn.example.com/cover.jpeg');
+  });
+
+  it.each(['audio_urls', 'audioUrls'])(
+    'recovers a completed %s URL list',
+    async (field) => {
+      const { audioAPIService } = await setup([
+        { status: 'SUCCESS', data: { [field]: urls } },
+      ]);
+      const result = await audioAPIService.resumePolling(taskId, {
+        maxAttempts: 1,
+      });
+      expect(result.clips.map((clip) => clip.audio_url)).toEqual(urls);
+    }
+  );
+
+  it('does not finish a successful task without any usable audio URL', async () => {
+    const { audioAPIService, send } = await setup([
+      { status: 'SUCCESS', data: { audio_urls: ['', null] } },
+      { status: 'SUCCESS', data: { audio_urls: ['', null] } },
+    ]);
+    await expect(
+      audioAPIService.resumePolling(taskId, { interval: 1, maxAttempts: 1 })
+    ).rejects.toThrow('Suno 生成超时');
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+  it('preserves failure clips even when the provider omits identifiers and URLs', async () => {
+    const { audioAPIService } = await setup([
+      {
+        status: 'IN_PROGRESS',
+        data: [
+          {
+            status: 'failed',
+            metadata: { error_message: 'provider rejected' },
+          },
+        ],
+      },
+    ]);
+    await expect(audioAPIService.resumePolling(taskId)).rejects.toThrow(
+      'provider rejected'
+    );
+  });
+
+  it('prefers full clips over a URL-list fallback and preserves continuation metadata', async () => {
+    const clips = urls.map((audio_url, batch_index) => ({
+      clip_id: `provider-${batch_index}`,
+      audio_url,
+      batch_index,
+      image_url: 'https://cdn.example.com/cover.jpeg',
+      status: 'complete',
+    }));
+    const { audioAPIService, extractAudioGenerationResult } = await setup([
+      { status: 'SUCCESS', audio_urls: urls, data: { clips } },
+    ]);
+    const result = extractAudioGenerationResult(
+      await audioAPIService.resumePolling(taskId)
+    );
+    expect(result.urls).toEqual(urls);
+    expect(result.clipIds).toEqual(['provider-0', 'provider-1']);
+    expect(result.imageUrl).toBe('https://cdn.example.com/cover.jpeg');
+  });
+
+  it.each(['items', 'results'])(
+    'ignores %s summaries before deeper audio clips',
+    async (key) => {
+      const { audioAPIService } = await setup([
+        {
+          status: 'SUCCESS',
+          [key]: [{ id: 'summary', status: 'failed' }],
+          data: { result: { clips: urls.map((audioUrl) => ({ audioUrl })) } },
+        },
+      ]);
+      const result = await audioAPIService.resumePolling(taskId, {
+        interval: 1,
+        maxAttempts: 1,
+      });
+      expect(result.clips.map((clip) => clip.audio_url)).toEqual(urls);
+    }
+  );
+
+  it.each(['clips', 'audio_urls'])(
+    'uses nested task status without per-clip status for %s',
+    async (key) => {
+      const { audioAPIService } = await setup([
+        {
+          data: {
+            result: {
+              task: {
+                status: 'SUCCESS',
+                progress: '100%',
+                [key]:
+                  key === 'clips'
+                    ? urls.map((audioUrl) => ({ audioUrl }))
+                    : urls,
+              },
+            },
+          },
+        },
+      ]);
+      const result = await audioAPIService.resumePolling(taskId, {
+        interval: 1,
+        maxAttempts: 1,
+      });
+      expect(result.status).toBe('completed');
+      expect(result.progress).toBe(100);
+      expect(result.clips.map((clip) => clip.audio_url)).toEqual(urls);
+    }
+  );
+
+  it.each(['IN_PROGRESS', 'FAILED'])(
+    'respects nested %s status even with audio URLs',
+    async (status) => {
+      const payload = {
+        data: { result: { task: { status, audio_urls: urls } } },
+      };
+      const { audioAPIService, send } = await setup([payload, payload]);
+      await expect(
+        audioAPIService.resumePolling(taskId, { interval: 1, maxAttempts: 1 })
+      ).rejects.toThrow(status === 'FAILED' ? '音乐生成失败' : 'Suno 生成超时');
+      expect(send).toHaveBeenCalledTimes(status === 'FAILED' ? 1 : 2);
+    }
+  );
+
+  it.each(['immediate', 'poll', 'submit'] as const)(
+    'preserves native lyrics with a manual template during %s',
+    async (mode) => {
+      const complete = {
+        data: {
+          task_id: taskId,
+          action: 'LYRICS',
+          status: 'SUCCESS',
+          data: { text: 'test lyrics', title: 'Song', status: 'complete' },
+        },
+      };
+      const payloads =
+        mode === 'immediate'
+          ? [complete]
+          : mode === 'poll'
+          ? [{ status: 'IN_PROGRESS' }, complete]
+          : [{ job: taskId }, complete];
+      const { audioAPIService, extractAudioGenerationResult } = await setup(
+        payloads,
+        {
+          responsePaths: { taskId: 'job' },
+          pollResponsePaths: { status: 'data.status' },
+        }
+      );
+      const options = {
+        interval: 1,
+        maxAttempts: 1,
+        routeModel: 'suno_lyrics',
+      };
+      const result =
+        mode === 'submit'
+          ? await audioAPIService.generateAudioWithPolling(
+              { model: 'suno_lyrics', prompt: 'test' },
+              options
+            )
+          : await audioAPIService.resumePolling(taskId, options);
+      expect(result.action).toBe('LYRICS');
+      expect(extractAudioGenerationResult(result)).toMatchObject({
+        resultKind: 'lyrics',
+        lyricsText: 'test lyrics',
+      });
+    }
+  );
 });

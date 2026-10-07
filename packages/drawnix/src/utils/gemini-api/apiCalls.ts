@@ -17,7 +17,7 @@ import {
   VideoGenerationOptions,
 } from './types';
 import { VIDEO_DEFAULT_CONFIG } from './config';
-import { analytics, getProviderEndpointAnalytics } from '../posthog-analytics';
+import { analytics, getProviderEndpointAnalytics } from '../umami-analytics';
 import { IMAGE_GENERATION_TIMEOUT_MS } from '../../constants/TASK_CONSTANTS';
 import {
   buildManualHttpRequestPayload,
@@ -26,6 +26,8 @@ import {
   normalizeManualTextResponse,
   renderTemplate,
 } from '../../services/provider-routing/manual-http-template';
+import { unifiedCacheService } from '../../services/unified-cache-service';
+import { isVirtualMediaUrl } from '../virtual-media-url';
 
 type GoogleInlineData = {
   mime_type?: string;
@@ -201,12 +203,21 @@ async function toGoogleInlineData(url: string): Promise<GoogleInlineData> {
     };
   }
 
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`Failed to load image input: ${response.status}`);
+  let blob: Blob;
+  if (isVirtualMediaUrl(url)) {
+    const cachedBlob = await unifiedCacheService.getCachedBlob(url);
+    if (!cachedBlob) {
+      throw new Error(`Cached image input not found: ${url}`);
+    }
+    blob = cachedBlob;
+  } else {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Failed to load image input: ${response.status}`);
+    }
+    blob = await response.blob();
   }
 
-  const blob = await response.blob();
   const dataUrl = await blobToDataUrl(blob);
   const parsed = parseDataUrl(dataUrl);
   return {
@@ -489,12 +500,14 @@ export async function callGoogleGenerateContentRaw(
   config: GeminiConfig,
   messages: GeminiMessage[],
   options: {
+    fetcher?: typeof fetch;
     stream: boolean;
     onChunk?: (content: string) => void;
     signal?: AbortSignal;
     generationConfig?: Record<string, unknown>;
     requestId?: string;
     onSubmissionAttempt?: () => void | Promise<void>;
+    onResponse?: (response: Response) => void | Promise<void>;
   } = { stream: false }
 ): Promise<GeminiResponse> {
   const startTime = Date.now();
@@ -541,7 +554,9 @@ export async function callGoogleGenerateContentRaw(
       query: options.stream ? { alt: 'sse' } : undefined,
       body: JSON.stringify(requestBody),
       signal: timeoutControl.signal,
+      fetcher: options.fetcher,
       controlledResponseBody: true,
+      onResponse: options.onResponse,
     });
 
     if (!response.ok) {
@@ -688,17 +703,20 @@ export async function callGoogleGenerateContentRaw(
  */
 export async function callApiRaw(
   config: GeminiConfig,
-  messages: GeminiMessage[]
+  messages: GeminiMessage[],
+  signal?: AbortSignal
 ): Promise<GeminiResponse> {
   if (isManualHttpConfig(config)) {
     return callManualHttpTextRaw(config, messages, {
       stream: false,
+      signal,
     });
   }
 
   if (isGoogleGenerateContentProtocol(config)) {
     return callGoogleGenerateContentRaw(config, messages, {
       stream: false,
+      signal,
     });
   }
 
@@ -734,6 +752,7 @@ export async function callApiRaw(
         method: 'POST',
         headers,
         body: JSON.stringify(data),
+        signal,
       }
     );
 
@@ -1223,8 +1242,9 @@ export async function callVideoApiStreamRaw(
  */
 export async function callApiWithRetry(
   config: GeminiConfig,
-  messages: GeminiMessage[]
+  messages: GeminiMessage[],
+  signal?: AbortSignal
 ): Promise<GeminiResponse> {
   // 直接调用，不再重试
-  return callApiRaw(config, messages);
+  return callApiRaw(config, messages, signal);
 }

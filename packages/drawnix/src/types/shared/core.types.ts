@@ -119,15 +119,56 @@ export interface KnowledgeContextRef {
   updatedAt?: number;
 }
 
+export type CanvasAssociationKind =
+  | 'image'
+  | 'video'
+  | 'audio'
+  | 'text'
+  | 'graphics'
+  | 'frame'
+  | 'card'
+  | 'other';
+
+/** Lightweight canvas source identity shared by the main thread and SW. */
+export interface CanvasAssociationRef {
+  referenceId: string;
+  boardId: string;
+  elementId: string;
+  kind: CanvasAssociationKind;
+  label: string;
+  /** Start offset of the trusted inline mention in the taskbar prompt. */
+  mentionStart?: number;
+  /** End offset (exclusive) of the trusted inline mention. */
+  mentionEnd?: number;
+}
+
 export interface GenerationAssetMetadata {
   category?: 'GENERAL' | 'CHARACTER';
   characterName?: string;
   characterPrompt?: string;
 }
 
+/** Durable identity used by the document batch scheduler. */
+export interface DocumentBatchTaskMetadata {
+  scopeId: string;
+  batchId: string;
+  workItemId: string;
+  attemptId: string;
+  epoch: number;
+  dispatchOwner: 'document-batch';
+  /** Set by the scheduler once the irreversible submission ticket is consumed. */
+  dispatchTicket?: string;
+}
+
 export interface GenerationParams {
+  /** Durable workflow owner. Generic queue scans must never submit these tasks. */
+  workflow?: { scopeId: string; targetId: string; attemptId: string; routeIdentity?: string };
   /** Text prompt describing the desired content */
   prompt: string;
+  /** Batch scheduler metadata; contains no credentials or secrets. */
+  documentBatch?: DocumentBatchTaskMetadata;
+  /** Lightweight canvas sources explicitly mentioned for this request */
+  canvasAssociations?: CanvasAssociationRef[];
   /** Lightweight asset-library metadata for generated media */
   assetMetadata?: GenerationAssetMetadata;
   /** Lightweight Knowledge Base note references used as generation context */
@@ -188,6 +229,8 @@ export interface GenerationParams {
   title?: string;
   /** Audio style tags */
   tags?: string;
+  /** Whether Suno should generate instrumental-only audio */
+  instrumental?: boolean;
   /** Audio model version */
   mv?: string;
   /** Suno action type (e.g. music or lyrics) */
@@ -240,6 +283,9 @@ export interface GenerationParams {
 // Task Result
 // ============================================================================
 
+/** Controls whether a completed task result is projected into user-facing views. */
+export type TaskResultVisibility = 'user' | 'internal';
+
 /**
  * Task result interface
  * Contains the output from a successfully completed task
@@ -257,6 +303,8 @@ export interface TaskResult {
   size: number;
   /** Semantic result kind for mixed-capability providers */
   resultKind?: TaskResultKind;
+  /** Internal results remain available to orchestration but are not user-facing. */
+  resultVisibility?: TaskResultVisibility;
   /** Content width in pixels */
   width?: number;
   /** Content height in pixels */
@@ -297,6 +345,13 @@ export interface TaskResult {
   toolCalls?: ChatToolCall[];
   /** Cache failure warning for media results */
   cacheWarning?: CacheWarning;
+}
+
+/** Legacy results without an explicit visibility remain user-facing. */
+export function isUserVisibleTaskResult(
+  result: Pick<TaskResult, 'resultVisibility'> | null | undefined
+): boolean {
+  return result?.resultVisibility !== 'internal';
 }
 
 export type TaskResultKind =
@@ -360,6 +415,26 @@ export interface TaskError {
   details?: TaskErrorDetails;
 }
 
+export type ImageRecoveryStatus =
+  | 'idle'
+  | 'checking'
+  | 'processing_or_not_found'
+  | 'succeeded'
+  | 'failed';
+
+/** Image URLs recovered from the provider after the original response was lost. */
+export interface ImageRecoveryInfo {
+  /** Provider-side request ID returned by X-Oneapi-Request-Id, used as fallback. */
+  requestId?: string;
+  /** Full lookup endpoint using the stable local task ID sent as X-Request-Id. */
+  url?: string;
+  status: ImageRecoveryStatus;
+  /** Original provider URLs. Keep these separate from locally cached task results. */
+  urls?: string[];
+  message?: string;
+  checkedAt: number;
+}
+
 // ============================================================================
 // Task Interface
 // ============================================================================
@@ -399,6 +474,8 @@ export interface Task {
   invocationRoute?: TaskInvocationRouteSnapshot;
   /** Current execution phase for recovery support */
   executionPhase?: TaskExecutionPhase;
+  /** Provider image recovery state and original recovered URLs. */
+  imageRecovery?: ImageRecoveryInfo;
   /** Whether the task result has been saved to the media library */
   savedToLibrary?: boolean;
   /** Whether the task result has been inserted to canvas */
@@ -407,6 +484,16 @@ export interface Task {
   syncedFromRemote?: boolean;
   /** Whether the task has been archived (excluded from active loading) */
   archived?: boolean;
+}
+
+/** Internal orchestration tasks stay available to services but not user task views. */
+export function isUserVisibleTask(
+  task: Pick<Task, 'params' | 'result'>
+): boolean {
+  return (
+    task.params.resultVisibility !== 'internal' &&
+    task.result?.resultVisibility !== 'internal'
+  );
 }
 
 // ============================================================================

@@ -1,3 +1,4 @@
+import { SubmissionPersistenceError } from './submission-persistence';
 /**
  * Generation API Service
  *
@@ -18,7 +19,7 @@ import {
 } from './audio-api-service';
 import { videoAPIService } from './video-api-service';
 import { TASK_TIMEOUT } from '../constants/TASK_CONSTANTS';
-import { analytics } from '../utils/posthog-analytics';
+import { analytics } from '../utils/umami-analytics';
 import { legacyTaskQueueService as taskQueueService } from './task-queue';
 import { unifiedCacheService } from './unified-cache-service';
 import { convertAspectRatioToSize } from '../constants/image-aspect-ratios';
@@ -42,6 +43,11 @@ import {
 } from './task-invocation-route';
 import { getImageSubmissionRequestId } from './image-generation-recovery-service';
 import { isImageSubmissionOutcomeUnknownError } from './provider-routing';
+import {
+  cacheRemoteUrl,
+  cacheRemoteUrls,
+} from './media-executor/fallback-utils';
+import type { CacheWarning } from '../types/cache-warning.types';
 
 type ImageGenerationMode = 'text_to_image' | 'image_to_image' | 'image_edit';
 type ImageOutputFormat = 'png' | 'jpeg' | 'webp';
@@ -551,16 +557,40 @@ class GenerationAPIService {
         },
       });
 
+      const originalUrls = result.urls?.length ? result.urls : [result.url];
+      let cacheWarning: CacheWarning | undefined;
+      const cachedUrls = await cacheRemoteUrls(
+        originalUrls,
+        taskId,
+        'image',
+        result.format || 'png',
+        {
+          signal,
+          forceRemoteCache: true,
+          returnLocalCacheUrl: true,
+          cacheKey: submissionRequestId,
+          extraMetadata: params.assetMetadata
+            ? { ...params.assetMetadata }
+            : undefined,
+          resultVisibility: params.resultVisibility,
+          onCacheWarning: (warning) => {
+            cacheWarning ||= warning;
+          },
+        }
+      );
+
       return {
-        url: result.url,
-        urls: result.urls,
+        url: cachedUrls[0] || result.url,
+        urls: cachedUrls.length > 1 ? cachedUrls : undefined,
         format: result.format || 'png',
         size: 0,
         width: result.width,
         height: result.height,
+        ...(cacheWarning ? { cacheWarning } : {}),
       };
     } catch (error: any) {
       console.error('[GenerationAPI] Image generation error:', error);
+      if (error instanceof SubmissionPersistenceError) throw error;
       if (isImageSubmissionOutcomeUnknownError(error)) {
         throw error;
       }
@@ -574,6 +604,10 @@ class GenerationAPIService {
       if (error.fullResponse) {
         (wrappedError as any).fullResponse = error.fullResponse;
       }
+      if (error.imageRecoveryRequestId) {
+        (wrappedError as any).imageRecoveryRequestId =
+          error.imageRecoveryRequestId;
+      }
       throw wrappedError;
     }
   }
@@ -585,7 +619,8 @@ class GenerationAPIService {
     taskId: string,
     remoteId: string,
     routeModel?: string | ModelRef | null,
-    requestId?: string
+    requestId?: string,
+    assertAvailable?: () => Promise<void>
   ): Promise<TaskResult> {
     const timeout = TASK_TIMEOUT.IMAGE;
     const abortController = new AbortController();
@@ -603,6 +638,7 @@ class GenerationAPIService {
       assertStoredTaskInvocationRouteAvailable(taskId, 'image');
       const result = await Promise.race([
         asyncImageAPIService.resumePolling(remoteId, {
+          assertAvailable,
           interval: 5000,
           routeModel,
           signal: abortController.signal,
@@ -720,14 +756,34 @@ class GenerationAPIService {
         }
       );
 
+      let cacheWarning: CacheWarning | undefined;
+      const cachedUrl = await cacheRemoteUrl(
+        result.url,
+        taskId,
+        'video',
+        result.format || 'mp4',
+        undefined,
+        {
+          signal,
+          forceRemoteCache: true,
+          returnLocalCacheUrl: true,
+          resultVisibility: params.resultVisibility,
+          onCacheWarning: (warning) => {
+            cacheWarning ||= warning;
+          },
+        }
+      );
+
       return {
-        url: result.url,
+        url: cachedUrl,
         format: result.format || 'mp4',
         size: 0,
         duration: result.duration || 0,
+        ...(cacheWarning ? { cacheWarning } : {}),
       };
     } catch (error: any) {
       console.error('[GenerationAPI] Video generation error:', error);
+      if (error instanceof SubmissionPersistenceError) throw error;
       const wrappedError = new Error(error.message || '视频生成失败');
       if (error.apiErrorBody) {
         (wrappedError as any).apiErrorBody = error.apiErrorBody;
@@ -779,6 +835,7 @@ class GenerationAPIService {
           modelRef: requestedModelRef || null,
           title: params.title,
           tags: params.tags,
+          instrumental: params.instrumental,
           mv: params.mv,
           sunoAction: params.sunoAction,
           notifyHook: params.notifyHook,
@@ -831,6 +888,7 @@ class GenerationAPIService {
       };
     } catch (error: any) {
       console.error('[GenerationAPI] Audio generation error:', error);
+      if (error instanceof SubmissionPersistenceError) throw error;
       const wrappedError = new Error(error.message || '音频生成失败');
       if (error.apiErrorBody) {
         (wrappedError as any).apiErrorBody = error.apiErrorBody;
@@ -852,7 +910,8 @@ class GenerationAPIService {
   async resumeVideoGeneration(
     taskId: string,
     remoteId: string,
-    routeModel?: string | ModelRef | null
+    routeModel?: string | ModelRef | null,
+    assertAvailable?: () => Promise<void>
   ): Promise<TaskResult> {
     const startTime = Date.now();
     const modelName = resolveAnalyticsModelName(routeModel, 'gemini-video');
@@ -884,6 +943,7 @@ class GenerationAPIService {
       // Resume polling
       const pollingPromise = videoAPIService.resumePolling(remoteId, {
         interval: 5000,
+        assertAvailable,
         routeModel,
         params: taskQueueService.getTask(taskId)?.params.params as
           | Record<string, unknown>
@@ -947,7 +1007,8 @@ class GenerationAPIService {
   async resumeAudioGeneration(
     taskId: string,
     remoteId: string,
-    routeModel?: string | ModelRef | null
+    routeModel?: string | ModelRef | null,
+    assertAvailable?: () => Promise<void>
   ): Promise<TaskResult> {
     const startTime = Date.now();
     const modelName = resolveAnalyticsModelName(
@@ -975,6 +1036,7 @@ class GenerationAPIService {
 
       const pollingPromise = audioAPIService.resumePolling(remoteId, {
         interval: 5000,
+        assertAvailable,
         routeModel,
         onProgress: (progress) => {
           taskQueueService.updateTaskProgress(taskId, progress);

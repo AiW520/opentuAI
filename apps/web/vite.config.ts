@@ -1,5 +1,5 @@
 /// <reference types='vitest' />
-import { defineConfig, Plugin } from 'vite';
+import { defineConfig, Plugin, type ProxyOptions } from 'vite';
 import react from '@vitejs/plugin-react';
 import { nxViteTsPaths } from '@nx/vite/plugins/nx-tsconfig-paths.plugin';
 import fs from 'fs';
@@ -7,12 +7,19 @@ import path from 'path';
 import crypto from 'crypto';
 import { createRequire } from 'module';
 import { visualizer } from 'rollup-plugin-visualizer';
+import { workflowAssetsPlugin } from './workflow-assets-plugin';
 
 const require = createRequire(import.meta.url);
 const workspaceRoot = path.resolve(__dirname, '../..');
+const devCacheNamespace = crypto
+  .createHash('sha256')
+  .update(workspaceRoot)
+  .digest('hex')
+  .slice(0, 8);
 
 // Read version from public/version.json
 const versionPath = path.resolve(__dirname, 'public/version.json');
+const appChangelog = fs.readFileSync(path.resolve(__dirname, 'public/changelog.json'), 'utf8');
 let appVersion = '0.0.0';
 
 try {
@@ -108,6 +115,72 @@ const PRECACHE_ALWAYS_INCLUDE = new Set([
   '/manifest.json',
   '/favicon.ico',
 ]);
+const DEV_FRAME_ANCESTORS =
+  "'self' localhost:* 127.0.0.1:* http://192.168.50.225:* https://api.tu-zi.com";
+const DEV_SERVER_PORT = Number(
+  process.env.OPENTU_PORT || process.env.VITE_PORT || process.env.PORT || 7200
+);
+const TUZI_LOCAL_GATEWAY_TARGET =
+  process.env.VITE_TUZI_LOCAL_GATEWAY_TARGET || 'http://127.0.0.1:4173';
+const TUZI_SESSION_PROXY_TARGET =
+  process.env.VITE_TUZI_SESSION_PROXY_TARGET || 'https://api.tu-zi.com';
+const LAYER_DECOMPOSER_PROXY_TARGET =
+  process.env.VITE_LAYER_DECOMPOSER_PROXY_TARGET || 'http://127.0.0.1:8090';
+
+
+function createLayerDecomposerProxy(): Record<string, ProxyOptions> {
+  return {
+    '/api/layer-decompositions': {
+      target: LAYER_DECOMPOSER_PROXY_TARGET,
+      changeOrigin: true,
+      secure: false,
+    },
+  };
+}
+
+function createTuziLocalGatewayProxy(): Record<string, ProxyOptions> {
+  const paths = [
+    '/api',
+    '/oauth',
+    '/v1',
+    '/v1beta',
+    '/v2',
+    '/pg',
+    '/async',
+    '/mj',
+    '/suno',
+    '/kling',
+    '/jimeng',
+    '/fapiao',
+    '/integration',
+    '/mrmgr',
+    '/fast',
+    '/relax',
+    '/turbo',
+    '/default',
+    '/async-results',
+    '/local-async-image-requests',
+    '/task-images',
+    '/image-cache',
+    '/log/get-request',
+    '/internal/image-origin/health',
+    '/get-async',
+    '/livez',
+    '/readyz',
+  ];
+
+  return Object.fromEntries(
+    paths.map((pathPrefix) => [
+      pathPrefix,
+      {
+        target: TUZI_LOCAL_GATEWAY_TARGET,
+        changeOrigin: false,
+        secure: false,
+        ws: true,
+      },
+    ])
+  );
+}
 
 function isFileDescriptorLimitError(error: unknown): boolean {
   return (
@@ -1006,7 +1079,7 @@ const reactNodeEnv = isWatchMode || isServeMode ? 'development' : 'production';
 
 export default defineConfig({
   root: __dirname,
-  cacheDir: '../../node_modules/.vite/apps/web',
+  cacheDir: `../../node_modules/.vite/apps/web-${devCacheNamespace}`,
 
   // CI preview uses an absolute base; packaged/static deployments use relative assets.
   base: process.env.CI ? '/' : process.env.VITE_BASE_URL || './',
@@ -1015,6 +1088,7 @@ export default defineConfig({
     'import.meta.env.VITE_APP_VERSION': JSON.stringify(appVersion),
     'process.env.NODE_ENV': JSON.stringify(reactNodeEnv),
     __APP_VERSION__: JSON.stringify(appVersion),
+    __APP_CHANGELOG__: appChangelog,
     // Vue feature flags - @milkdown/crepe 内部使用了 Vue，需要定义这些编译时标志
     __VUE_OPTIONS_API__: JSON.stringify(false),
     __VUE_PROD_DEVTOOLS__: JSON.stringify(false),
@@ -1026,68 +1100,44 @@ export default defineConfig({
   },
 
   server: {
-    port: 7200,
-    host: 'localhost',
-    headers: {
-      'Content-Security-Policy':
-        "default-src 'self' https: data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://www.googletagmanager.com https://www.google-analytics.com https://us.i.posthog.com https://us-assets.i.posthog.com https://wiki.tu-zi.com; worker-src 'self' blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https:; connect-src 'self' http: https: ws: wss: data: blob:; frame-ancestors 'self' localhost:* 127.0.0.1:* https://api.tu-zi.com;",
-    },
-    // dev 代理：让图片提交请求在本地开发环境按同源方式携带 X-Request-Id
-    // 只允许固定 Tuzi 节点，保留原 Token、计费和权限域。
+    port: DEV_SERVER_PORT,
+    host: process.env.OPENTU_HOST || 'localhost',
     proxy: {
       '/__opentu_tuzi_proxy__/api/': {
         target: 'https://api.tu-zi.com',
         changeOrigin: true,
         secure: true,
-        rewrite: (path) => path.replace(/^\/__opentu_tuzi_proxy__\/api/, ''),
+        rewrite: (requestPath: string) =>
+          requestPath.replace(/^\/__opentu_tuzi_proxy__\/api/, ''),
       },
-      '/__opentu_tuzi_proxy__/apius/': {
-        target: 'https://apius.tu-zi.com',
+      '/__opentu_tuzi_session__/': {
+        target: TUZI_SESSION_PROXY_TARGET,
         changeOrigin: true,
-        secure: true,
-        rewrite: (path) => path.replace(/^\/__opentu_tuzi_proxy__\/apius/, ''),
+        secure: TUZI_SESSION_PROXY_TARGET.startsWith('https://'),
+        rewrite: (requestPath: string) =>
+          requestPath.replace(/^\/__opentu_tuzi_session__/, ''),
       },
-      '/__opentu_tuzi_proxy__/apicdn/': {
-        target: 'https://apicdn.tu-zi.com',
-        changeOrigin: true,
-        secure: true,
-        rewrite: (path) => path.replace(/^\/__opentu_tuzi_proxy__\/apicdn/, ''),
-      },
-      '/__opentu_tuzi_proxy__/sydney/': {
-        target: 'https://api.sydney-ai.com',
-        changeOrigin: true,
-        secure: true,
-        rewrite: (path) => path.replace(/^\/__opentu_tuzi_proxy__\/sydney/, ''),
-      },
-      '/__opentu_tuzi_proxy__/ourzhishi/': {
-        target: 'https://api.ourzhishi.top',
-        changeOrigin: true,
-        secure: true,
-        rewrite: (path) =>
-          path.replace(/^\/__opentu_tuzi_proxy__\/ourzhishi/, ''),
-      },
-      '/__opentu_tuzi_proxy__/ourzhishi-sz/': {
-        target: 'https://apisz.ourzhishi.top',
-        changeOrigin: true,
-        secure: true,
-        rewrite: (path) =>
-          path.replace(/^\/__opentu_tuzi_proxy__\/ourzhishi-sz/, ''),
-      },
+      ...createLayerDecomposerProxy(),
+      ...createTuziLocalGatewayProxy(),
+    },
+    headers: {
+      'Content-Security-Policy': `default-src 'self' https: data: blob:; script-src 'self' blob: 'unsafe-inline' 'unsafe-eval' https://www.googletagmanager.com https://www.google-analytics.com https://umami.tu-zi.com https://wiki.tu-zi.com; worker-src 'self' blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https:; connect-src 'self' http: https: ws: wss: data: blob:; frame-ancestors ${DEV_FRAME_ANCESTORS};`,
     },
   },
 
   preview: {
     port: 4300,
-    host: 'localhost',
+    host: process.env.OPENTU_HOST || 'localhost',
     headers: {
       'Content-Security-Policy':
-        "upgrade-insecure-requests; default-src 'self' https: data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://www.googletagmanager.com https://www.google-analytics.com https://us.i.posthog.com https://us-assets.i.posthog.com https://wiki.tu-zi.com; worker-src 'self' blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https:; connect-src 'self' https: wss: data: blob:; frame-ancestors 'self' localhost:* 127.0.0.1:* https://api.tu-zi.com;",
+        "upgrade-insecure-requests; default-src 'self' https: data: blob:; script-src 'self' blob: 'unsafe-inline' 'unsafe-eval' https://www.googletagmanager.com https://www.google-analytics.com https://umami.tu-zi.com https://wiki.tu-zi.com; worker-src 'self' blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https:; connect-src 'self' https: wss: data: blob:; frame-ancestors 'self' localhost:* 127.0.0.1:* https://api.tu-zi.com;",
     },
   },
 
   plugins: [
     react(),
     nxViteTsPaths(),
+    workflowAssetsPlugin(),
     visualizer({
       open: false,
       filename: path.resolve(__dirname, '../../dist/apps/web/stats.html'),
@@ -1109,14 +1159,17 @@ export default defineConfig({
           '../../packages/drawnix/src/utils/tdesign.ts'
         ),
       },
+      {
+        find: /^@\/(.*)$/,
+        replacement: path.resolve(__dirname, '../../packages/drawnix/src/workflow-mode/web/src/$1'),
+      },
     ],
     dedupe: ['react', 'react-dom'],
   },
 
-  // Uncomment this if you are using workers.
-  // worker: {
-  //  plugins: [ nxViteTsPaths() ],
-  // },
+  worker: {
+    format: 'es',
+  },
 
   build: {
     outDir: '../../dist/apps/web',

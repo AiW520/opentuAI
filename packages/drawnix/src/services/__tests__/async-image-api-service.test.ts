@@ -22,44 +22,54 @@ vi.mock('../provider-routing', () => ({
 }));
 
 describe('async-image-api-service', () => {
+  it('retains the accepted remote id when local persistence fails without another submission', async () => {
+    mocks.send.mockResolvedValueOnce(new Response(JSON.stringify({ id: 'accepted', status: 'queued' }), { status: 200 }));
+    const { asyncImageAPIService } = await import('../async-image-api-service');
+    await expect(asyncImageAPIService.generateWithPolling({ model: 'gpt-image-async', prompt: 'test' }, {
+      onSubmitted: async () => { throw Object.assign(new Error('storage failed'), { httpStatus: 403 }); },
+    })).rejects.toMatchObject({ remoteId: 'accepted', code: 'SUBMISSION_PERSISTENCE_FAILED', retryable: false });
+    expect(mocks.send).toHaveBeenCalledTimes(1);
+  });
   afterEach(() => {
     vi.clearAllMocks();
   });
 
   it('submits async image masks as multipart mask field', async () => {
-    mocks.send.mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          id: 'async-image-task-1',
-          object: 'video',
-          model: 'gpt-image-async',
-          status: 'completed',
-          progress: 100,
-          created_at: 1,
-          url: 'https://cdn.example.com/out.png',
-        }),
-        {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        }
+    mocks.send
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            id: 'async-image-task-1',
+            object: 'video',
+            model: 'gpt-image-async',
+            status: 'completed',
+            progress: 100,
+            created_at: 1,
+            url: 'https://cdn.example.com/out.png',
+          }),
+          {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }
+        )
       )
-    ).mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          id: 'async-image-task-1',
-          object: 'video',
-          model: 'gpt-image-async',
-          status: 'completed',
-          progress: 100,
-          created_at: 1,
-          url: 'https://cdn.example.com/out.png',
-        }),
-        {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        }
-      )
-    );
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            id: 'async-image-task-1',
+            object: 'video',
+            model: 'gpt-image-async',
+            status: 'completed',
+            progress: 100,
+            created_at: 1,
+            url: 'https://cdn.example.com/out.png',
+          }),
+          {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }
+        )
+      );
 
     const { asyncImageAPIService } = await import('../async-image-api-service');
     let resolveSubmissionAttempt!: () => void;

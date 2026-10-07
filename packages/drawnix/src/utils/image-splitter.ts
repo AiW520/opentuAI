@@ -9,10 +9,11 @@ import {
   Point,
   getRectangleByElements,
   PlaitElement,
+  Transforms,
 } from '@plait/core';
 import { trackMemory } from './common';
 import { DrawTransforms } from '@plait/draw';
-import { loadImage, trimBorders } from '@aitu/utils';
+import { generateUUID, loadImage, trimBorders } from '@aitu/utils';
 import { scrollToPointIfNeeded } from './selection-utils';
 import {
   type SplitImageElement,
@@ -607,7 +608,8 @@ function detectHardSeamGridFromImage(
 
     const score =
       seamStats.reduce(
-        (sum, stats) => sum + stats.mean * stats.strongRatio * stats.edgeBalance,
+        (sum, stats) =>
+          sum + stats.mean * stats.strongRatio * stats.edgeBalance,
         0
       ) / seamStats.length;
 
@@ -1827,6 +1829,16 @@ export interface SplitAndInsertOptions {
   startPoint?: Point;
   /** 是否滚动到插入位置（默认 true） */
   scrollToResult?: boolean;
+  /** 异步处理期间确认目标画板仍然有效 */
+  boardGuard?: () => boolean;
+  /** AI 生成结果的轻量来源元数据 */
+  metadata?: Record<string, unknown>;
+}
+
+function assertSplitInsertionBoardCurrent(boardGuard?: () => boolean): void {
+  if (boardGuard && !boardGuard()) {
+    throw new Error('画板已切换，取消本次插入');
+  }
 }
 
 /**
@@ -1843,10 +1855,24 @@ export async function splitAndInsertImages(
   board: PlaitBoard,
   imageUrl: string,
   options?: SplitAndInsertOptions
-): Promise<{ success: boolean; count: number; error?: string }> {
+): Promise<{
+  success: boolean;
+  count: number;
+  firstElementId?: string;
+  firstElementPosition?: Point;
+  firstElementSize?: { width: number; height: number };
+  error?: string;
+}> {
   const endTrack = trackMemory('图片分割');
-  const { sourceRect, startPoint, scrollToResult = true } = options || {};
+  const {
+    sourceRect,
+    startPoint,
+    scrollToResult = true,
+    boardGuard,
+    metadata,
+  } = options || {};
   try {
+    assertSplitInsertionBoardCurrent(boardGuard);
     let elements: SplitImageElement[] = [];
     // 标记是否为标准宫格（用于决定是否跳过子图去白边）
     let isStandardGrid = false;
@@ -1857,6 +1883,7 @@ export async function splitAndInsertImages(
     const { trimmedImageUrl, borderInfo } = await trimImageWhiteBorders(
       imageUrl
     );
+    assertSplitInsertionBoardCurrent(boardGuard);
     // 用于计算缩放的图片尺寸
     const workingImageWidth = borderInfo.trimmed.width;
     const workingImageHeight = borderInfo.trimmed.height;
@@ -1872,6 +1899,7 @@ export async function splitAndInsertImages(
     const { detection, hasTransparency } = await detectGridLinesInternal(
       trimmedImageUrl
     );
+    assertSplitInsertionBoardCurrent(boardGuard);
 
     if (detection.rows > 1 || detection.cols > 1) {
       // 判断是否为标准宫格（行列数都大于1，说明是规则宫格）
@@ -1886,6 +1914,7 @@ export async function splitAndInsertImages(
         hasTransparency,
         { trimMode: isStandardGrid ? 'strict' : 'normal' }
       );
+      assertSplitInsertionBoardCurrent(boardGuard);
 
       // 对于透明背景的合并图片，禁用递归拆分
       // 因为文字行之间的透明间隙会导致文字被切成碎片
@@ -1917,6 +1946,7 @@ export async function splitAndInsertImages(
           const recursiveResults = await recursiveSplitElement(el, 0, 2, {
             skipTrim: true,
           });
+          assertSplitInsertionBoardCurrent(boardGuard);
           // 限制添加的数量
           const remainingSlots = MAX_TOTAL_ELEMENTS - elements.length;
           elements.push(...recursiveResults.slice(0, remainingSlots));
@@ -1925,10 +1955,13 @@ export async function splitAndInsertImages(
     } else {
       // 尝试灵感图格式（已内置递归拆分）- 使用去除白边后的图片
       const isPhotoWall = await detectPhotoWallFormat(trimmedImageUrl);
+      assertSplitInsertionBoardCurrent(boardGuard);
 
       if (isPhotoWall) {
         const { splitPhotoWall } = await import('./photo-wall-splitter');
+        assertSplitInsertionBoardCurrent(boardGuard);
         const inspirationBoardElements = await splitPhotoWall(trimmedImageUrl);
+        assertSplitInsertionBoardCurrent(boardGuard);
 
         // 转换为 SplitImageElement 格式，保留原图位置信息
         elements = inspirationBoardElements.map((el, index) => ({
@@ -2023,12 +2056,14 @@ export async function splitAndInsertImages(
     }
 
     let firstInsertPoint: Point | undefined;
+    let firstElementId: string | undefined;
     let firstElementSize: { width: number; height: number } | undefined;
 
     // 动态导入 unifiedCacheService
     const { unifiedCacheService } = await import(
       '../services/unified-cache-service'
     );
+    assertSplitInsertionBoardCurrent(boardGuard);
 
     // 如果没有有效位置信息，计算网格布局
     const gridLayout: {
@@ -2082,7 +2117,22 @@ export async function splitAndInsertImages(
       // console.log('[splitAndInsertImages] Grid layout:', { cols, rows, cellWidth, cellHeight, gap });
     }
 
+    const preparedImages: Array<{
+      imageItem: {
+        url: string;
+        width: number;
+        height: number;
+        prompt?: string;
+        aiPrompt?: string;
+        generationPrompt?: string;
+        generationTaskId?: string;
+      };
+      point: Point;
+    }> = [];
+
+    // 先完成所有异步缓存，真实画板在准备阶段保持不变。
     for (let i = 0; i < elements.length; i++) {
+      assertSplitInsertionBoardCurrent(boardGuard);
       const element = elements[i];
 
       let insertX: number;
@@ -2121,23 +2171,62 @@ export async function splitAndInsertImages(
 
       // 将 base64 DataURL 转换为 Blob 并缓存到 __aitu_cache__
       const imageFormat = element.hasTransparency ? 'png' : 'jpg';
-      const taskId = `split-image-${Date.now()}-${i}`;
+      const taskId = `split-image-${generateUUID()}-${i}`;
       const stableUrl = `/__aitu_cache__/image/${taskId}.${imageFormat}`;
 
       // 将 DataURL 转换为 Blob
       const response = await fetch(element.imageData);
+      assertSplitInsertionBoardCurrent(boardGuard);
       const blob = await response.blob();
+      assertSplitInsertionBoardCurrent(boardGuard);
 
       // 仅缓存到 Cache Storage（不存 IndexedDB 元数据，分割图片不需要在素材库显示）
       await unifiedCacheService.cacheToCacheStorageOnly(stableUrl, blob);
+      assertSplitInsertionBoardCurrent(boardGuard);
 
-      const imageItem = {
-        url: stableUrl,
-        width: scaledWidth,
-        height: scaledHeight,
-      };
+      const prompt =
+        typeof metadata?.prompt === 'string' && metadata.prompt.trim()
+          ? metadata.prompt.trim()
+          : undefined;
+      const generationTaskId =
+        typeof metadata?.generationTaskId === 'string' &&
+        metadata.generationTaskId.trim()
+          ? metadata.generationTaskId.trim()
+          : undefined;
+      preparedImages.push({
+        imageItem: {
+          url: stableUrl,
+          width: scaledWidth,
+          height: scaledHeight,
+          ...(prompt
+            ? { prompt, aiPrompt: prompt, generationPrompt: prompt }
+            : {}),
+          ...(generationTaskId ? { generationTaskId } : {}),
+        },
+        point: [insertX, insertY] as Point,
+      });
+    }
 
-      DrawTransforms.insertImage(board, imageItem, [insertX, insertY] as Point);
+    assertSplitInsertionBoardCurrent(boardGuard);
+    const committedElementIds: string[] = [];
+    try {
+      for (const prepared of preparedImages) {
+        const childrenCountBefore = board.children.length;
+        DrawTransforms.insertImage(board, prepared.imageItem, prepared.point);
+        const insertedElement = board.children[childrenCountBefore];
+        if (typeof insertedElement?.id === 'string') {
+          committedElementIds.push(insertedElement.id);
+          firstElementId ||= insertedElement.id;
+        }
+      }
+    } catch (error) {
+      for (const elementId of committedElementIds.reverse()) {
+        const index = board.children.findIndex(
+          (element) => element.id === elementId
+        );
+        if (index >= 0) Transforms.removeNode(board, [index]);
+      }
+      throw error;
     }
 
     // 插入完成后滚动到第一个元素的位置
@@ -2147,7 +2236,9 @@ export async function splitAndInsertImages(
         firstInsertPoint[1] + firstElementSize.height / 2,
       ];
       requestAnimationFrame(() => {
-        scrollToPointIfNeeded(board, centerPoint);
+        if (!boardGuard || boardGuard()) {
+          scrollToPointIfNeeded(board, centerPoint);
+        }
       });
     }
 
@@ -2155,6 +2246,9 @@ export async function splitAndInsertImages(
     return {
       success: true,
       count: elements.length,
+      firstElementId,
+      firstElementPosition: firstInsertPoint,
+      firstElementSize,
     };
   } catch (error: any) {
     endTrack();

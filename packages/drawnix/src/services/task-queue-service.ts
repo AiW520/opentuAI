@@ -24,13 +24,20 @@ import {
 } from '../utils/validation-utils';
 import {
   taskStorageWriter,
+  isDocumentBatchTaskScopeCurrent,
+  registerDocumentBatchTaskGuard,
   type SWTask,
 } from './media-executor/task-storage-writer';
 import { taskStorageReader } from './task-storage-reader';
 import { executorFactory, waitForTaskCompletion } from './media-executor';
-import { hasInvocationRouteCredentials } from '../utils/settings-manager';
+import {
+  createModelRef,
+  hasInvocationRouteCredentials,
+  LEGACY_DEFAULT_PROVIDER_PROFILE_ID,
+  resolveInvocationRoute,
+} from '../utils/settings-manager';
 import { DEFAULT_AUDIO_MODEL_ID } from '../constants/model-config';
-import { analytics } from '../utils/posthog-analytics';
+import { analytics } from '../utils/umami-analytics';
 import {
   getAdapterContextFromSettings,
   resolveAdapterForInvocation,
@@ -46,9 +53,13 @@ import { buildInlineDataPart } from '../utils/gemini-api/message-utils';
 import { unifiedCacheService } from './unified-cache-service';
 import { buildGenerateContentConfig } from './analysis-core';
 import {
+  assertTaskInvocationRouteAvailable,
   createTaskInvocationRouteSnapshotFromTask,
   mergeTaskInvocationRoute,
+  resolveLegacyTaskInvocationRouteModel,
+  resolveTaskInvocationRouteModel,
 } from './task-invocation-route';
+import type { DocumentBatchTaskMetadata } from '../types/shared/core.types';
 import { callGoogleGenerateContentWithLog } from '../utils/gemini-api/logged-calls';
 import { executeVideoAnalysis } from './video-analysis-service';
 import {
@@ -81,6 +92,7 @@ import {
   isImageRequestRecoveryCandidate,
 } from './image-generation-recovery-service';
 import { isImageSubmissionOutcomeUnknownError } from './provider-routing';
+import { SubmissionPersistenceError } from './submission-persistence';
 
 const VIDEO_ANALYZER_SIMULATED_DURATION_MS = 10 * 60 * 1000;
 const VIDEO_ANALYZER_SIMULATED_INTERVAL_MS = 5000;
@@ -113,6 +125,8 @@ const STRIPPED_TASK_PARAM_KEYS = [
   'pdfData',
 ] as const;
 const MAX_RECENTLY_DELETED_TASK_IDS = STORAGE_LIMITS.MAX_RETAINED_TASKS * 10;
+const PPT_EXPLAINER_REMOTE_CANCEL_FAILURE_DIAGNOSTIC =
+  '远端取消失败，远端任务可能继续执行和计费；可再次尝试取消';
 
 type InsertionSource = 'manual' | 'auto_insert';
 type StrippedTaskParamKey = (typeof STRIPPED_TASK_PARAM_KEYS)[number];
@@ -133,10 +147,69 @@ const STORAGE_SYNC_FIELDS = [
   'startedAt',
   'remoteId',
   'invocationRoute',
+  'imageRecovery',
   'insertedToCanvas',
   'executionPhase',
   'savedToLibrary',
 ] as const satisfies readonly (keyof Task)[];
+
+function normalizeTaskParamsModelIdentity(
+  params: GenerationParams,
+  routeModelId?: string | null
+): GenerationParams {
+  const modelId =
+    routeModelId?.trim() || params.modelRef?.modelId?.trim() || '';
+  if (!modelId || params.model === modelId) {
+    return params;
+  }
+
+  return {
+    ...params,
+    model: modelId,
+  };
+}
+
+function isLegacyImageAlias(modelId?: string | null): boolean {
+  const normalized = modelId?.trim().toLowerCase();
+  return normalized === 'image2' || normalized === 'image-2';
+}
+
+function shouldRepairLegacyImageAlias(task: Task): boolean {
+  if (task.type !== TaskType.IMAGE) {
+    return false;
+  }
+
+  if (!isLegacyImageAlias(task.params.model)) {
+    return false;
+  }
+
+  const errorMessage = task.error?.message || '';
+  const originalError =
+    typeof task.error?.details?.originalError === 'string'
+      ? task.error.details.originalError
+      : '';
+  return /无可用渠道|distributor/i.test(`${errorMessage} ${originalError}`);
+}
+
+function shouldRefreshUnavailableImageRoute(task: Task): boolean {
+  if (task.type !== TaskType.IMAGE) {
+    return false;
+  }
+
+  const routeProfileId =
+    task.invocationRoute?.modelRef?.profileId ||
+    task.invocationRoute?.providerProfileId;
+  if (routeProfileId && routeProfileId !== LEGACY_DEFAULT_PROVIDER_PROFILE_ID) {
+    return false;
+  }
+
+  const errorMessage = task.error?.message || '';
+  const originalError =
+    typeof task.error?.details?.originalError === 'string'
+      ? task.error.details.originalError
+      : '';
+  return /无可用渠道|distributor/i.test(`${errorMessage} ${originalError}`);
+}
 
 function stableStringify(value: unknown): string | undefined {
   try {
@@ -473,6 +546,7 @@ class TaskQueueService {
       progress: task.progress,
       remoteId: task.remoteId,
       invocationRoute: task.invocationRoute,
+      imageRecovery: task.imageRecovery,
       executionPhase: task.executionPhase,
       savedToLibrary: task.savedToLibrary,
       insertedToCanvas: task.insertedToCanvas,
@@ -563,6 +637,7 @@ class TaskQueueService {
     const task = this.tasks.get(taskId);
     return (
       !task ||
+      (task?.params.documentBatch && !isDocumentBatchTaskScopeCurrent(task)) ||
       task.status === TaskStatus.CANCELLED ||
       this.blockedTaskIds.has(taskId) ||
       this.recentlyDeletedTaskIds.has(taskId) ||
@@ -794,6 +869,9 @@ class TaskQueueService {
    * This is called automatically after task creation
    */
   private async executeTask(task: Task): Promise<void> {
+    if (task.params.workflow) return;
+    if (task.params.documentBatch &&
+        (!task.params.documentBatch.dispatchTicket || !isDocumentBatchTaskScopeCurrent(task))) return;
     const submissionRequestId =
       task.type === TaskType.IMAGE
         ? getImageSubmissionRequestId(task)
@@ -846,12 +924,8 @@ class TaskQueueService {
           : task.type === TaskType.CHAT
           ? 'text'
           : 'image';
-      if (
-        !hasInvocationRouteCredentials(
-          routeType,
-          task.params.modelRef || task.params.model
-        )
-      ) {
+      const routeModel = resolveTaskInvocationRouteModel(task);
+      if (!hasInvocationRouteCredentials(routeType, routeModel)) {
         console.warn(
           '[TaskQueueService] No API configuration, cannot execute task'
         );
@@ -884,8 +958,14 @@ class TaskQueueService {
       }
 
       if (task.type === TaskType.AUDIO) {
-        const requestedModel = task.params.model as string | undefined;
-        const requestedModelRef = task.params.modelRef || null;
+        const audioRouteModel = resolveTaskInvocationRouteModel(task);
+        const requestedModelRef =
+          typeof audioRouteModel === 'string' ? null : audioRouteModel;
+        const requestedModel =
+          requestedModelRef?.modelId ||
+          (typeof audioRouteModel === 'string'
+            ? audioRouteModel
+            : (task.params.model as string | undefined));
         const adapter = resolveAdapterForInvocation(
           'audio',
           requestedModel || DEFAULT_AUDIO_MODEL_ID,
@@ -907,6 +987,7 @@ class TaskQueueService {
             modelRef: requestedModelRef,
             title: task.params.title,
             tags: task.params.tags,
+            instrumental: task.params.instrumental,
             mv: task.params.mv,
             sunoAction: task.params.sunoAction,
             notifyHook: task.params.notifyHook,
@@ -1129,12 +1210,20 @@ class TaskQueueService {
         onSubmissionAttempt: async (
           invocationRoute?: Task['invocationRoute']
         ) => {
+          if (task.params.documentBatch) {
+            assertTaskInvocationRouteAvailable('image', task, { requireSelectedBindingMatch: true });
+            if (!isCurrentExecutionAttempt()) throw new Error('Batch scope changed before submission');
+          }
           if (submissionRequestId) {
             await this.markImageSubmissionAttempted(
               task.id,
               submissionRequestId,
               invocationRoute
             );
+          }
+          if (task.params.documentBatch) {
+            assertTaskInvocationRouteAvailable('image', task, { requireSelectedBindingMatch: true });
+            if (!isCurrentExecutionAttempt()) throw new Error('Batch scope changed before submission');
           }
           if (
             this.shouldSkipExecutionWriteback(
@@ -1178,6 +1267,14 @@ class TaskQueueService {
       // Execute based on task type
       switch (task.type) {
         case TaskType.IMAGE: {
+          const imageRouteModel = resolveTaskInvocationRouteModel(task);
+          const imageModelRef =
+            typeof imageRouteModel === 'string' ? null : imageRouteModel;
+          const imageModel =
+            imageModelRef?.modelId ||
+            (typeof imageRouteModel === 'string'
+              ? imageRouteModel
+              : task.params.model);
           // 从 params.params 中提取额外参数，并补齐新图像契约字段
           const extraParams = {
             ...(((task.params as any).params || {}) as Record<string, unknown>),
@@ -1203,8 +1300,8 @@ class TaskQueueService {
               taskId: task.id,
               requestId: submissionRequestId,
               prompt: task.params.prompt,
-              model: task.params.model,
-              modelRef: task.params.modelRef || null,
+              model: imageModel,
+              modelRef: imageModelRef,
               size: task.params.size,
               resolution: task.params.resolution as
                 | '1k'
@@ -1252,12 +1349,21 @@ class TaskQueueService {
                 | undefined,
               params: extraParams,
               assetMetadata: task.params.assetMetadata,
+              resultVisibility: task.params.resultVisibility,
             },
             executionOptions
           );
           break;
         }
         case TaskType.VIDEO: {
+          const videoRouteModel = resolveTaskInvocationRouteModel(task);
+          const videoModelRef =
+            typeof videoRouteModel === 'string' ? null : videoRouteModel;
+          const videoModel =
+            videoModelRef?.modelId ||
+            (typeof videoRouteModel === 'string'
+              ? videoRouteModel
+              : task.params.model);
           // 从 uploadedImages（UI 层传入的 UploadedVideoImage[]）中提取 URL
           const uploaded = task.params.uploadedImages as
             | Array<{ url?: string }>
@@ -1281,14 +1387,15 @@ class TaskQueueService {
             {
               taskId: task.id,
               prompt: task.params.prompt,
-              model: task.params.model,
-              modelRef: task.params.modelRef || null,
+              model: videoModel,
+              modelRef: videoModelRef,
               duration: (
                 task.params.duration ?? task.params.seconds
               )?.toString(),
               size: task.params.size,
               referenceImages: finalRefs,
               params: (task.params as any).params,
+              resultVisibility: task.params.resultVisibility,
             },
             executionOptions
           );
@@ -1363,10 +1470,21 @@ class TaskQueueService {
           }
           await executor.generateText(
             {
+              ...(() => {
+                const textRouteModel = resolveTaskInvocationRouteModel(task);
+                const textModelRef =
+                  typeof textRouteModel === 'string' ? null : textRouteModel;
+                return {
+                  model:
+                    textModelRef?.modelId ||
+                    (typeof textRouteModel === 'string'
+                      ? textRouteModel
+                      : task.params.model),
+                  modelRef: textModelRef,
+                };
+              })(),
               taskId: task.id,
               prompt: task.params.prompt,
-              model: task.params.model,
-              modelRef: task.params.modelRef || null,
               referenceImages: task.params.referenceImages as
                 | string[]
                 | undefined,
@@ -1420,6 +1538,10 @@ class TaskQueueService {
               ...localTask,
               status: updatedTask.status as TaskStatus,
               progress: updatedTask.progress,
+              // Preserve submission metadata written directly by the executor.
+              remoteId: updatedTask.remoteId ?? localTask.remoteId,
+              invocationRoute:
+                updatedTask.invocationRoute ?? localTask.invocationRoute,
               updatedAt: Date.now(),
               ...(updatedTask.result && { result: updatedTask.result }),
               ...(updatedTask.error && { error: updatedTask.error }),
@@ -1453,6 +1575,9 @@ class TaskQueueService {
         const finalTask: Task = {
           ...localTask,
           status: result.task.status as TaskStatus,
+          remoteId: result.task.remoteId ?? localTask.remoteId,
+          invocationRoute:
+            result.task.invocationRoute ?? localTask.invocationRoute,
           result: result.task.result,
           error: result.task.error,
           completedAt: result.task.completedAt,
@@ -1480,6 +1605,20 @@ class TaskQueueService {
       const localTask = this.tasks.get(task.id);
       if (localTask) {
         const now = Date.now();
+        if (error instanceof SubmissionPersistenceError) {
+          const acceptedTask: Task = {
+            ...localTask,
+            remoteId: error.remoteId,
+            status: TaskStatus.PROCESSING,
+            executionPhase: TaskExecutionPhase.POLLING,
+            updatedAt: now,
+            error: { code: error.code, message: error.message },
+          };
+          this.tasks.set(task.id, acceptedTask);
+          this.persistTask(acceptedTask);
+          this.emitEvent('taskUpdated', acceptedTask);
+          return;
+        }
         if (task.type === TaskType.IMAGE && submissionRequestId) {
           if (isImageSubmissionOutcomeUnknownError(error)) {
             shouldNotifyRecoveryAfterExecution =
@@ -1490,7 +1629,7 @@ class TaskQueueService {
             return;
           }
           await this.failImageAttempt(task.id, submissionRequestId, {
-            code: 'EXECUTION_ERROR',
+            code: error.code || 'EXECUTION_ERROR',
             message: error.message || 'Task execution failed',
           });
           return;
@@ -1500,7 +1639,7 @@ class TaskQueueService {
           ...localTask,
           status: TaskStatus.FAILED,
           error: {
-            code: 'EXECUTION_ERROR',
+            code: error.code || 'EXECUTION_ERROR',
             message: error.message || 'Task execution failed',
           },
           updatedAt: now,
@@ -2254,6 +2393,7 @@ class TaskQueueService {
    * @throws Error if validation fails
    */
   createTask(params: GenerationParams, type: TaskType): Task {
+    if (params.documentBatch) throw new Error('Document batch tasks require the deferred task bridge');
     // Validate parameters
     const validation = validateGenerationParams(params, type);
     if (!validation.valid) {
@@ -2261,8 +2401,10 @@ class TaskQueueService {
     }
 
     // Sanitize parameters
-    const sanitizedParams = normalizeGenerationParamsKnowledgeContext(
-      sanitizeGenerationParams(params)
+    const sanitizedParams = normalizeTaskParamsModelIdentity(
+      normalizeGenerationParamsKnowledgeContext(
+        sanitizeGenerationParams(params)
+      )
     );
 
     // Create new task - starts as PROCESSING since it will be executed immediately
@@ -2324,6 +2466,117 @@ class TaskQueueService {
 
     // console.log(`[TaskQueueService] Created task ${task.id} (${type})`);
     return task;
+  }
+
+  /** Prepare a batch image task without starting execution or making HTTP calls. */
+  async prepareDocumentBatchTask(
+    taskId: string,
+    params: GenerationParams,
+    metadata: DocumentBatchTaskMetadata
+  ): Promise<Task> {
+    if (metadata.dispatchOwner !== 'document-batch') {
+      throw new Error('Invalid document batch dispatch owner');
+    }
+    const validation = validateGenerationParams(params, TaskType.IMAGE);
+    if (!validation.valid) {
+      throw new Error(`Invalid parameters: ${validation.errors.join(', ')}`);
+    }
+    const sanitized = normalizeTaskParamsModelIdentity(
+      normalizeGenerationParamsKnowledgeContext(sanitizeGenerationParams({
+        ...params,
+        autoInsertToCanvas: false,
+        documentBatch: metadata,
+      }))
+    );
+    const taskParams = createImageSubmissionParams(sanitized, taskId);
+    const routeTask = {
+      id: taskId,
+      type: TaskType.IMAGE,
+      status: TaskStatus.PENDING,
+      params: taskParams,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    } as Task;
+    const route = createTaskInvocationRouteSnapshotFromTask(routeTask);
+    const stored = await taskStorageWriter.prepareDocumentBatchTask(
+      taskId,
+      taskParams as SWTask['params'],
+      metadata,
+      route
+    );
+    const task = stored as unknown as Task;
+    this.tasks.set(task.id, task);
+    this.renewTaskExecutionToken(task.id);
+    this.emitEvent('taskCreated', task);
+    return task;
+  }
+
+  /** Consume a scheduler ticket and then run the existing image executor. */
+  async startPreparedDocumentBatchTask(options: {
+    taskId: string;
+    metadata: DocumentBatchTaskMetadata;
+    claimTicket: () => string | false | Promise<string | false>;
+    scopeGuard: () => boolean;
+  }): Promise<'started' | 'already-started' | 'rejected'> {
+    const { taskId, metadata, claimTicket, scopeGuard } = options;
+    if (!scopeGuard()) return 'rejected';
+    const current = await taskStorageWriter.getTask(taskId);
+    const currentMeta = current?.params.documentBatch as
+      | DocumentBatchTaskMetadata
+      | undefined;
+    if (!current || current.type !== 'image' || !currentMeta ||
+        currentMeta.scopeId !== metadata.scopeId || currentMeta.batchId !== metadata.batchId ||
+        currentMeta.workItemId !== metadata.workItemId || currentMeta.attemptId !== metadata.attemptId ||
+        currentMeta.epoch !== metadata.epoch) return 'rejected';
+    if (current.status === 'processing' || current.status === 'completed') {
+      return 'already-started';
+    }
+    if (current.status !== 'pending') return 'rejected';
+    if (current.syncedFromRemote || !current.invocationRoute?.providerProfileId) return 'rejected';
+    assertTaskInvocationRouteAvailable('image', current as unknown as Task, {
+      requireSelectedBindingMatch: true,
+    });
+    const ticket = await claimTicket();
+    if (!ticket || !scopeGuard()) return 'rejected';
+    const claimed = await taskStorageWriter.claimDocumentBatchTask(
+      taskId,
+      metadata,
+      ticket
+    );
+    if (!claimed || !scopeGuard()) return 'rejected';
+    registerDocumentBatchTaskGuard(taskId, metadata, scopeGuard);
+    const task = this.tasks.get(taskId) || ({
+      id: taskId,
+      type: TaskType.IMAGE,
+      status: TaskStatus.PROCESSING,
+      params: claimed.params as GenerationParams,
+      createdAt: claimed.createdAt,
+      updatedAt: claimed.updatedAt,
+      startedAt: claimed.startedAt,
+      invocationRoute: claimed.invocationRoute,
+      executionPhase: TaskExecutionPhase.SUBMITTING,
+    } as Task);
+    const startedTask: Task = {
+      ...task,
+      status: TaskStatus.PROCESSING,
+      params: claimed.params as GenerationParams,
+      startedAt: claimed.startedAt,
+      updatedAt: claimed.updatedAt,
+      invocationRoute: claimed.invocationRoute || task.invocationRoute,
+      executionPhase: TaskExecutionPhase.SUBMITTING,
+    };
+    this.tasks.set(taskId, startedTask);
+    this.renewTaskExecutionToken(taskId);
+    this.emitEvent('taskUpdated', startedTask);
+    void this.executeTask(startedTask).catch((error) =>
+      console.error('[TaskQueueService] Document batch task execution failed:', error)
+    );
+    return 'started';
+  }
+
+  async getPersistedTask(taskId: string): Promise<Task | null> {
+    const task = await taskStorageWriter.getTask(taskId);
+    return task ? (task as unknown as Task) : null;
   }
 
   /**
@@ -2508,6 +2761,10 @@ class TaskQueueService {
     return memoryTask ? this.restoreStrippedTaskParams(memoryTask) : undefined;
   }
 
+  async waitForTaskPersistence(taskId: string): Promise<void> {
+    await this.taskStorageOperations.get(taskId);
+  }
+
   async findImageTaskByResultUrl(imageUrl: string): Promise<Task | undefined> {
     const memoryMatch = this.getAllTasks().find((task) =>
       imageTaskMatchesUrl(task, imageUrl)
@@ -2532,7 +2789,9 @@ class TaskQueueService {
    * @returns Array of all tasks
    */
   getAllTasks(): Task[] {
-    return Array.from(this.tasks.values());
+    return Array.from(this.tasks.values()).filter(
+      (task) => (!task.params.documentBatch || isDocumentBatchTaskScopeCurrent(task)) && !task.params.workflow
+    );
   }
 
   /**
@@ -2554,6 +2813,33 @@ class TaskQueueService {
     return this.getAllTasks().filter(isTaskActive);
   }
 
+  private recordPptExplainerRemoteCancellationFailure(taskId: string): void {
+    const task = this.tasks.get(taskId);
+    if (!task || task.status !== TaskStatus.CANCELLED) return;
+
+    const state = task.params?.pptExplainer as
+      | { diagnostics?: string[] }
+      | undefined;
+    if (!state) return;
+    const diagnostics = state.diagnostics || [];
+    if (diagnostics.includes(PPT_EXPLAINER_REMOTE_CANCEL_FAILURE_DIAGNOSTIC)) {
+      return;
+    }
+
+    this.updateTaskStatus(taskId, TaskStatus.CANCELLED, {
+      params: {
+        ...task.params,
+        pptExplainer: {
+          ...state,
+          diagnostics: [
+            ...diagnostics,
+            PPT_EXPLAINER_REMOTE_CANCEL_FAILURE_DIAGNOSTIC,
+          ],
+        },
+      },
+    });
+  }
+
   /**
    * Cancels a task
    *
@@ -2573,10 +2859,52 @@ class TaskQueueService {
       return;
     }
 
+    const pptExplainerState = task.params?.pptExplainer as
+      | {
+          stage?: string;
+          diagnostics?: string[];
+          originalRoute?: {
+            binding?: { pptExplainer?: { cancel?: unknown } };
+          };
+        }
+      | undefined;
+    const pptExplainerRemoteId = pptExplainerState
+      ? task.remoteId || (pptExplainerState as { remoteId?: string }).remoteId
+      : undefined;
+    const hasPptExplainerCancel = Boolean(
+      pptExplainerState?.originalRoute?.binding?.pptExplainer?.cancel
+    );
+    const cancellationDiagnostics = !pptExplainerState
+      ? []
+      : !pptExplainerRemoteId
+      ? ['供应商提交结果可能未知', '远端任务可能继续执行和计费']
+      : !hasPptExplainerCancel
+      ? ['供应商未声明远端取消，远端任务可能继续执行和计费']
+      : [];
+    const cancellationUpdates = pptExplainerState
+      ? {
+          params: {
+            ...task.params,
+            pptExplainer: {
+              ...pptExplainerState,
+              stage: 'cancelled',
+              ...(cancellationDiagnostics.length > 0
+                ? {
+                    diagnostics: [
+                      ...(pptExplainerState.diagnostics || []),
+                      ...cancellationDiagnostics,
+                    ],
+                  }
+                : {}),
+            },
+          },
+        }
+      : undefined;
+
     this.blockedTaskIds.add(taskId);
     if (task.type === TaskType.IMAGE) {
       const requestId = getImageSubmissionRequestId(task);
-      this.updateTaskStatus(taskId, TaskStatus.CANCELLED, undefined, {
+      this.updateTaskStatus(taskId, TaskStatus.CANCELLED, cancellationUpdates, {
         persist: false,
       });
       void this.updateImageAttemptStorage(taskId, requestId, () =>
@@ -2590,11 +2918,26 @@ class TaskQueueService {
         );
       });
     } else {
-      this.updateTaskStatus(taskId, TaskStatus.CANCELLED);
+      this.updateTaskStatus(taskId, TaskStatus.CANCELLED, cancellationUpdates);
     }
     this.abortTaskExecution(taskId);
     this.renewTaskExecutionToken(taskId);
     imageGenerationRecoveryService.stop(taskId);
+    if (pptExplainerState) {
+      const cancelledTask = this.tasks.get(taskId);
+      if (cancelledTask) {
+        void import('./ppt-explainer/orchestrator')
+          .then(({ cancelPptExplainerRemoteTask }) =>
+            cancelPptExplainerRemoteTask(cancelledTask)
+          )
+          .catch(() => {
+            this.recordPptExplainerRemoteCancellationFailure(taskId);
+            console.warn(
+              '[TaskQueueService] PPT explainer remote cancellation failed; remote task may continue and incur charges'
+            );
+          });
+      }
+    }
     // console.log(`[TaskQueueService] Cancelled task ${taskId}`);
   }
 
@@ -2605,6 +2948,7 @@ class TaskQueueService {
    */
   retryTask(taskId: string, options: { allowCompleted?: boolean } = {}): void {
     const task = this.tasks.get(taskId);
+    if (task?.params.documentBatch || task?.params.workflow || task?.error?.code === 'SUBMISSION_PERSISTENCE_FAILED') return;
     if (!task) {
       console.warn(`[TaskQueueService] Task ${taskId} not found`);
       return;
@@ -2619,6 +2963,13 @@ class TaskQueueService {
 
     const canRetryCompleted =
       options.allowCompleted && task.status === TaskStatus.COMPLETED;
+    const hasPptExplainerState = Boolean(task.params?.pptExplainer);
+    if (hasPptExplainerState && task.status === TaskStatus.CANCELLED) {
+      console.warn(
+        `[TaskQueueService] Cancelled PPT explainer task ${taskId} cannot be retried because its input cache was released`
+      );
+      return;
+    }
     if (
       task.status !== TaskStatus.FAILED &&
       task.status !== TaskStatus.CANCELLED &&
@@ -2628,6 +2979,71 @@ class TaskQueueService {
         `[TaskQueueService] Task ${taskId} is not failed, cancelled, or explicitly retryable, cannot retry`
       );
       return;
+    }
+
+    const existingRouteModelRef = createModelRef(
+      task.invocationRoute?.modelRef?.profileId ||
+        task.invocationRoute?.providerProfileId,
+      task.invocationRoute?.modelRef?.modelId || task.invocationRoute?.modelId
+    );
+    let nextParams = normalizeTaskParamsModelIdentity(
+      task.params,
+      existingRouteModelRef?.modelId
+    );
+    if (existingRouteModelRef) {
+      nextParams = {
+        ...nextParams,
+        modelRef: existingRouteModelRef,
+      };
+    }
+    let nextInvocationRoute = task.invocationRoute;
+    if (
+      task.type === TaskType.IMAGE &&
+      (!existingRouteModelRef?.profileId ||
+        shouldRefreshUnavailableImageRoute(task))
+    ) {
+      const repairedRouteModel = resolveLegacyTaskInvocationRouteModel(
+        'image',
+        task
+      );
+      const repairedModelRef =
+        typeof repairedRouteModel === 'string' ? null : repairedRouteModel;
+      if (
+        repairedModelRef?.profileId &&
+        repairedModelRef.modelId &&
+        hasInvocationRouteCredentials('image', repairedModelRef)
+      ) {
+        nextParams = {
+          ...nextParams,
+          model: repairedModelRef.modelId,
+          modelRef: repairedModelRef,
+        };
+        nextInvocationRoute = createTaskInvocationRouteSnapshotFromTask({
+          ...task,
+          params: nextParams,
+        });
+      } else if (shouldRepairLegacyImageAlias(task)) {
+        const activeRoute = resolveInvocationRoute('image');
+        const activeModelRef = createModelRef(
+          activeRoute.profileId,
+          activeRoute.modelId
+        );
+        if (
+          activeModelRef?.profileId &&
+          activeModelRef.modelId &&
+          hasInvocationRouteCredentials('image', activeModelRef)
+        ) {
+          nextParams = {
+            ...nextParams,
+            model: activeModelRef.modelId,
+            modelRef: activeModelRef,
+          };
+          nextInvocationRoute = createTaskInvocationRouteSnapshotFromTask({
+            ...task,
+            params: nextParams,
+          });
+        }
+      }
     }
 
     // Reset task for retry - set to PROCESSING for immediate execution
@@ -2641,18 +3057,70 @@ class TaskQueueService {
     this.abortTaskExecution(taskId);
     this.renewTaskExecutionToken(taskId);
     this.blockedTaskIds.delete(taskId);
+    const pptExplainerState = task.params?.pptExplainer as
+      | {
+          remoteId?: string;
+          source?: string;
+          outlineFrameIds?: string[];
+          pptxImport?: { status?: string };
+          slides?: Array<{ turns?: unknown[] }>;
+          stage?: string;
+          jobId?: string;
+          executionAttempt?: number;
+        }
+      | undefined;
+    const pptExplainerRemoteId = pptExplainerState
+      ? task.error?.code === 'remote_failed'
+        ? undefined
+        : task.remoteId || pptExplainerState.remoteId
+      : undefined;
+    const pptExplainerRetryStage = pptExplainerState
+      ? task.error?.code === 'remote_failed'
+        ? 'submitting'
+        : pptExplainerRemoteId
+        ? 'polling'
+        : (pptExplainerState.source === 'topic' &&
+            !pptExplainerState.outlineFrameIds?.length) ||
+          (pptExplainerState.source === 'pptx' &&
+            pptExplainerState.pptxImport?.status !== 'completed')
+        ? 'preparing'
+        : pptExplainerState.slides?.length
+        ? pptExplainerState.slides.every((slide) => slide.turns?.length)
+          ? 'submitting'
+          : 'scripting'
+        : 'snapshotting'
+      : undefined;
     const retryParams =
       task.type === TaskType.IMAGE
-        ? createImageSubmissionParams(task.params, generateTaskId())
-        : task.params;
+        ? createImageSubmissionParams(nextParams, generateTaskId())
+        : pptExplainerState
+        ? {
+            ...nextParams,
+            pptExplainer: {
+              ...pptExplainerState,
+              stage: pptExplainerRetryStage,
+              ...(task.error?.code === 'remote_failed'
+                ? {
+                    remoteId: undefined,
+                    idempotencyKey: `${
+                      pptExplainerState.jobId || task.id
+                    }-retry-${(pptExplainerState.executionAttempt || 0) + 1}`,
+                  }
+                : {}),
+            },
+          }
+        : nextParams;
     this.updateTaskStatus(taskId, TaskStatus.PROCESSING, {
       params: retryParams,
+      invocationRoute: nextInvocationRoute,
       error: undefined,
       result: undefined,
       startedAt: now, // Set new start time
       completedAt: undefined, // Clear completion time
-      remoteId: undefined, // Clear remote ID for fresh submission
-      executionPhase: TaskExecutionPhase.SUBMITTING,
+      remoteId: pptExplainerState ? pptExplainerRemoteId : undefined,
+      executionPhase: pptExplainerRemoteId
+        ? TaskExecutionPhase.POLLING
+        : TaskExecutionPhase.SUBMITTING,
       insertedToCanvas: false,
       progress:
         task.type === TaskType.VIDEO ||
@@ -2666,7 +3134,7 @@ class TaskQueueService {
 
     // Execute task after retry
     const updatedTask = this.tasks.get(taskId);
-    if (updatedTask) {
+    if (updatedTask && !pptExplainerState) {
       this.executeTask(updatedTask).catch((error) => {
         console.error('[TaskQueueService] Retry execution error:', error);
       });
@@ -2695,6 +3163,22 @@ class TaskQueueService {
     this.tasks.delete(taskId);
     this.taskExecutionTokens.delete(taskId);
     this.tasksWithStrippedParams.delete(taskId);
+
+    if (task.params?.pptExplainer) {
+      const teardown = isTaskActive(task)
+        ? (module: typeof import('./ppt-explainer/orchestrator')) =>
+            module.cancelPptExplainerRemoteTask(task)
+        : (module: typeof import('./ppt-explainer/orchestrator')) =>
+            module.cleanupPptExplainerTask(task);
+      void import('./ppt-explainer/orchestrator')
+        .then(teardown)
+        .catch((error) => {
+          console.warn(
+            '[TaskQueueService] PPT explainer deletion cleanup failed:',
+            error
+          );
+        });
+    }
 
     // Delete from IndexedDB
     this.persistDelete(task, hadStrippedParams);
@@ -2729,11 +3213,29 @@ class TaskQueueService {
   async clearAllTasks(): Promise<void> {
     taskStorageWriter.pauseWrites();
     const tasks = this.getAllTasks();
-
     for (const task of tasks) {
       this.blockedTaskIds.add(task.id);
       this.abortTaskExecution(task.id);
       imageGenerationRecoveryService.stop(task.id);
+    }
+
+    const pptExplainerTasks = tasks.filter((task) => task.params?.pptExplainer);
+    if (pptExplainerTasks.length > 0) {
+      try {
+        const orchestrator = await import('./ppt-explainer/orchestrator');
+        await Promise.allSettled(
+          pptExplainerTasks.map((task) =>
+            isTaskActive(task)
+              ? orchestrator.cancelPptExplainerRemoteTask(task)
+              : orchestrator.cleanupPptExplainerTask(task)
+          )
+        );
+      } catch (error) {
+        console.warn(
+          '[TaskQueueService] PPT explainer clear-all cleanup failed:',
+          error
+        );
+      }
     }
 
     await Promise.allSettled(this.taskStorageOperations.values());
@@ -3349,8 +3851,28 @@ class TaskQueueService {
       inserted_to_canvas: true,
     });
 
+    const pptExplainer = task.params?.pptExplainer as
+      | {
+          delivery?: { resultSaved?: boolean; canvasInserted?: boolean };
+        }
+      | undefined;
+
     this.updateTaskStatus(taskId, task.status, {
       insertedToCanvas: true,
+      ...(pptExplainer
+        ? {
+            params: {
+              ...task.params,
+              pptExplainer: {
+                ...pptExplainer,
+                delivery: {
+                  resultSaved: pptExplainer.delivery?.resultSaved ?? true,
+                  canvasInserted: true,
+                },
+              },
+            },
+          }
+        : {}),
     });
   }
 
@@ -3365,6 +3887,8 @@ class TaskQueueService {
     // 收集终态任务，按 updatedAt 升序（最旧的优先归档）
     const terminalTasks: Task[] = [];
     for (const task of this.tasks.values()) {
+      // Batch history has its own retention policy and result projection.
+      if (task.params.documentBatch) continue;
       if (
         task.status === TaskStatus.COMPLETED ||
         task.status === TaskStatus.FAILED ||
@@ -3380,18 +3904,38 @@ class TaskQueueService {
     if (toArchiveCount <= 0) return;
 
     const archiveIds: string[] = [];
+    const pptExplainerTasksToCleanup: Task[] = [];
     for (let i = 0; i < Math.min(toArchiveCount, terminalTasks.length); i++) {
       const task = terminalTasks[i];
       this.tasks.delete(task.id);
       this.taskExecutionTokens.delete(task.id);
       this.tasksWithStrippedParams.delete(task.id);
       archiveIds.push(task.id);
+      if (task.params?.pptExplainer) {
+        pptExplainerTasksToCleanup.push(task);
+      }
     }
 
     // 异步批量归档到 IndexedDB（fire-and-forget）
     if (archiveIds.length > 0) {
       taskStorageWriter.archiveTasks(archiveIds).catch(() => undefined);
       taskStorageReader.invalidateCache();
+    }
+    if (pptExplainerTasksToCleanup.length > 0) {
+      void import('./ppt-explainer/orchestrator')
+        .then(({ cleanupPptExplainerTask }) =>
+          Promise.allSettled(
+            pptExplainerTasksToCleanup.map((task) =>
+              cleanupPptExplainerTask(task)
+            )
+          )
+        )
+        .catch((error) => {
+          console.warn(
+            '[TaskQueueService] PPT explainer retention cleanup failed:',
+            error
+          );
+        });
     }
   }
 

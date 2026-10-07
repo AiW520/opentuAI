@@ -16,18 +16,22 @@
  * - Smart Suggestion Panel for #model
  */
 
+import { normalizeGPTImage25ResolutionParams } from '../../services/model-adapters/image-size-quality-resolver';
 import React, {
   useState,
   useEffect,
+  useLayoutEffect,
   useCallback,
   useRef,
   useMemo,
 } from 'react';
 import {
+  AtSign,
   ChevronDown,
   Maximize2,
   Minimize2,
   PinOff,
+  Settings2,
   Send,
   Unlink,
   X,
@@ -35,6 +39,7 @@ import {
 import {
   Dropdown,
   MessagePlugin,
+  Popup,
   Switch,
   type DropdownOption,
 } from 'tdesign-react';
@@ -47,12 +52,15 @@ import { KnowledgeNoteContextSelector } from '../shared/KnowledgeNoteContextSele
 import {
   getSelectedElements,
   addSelectedElement,
+  clearSelectedElement,
   ATTACHED_ELEMENT_CLASS_NAME,
   getRectangleByElements,
   PlaitBoard,
   PlaitElement,
   RectangleClient,
   getViewportOrigination,
+  BoardTransforms,
+  PlaitPointerType,
   Transforms,
 } from '@plait/core';
 import { useI18n } from '../../i18n';
@@ -60,6 +68,7 @@ import { TaskStatus, type KnowledgeContextRef } from '../../types/task.types';
 import { taskQueueService } from '../../services/task-queue';
 import {
   AI_SELECTION_CONTENT_REFRESH_EVENT,
+  extractTextFromElement,
   processSelectedContentForAI,
   scrollToPointIfNeeded,
 } from '../../utils/selection-utils';
@@ -78,6 +87,7 @@ import {
 } from '../../types/asset.types';
 import { MediaLibraryModal } from '../media-library/MediaLibraryModal';
 import { ModelDropdown } from './ModelDropdown';
+import { PptExplainerDialog } from './PptExplainerDialog';
 import { ModelHealthBadge } from '../shared/ModelHealthBadge';
 import { HoverTip } from '../shared/hover';
 import { ParametersDropdown } from './ParametersDropdown';
@@ -89,8 +99,18 @@ import {
   addVideoPromptHistory,
   type PromptType,
 } from '../../services/prompt-storage-service';
-import { useSelectableModels } from '../../hooks/use-runtime-models';
+import {
+  useConfiguredSelectableModels,
+  useSelectableModels,
+} from '../../hooks/use-runtime-models';
 import { getPinnedSelectableModel } from '../../utils/runtime-model-discovery';
+import {
+  findExactSelectableModel,
+  findMatchingSelectableModel,
+  getModelRefFromConfig,
+  getSelectionKey,
+  getSelectionKeyForModel,
+} from '../../utils/model-selection';
 import {
   getDefaultAudioModel,
   getDefaultImageModel,
@@ -101,13 +121,29 @@ import {
   getCompatibleParams,
   type ModelConfig,
 } from '../../constants/model-config';
-import { getEffectiveVideoCompatibleParams } from '../../services/video-binding-utils';
+import {
+  getEffectiveVideoCompatibleParams,
+  getEffectiveVideoModelConfigForSelection,
+  isMiniMaxH3Model,
+} from '../../services/video-binding-utils';
+import { unifiedCacheService } from '../../services/unified-cache-service';
+import {
+  enhanceMiniMaxH3Prompt,
+  isMiniMaxH3PromptEnhancementEnabled,
+  MINIMAX_H3_MAX_LOCAL_VIDEO_BYTES,
+  MINIMAX_H3_PROMPT_ENHANCEMENT_PARAM_ID,
+} from '../../services/minimax-h3-video-workflow';
 import { initializeMCP, mcpRegistry } from '../../mcp';
-import { setCanvasBoard } from '../../services/canvas-operations/canvas-insertion';
+import {
+  clearCanvasBoard,
+  setCanvasBoard,
+} from '../../services/canvas-operations/canvas-insertion';
 import { setCanvasBoard as setMcpCanvasBoard } from '../../mcp/tools/canvas-insertion';
 import { setBoard } from '../../mcp/tools/shared';
 import { setCapabilitiesBoard } from '../../services/sw-capabilities/handler';
 import { initializeLongVideoChainService } from '../../services/long-video-chain-service';
+import { createPptExplainerTask } from '../../services/ppt-explainer/creation-service';
+import type { PptExplainerCreateSourceKind } from '../../services/ppt-explainer/types';
 import { gridImageService } from '../../services/photo-wall';
 import type { MCPTaskResult } from '../../mcp/types';
 import { parseAIInput, type GenerationType } from '../../utils/ai-input-parser';
@@ -117,7 +153,11 @@ import {
   type WorkflowDefinition,
   type WorkflowStepOptions,
 } from './workflow-converter';
-import { getBoundTaskbarWidth } from './bound-taskbar-layout';
+import {
+  clampBoundTaskbarPosition,
+  getBoundTaskbarHeight,
+  getBoundTaskbarWidth,
+} from './bound-taskbar-layout';
 import { SkillDropdown, type SkillOption } from './SkillDropdown';
 import {
   inferSkillMediaTypes,
@@ -131,33 +171,43 @@ import {
 } from '../../constants/skills';
 import { knowledgeBaseService } from '../../services/knowledge-base-service';
 import { externalSkillService } from '../../services/external-skill-service';
+import {
+  getTextBindingMaxImageCount,
+  resolveInvocationPlanFromRoute,
+  supportsTextBindingImageInput,
+} from '../../services/provider-routing';
 import { useWorkflowControl } from '../../contexts/WorkflowContext';
 import {
   hasInvocationRouteCredentials,
   resolveInvocationRoute,
   createModelRef,
+  settingsManager,
   type ModelRef,
 } from '../../utils/settings-manager';
 import { promptForApiKey } from '../../utils/gemini-api/auth';
+import { prepareTuziManagedRoute } from '../../services/tuzi-managed-route-gate';
 import type { WorkflowMessageData } from '../../types/chat.types';
-import type { GenerationParams } from '../../types/shared/core.types';
+import type {
+  CanvasAssociationRef,
+  GenerationParams,
+} from '../../types/shared/core.types';
 import {
   analytics,
   type PromptAnalyticsType,
-} from '../../utils/posthog-analytics';
+} from '../../utils/umami-analytics';
 import classNames from 'classnames';
 import { InspirationBoard } from '../inspiration-board';
 import { AIInputComposerShell } from './AIInputComposerShell';
 import { GenerationTypeDropdown } from './GenerationTypeDropdown';
 import { CountDropdown } from './CountDropdown';
 import './ai-input-bar.scss';
+import { useLocalFileDrop } from '../shared/local-image-drag-drop';
 
 import type {
   WorkflowRetryContext,
   PostProcessingStatus,
 } from '../../types/chat.types';
 import { workflowCompletionService } from '../../services/workflow-completion-service';
-import { BoardTransforms } from '@plait/core';
 import { ImageGenerationAnchorTransforms } from '../../plugins/with-image-generation-anchor';
 import { buildImageGenerationAnchorCreateOptions } from '../../utils/image-generation-anchor-submission';
 import { resolveImageGenerationBatchAnchorPositions } from '../../utils/image-generation-anchor-placement';
@@ -171,6 +221,10 @@ import { isFrameElement } from '../../types/frame.types';
 import { matchFrameSizeForModel } from '../../utils/frame-size-matcher';
 import { PlaitDrawElement } from '@plait/draw';
 import { isPlaitVideo } from '../../interfaces/video';
+import { getVideoDimensions } from '../../data/video';
+import { getSupportedVideoFileMimeType } from '../../data/blob';
+import { isCardElement } from '../../types/card.types';
+import { isAudioNodeElement } from '../../types/audio-node.types';
 import {
   loadAIInputPreferences,
   loadScopedAIInputModelParams,
@@ -178,6 +232,7 @@ import {
   saveScopedAIInputModelParams,
 } from '../../services/ai-generation-preferences-service';
 import { applyForcedSunoParams } from '../../utils/suno-model-aliases';
+import { isSeedance2ModelId } from '../../utils/seedance-model';
 import {
   clearPersistedModelSelection,
   getPersistedModelSelection,
@@ -193,13 +248,19 @@ import {
 import { normalizeKnowledgeContextRefs } from '../../services/generation-context-service';
 import { isAssetLibraryUrl } from '../../utils/virtual-media-url';
 import {
+  buildSemanticReplacementGenerationPrompt,
+  createSemanticForegroundEditMask,
+  getSemanticForegroundEditContext,
+  resolveSemanticForegroundTarget,
+  type SemanticForegroundEditContext,
+} from '../../services/layer-decomposition';
+import {
   ensureTaskIdInStepResult,
   extractTaskIdFromStepResult,
   findWorkflowStepByTaskId,
   findWorkflowStepForTask,
 } from '../../utils/workflow-task-linking';
 import {
-  BOUND_TARGET_DISMISS_HINT_LIMIT,
   areBoundTargetTaskbarDraftsEqual,
   buildBoundTargetGenerationParams,
   collectBoundTargetElementIds,
@@ -209,23 +270,72 @@ import {
   isBoundTargetReferenceOnly,
   pinBoundTargetReferenceContent,
   pruneStaleBoundTargetTaskbarDrafts,
-  readBoundTargetDismissHintCount,
   readBoundTargetFollowEnabled,
-  recordBoundTargetDismiss,
+  readBoundTargetGenerationPrompt,
   persistBoundTargetFollowEnabled,
+  resolveBoundTargetMode,
   resolveBoundTargetForPosition,
   resolveBoundTargetPromptSuggestion,
   resolveBoundTargetPromptSuggestionAction,
   resolveBoundTargetTaskbarDraft,
   resolveBoundTargetSuppression,
   resolveTaskbarDraftAfterSubmission,
+  shouldBindGenerationTarget,
   shouldReleaseBoundTargetPromptDismissal,
   shouldUseBoundTargetForSubmission,
+  supportsBoundTargetFollowControls,
   storeBoundTargetTaskbarDraft,
+  type BoundGenerationTargetType,
   type BoundTargetTaskbarDraft,
   type BoundTargetTaskbarDraftEntry,
   type BoundImageTargetMode,
 } from './target-bound-taskbar-state';
+import {
+  persistCenterImageOnClickEnabled,
+  readCenterImageOnClickEnabled,
+} from './canvas-view-settings';
+import {
+  appendCanvasAssociationRef,
+  areCanvasAssociationRefsEqual,
+  buildCanvasAssociationHighlightSegments,
+  findCanvasAssociationTrigger,
+  getNextCanvasAssociationLabel,
+  hasCanvasAssociationUntrustedInputType,
+  hasInsertedCanvasAssociationAtSign,
+  hasCanvasAssociationOverwriteContent,
+  isCanvasAssociationPickingSessionCurrent,
+  isCanvasAssociationTriggerActive,
+  mergeTrustedCanvasAssociationRefs,
+  persistCanvasAssociationEnabled,
+  readCanvasAssociationEnabled,
+  reconcileCanvasAssociationRefsForPromptEdit,
+  removeCanvasAssociationMentionAtBoundary,
+  replaceCanvasAssociationTriggerWithMention,
+  resolveCanvasAssociationPromptEdit,
+  resolveCanvasAssociationPromptEditFromInputEvent,
+  snapshotCanvasAssociationRefs,
+  shouldAllowCanvasAssociationCompositionTrigger,
+  shouldClearSubmittedCanvasAssociations,
+  shouldRecoverCanvasAssociationMentions,
+  shouldRestoreCanvasAssociationPointer,
+  shouldStartCanvasAssociationPicking,
+  type CanvasAssociationBeforeInputSnapshot,
+  type CanvasAssociationPointerOwnership,
+  type CanvasAssociationTrigger,
+} from './canvas-association-state';
+import { getCanvasAssociationPickElements } from './canvas-association-picking';
+import {
+  createCanvasAssociationRef,
+  resolveCanvasAssociationsForSubmission,
+  validateCanvasAssociationCapability,
+} from './canvas-association-resolver';
+import {
+  canInsertCanvasAssociationsOnBoard,
+  createCanvasAssociationLines,
+  deferCanvasAssociationLines,
+  flushDeferredCanvasAssociationLines,
+  retargetCanvasAssociationLines,
+} from '../../plugins/canvas-association';
 
 /**
  * 将 WorkflowDefinition 转换为 WorkflowMessageData
@@ -266,6 +376,134 @@ function toWorkflowMessageData(
     retryContext,
     postProcessingStatus,
     insertedCount,
+  };
+}
+
+function getWorkflowCanvasAssociationLineContext(
+  workflow: WorkflowDefinition,
+  currentBoardId: string | null
+): { boardId: string; sourceElementIds: string[] } | null {
+  return getCanvasAssociationLineContext(
+    workflow.metadata.canvasAssociations || [],
+    currentBoardId
+  );
+}
+
+function getCanvasAssociationLineContext(
+  inputAssociations: readonly CanvasAssociationRef[],
+  currentBoardId: string | null
+): { boardId: string; sourceElementIds: string[] } | null {
+  const associations = snapshotCanvasAssociationRefs(inputAssociations);
+  const associationBoardIds = new Set(
+    associations.map((association) => association.boardId)
+  );
+  if (associationBoardIds.size !== 1) return null;
+
+  const boardId = associations[0]?.boardId;
+  if (!boardId || boardId !== currentBoardId) return null;
+
+  return {
+    boardId,
+    sourceElementIds: associations.map((association) => association.elementId),
+  };
+}
+
+function linkWorkflowCanvasAssociationsToTaskTarget(
+  board: PlaitBoard,
+  workflow: WorkflowDefinition,
+  targetElementId: string,
+  currentBoardId: string | null,
+  submittedAssociations?: readonly CanvasAssociationRef[]
+): number {
+  const context = submittedAssociations
+    ? getCanvasAssociationLineContext(submittedAssociations, currentBoardId)
+    : getWorkflowCanvasAssociationLineContext(workflow, currentBoardId);
+  if (!context || !targetElementId.trim()) return 0;
+
+  try {
+    const lines = createCanvasAssociationLines(board, {
+      ...context,
+      resultElementId: targetElementId,
+      workflowId: workflow.id,
+    });
+    const expectedLineCount = new Set(
+      context.sourceElementIds.filter(
+        (sourceElementId) => sourceElementId !== targetElementId
+      )
+    ).size;
+    if (lines.length < expectedLineCount) {
+      console.warn(
+        `[AIInputBar] Canvas association task links incomplete for workflow ${workflow.id}: expected ${expectedLineCount}, created ${lines.length}`
+      );
+    }
+    return lines.length;
+  } catch (error) {
+    console.warn(
+      `[AIInputBar] Failed to link canvas associations to task target for workflow ${workflow.id}:`,
+      error
+    );
+    return 0;
+  }
+}
+
+function linkWorkflowCanvasAssociationsToInsertionResult(
+  board: PlaitBoard,
+  workflow: WorkflowDefinition,
+  result: MCPTaskResult,
+  currentBoardId: string | null,
+  batchIndex?: number
+): void {
+  if (batchIndex !== undefined && batchIndex !== 1) return;
+
+  const firstElementId = (
+    result.data as { firstElementId?: unknown } | undefined
+  )?.firstElementId;
+  if (typeof firstElementId !== 'string' || !firstElementId.trim()) return;
+
+  const context = getWorkflowCanvasAssociationLineContext(
+    workflow,
+    currentBoardId
+  );
+  if (!context) return;
+
+  try {
+    retargetCanvasAssociationLines(board, {
+      ...context,
+      resultElementId: firstElementId,
+      workflowId: workflow.id,
+    });
+  } catch (error) {
+    console.warn(
+      `[AIInputBar] Failed to retarget canvas associations for workflow ${workflow.id}:`,
+      error
+    );
+  }
+}
+
+export function isSubmittedBoardCurrent(
+  submittedBoard: PlaitBoard | null,
+  submittedBoardId: string | null,
+  currentBoard: PlaitBoard | null,
+  currentBoardId: string | null
+): boolean {
+  return submittedBoard === currentBoard && submittedBoardId === currentBoardId;
+}
+
+function getCanvasAssociationInsertionGuardResult(
+  workflow: WorkflowDefinition,
+  currentBoardId: string | null
+): MCPTaskResult | null {
+  const associations = snapshotCanvasAssociationRefs(
+    workflow.metadata.canvasAssociations || []
+  );
+  if (canInsertCanvasAssociationsOnBoard(associations, currentBoardId)) {
+    return null;
+  }
+
+  return {
+    success: false,
+    type: 'error',
+    error: '当前画板与联想引用不一致，请切回引用所在画板后重试',
   };
 }
 
@@ -396,9 +634,13 @@ function enrichStepArgsWithPromptMeta<
           knowledgeContextRefs,
         }
       : step.args;
+  const argsWithWorkflowContext =
+    step.mcp === 'generate_long_video'
+      ? { ...argsWithKnowledgeContext, workflowId: workflow.id }
+      : argsWithKnowledgeContext;
 
   if (
-    argsWithKnowledgeContext.promptMeta ||
+    argsWithWorkflowContext.promptMeta ||
     ![
       'generate_image',
       'generate_video',
@@ -409,14 +651,14 @@ function enrichStepArgsWithPromptMeta<
   ) {
     return {
       ...step,
-      args: argsWithKnowledgeContext,
+      args: argsWithWorkflowContext,
     };
   }
 
   return {
     ...step,
     args: {
-      ...argsWithKnowledgeContext,
+      ...argsWithWorkflowContext,
       promptMeta: buildPromptLineageMeta(workflow, step),
     },
   };
@@ -463,8 +705,8 @@ if (!mcpInitialized) {
   mcpInitialized = true;
 }
 
-// 选中内容类型：图片、视频、图形、文字
-type SelectedContentType = 'image' | 'video' | 'graphics' | 'text';
+// 选中内容类型：图片、视频、音频、图形、文字
+type SelectedContentType = 'image' | 'video' | 'audio' | 'graphics' | 'text';
 
 interface SelectedContent {
   type: SelectedContentType;
@@ -485,27 +727,20 @@ interface GenerationRequestOverride {
   selectedParams: Record<string, string>;
   selectedCount: number;
   appendToCurrentChatSession?: boolean;
+  targetSessionId?: string | null;
 }
 
-function getSelectionKeyForModel(
-  model: Pick<ModelConfig, 'id' | 'selectionKey' | 'sourceProfileId'>
-): string {
-  return (
-    model.selectionKey ||
-    (model.sourceProfileId ? `${model.sourceProfileId}::${model.id}` : model.id)
-  );
-}
-
-function getSelectionKey(modelId: string, modelRef?: ModelRef | null): string {
-  return modelRef?.profileId ? `${modelRef.profileId}::${modelId}` : modelId;
-}
-
-function getModelRefFromConfig(model?: ModelConfig | null): ModelRef | null {
-  if (!model) {
-    return null;
-  }
-
-  return createModelRef(model.sourceProfileId || null, model.id);
+function filterExecutablePptModels(
+  type: 'image' | 'video',
+  models: ModelConfig[]
+): ModelConfig[] {
+  return models.filter((model) => {
+    const modelRef = getModelRefFromConfig(model);
+    const plan = resolveInvocationPlanFromRoute(type, modelRef || model.id);
+    return Boolean(
+      plan?.provider.baseUrl.trim() && plan.provider.apiKey.trim()
+    );
+  });
 }
 
 function getPromptLengthBucket(length: number): string {
@@ -526,6 +761,8 @@ const AI_INPUT_LONG_TEXT_MAX_VIEWPORT_RATIO = 0.65;
 const AI_INPUT_LONG_TEXT_MIN_MAX_HEIGHT = 320;
 const AI_INPUT_LONG_TEXT_MAX_HEIGHT = 680;
 const AI_INPUT_LINE_HEIGHT = 1.5;
+const AI_INPUT_IMAGE_ASSET_TYPES = [AssetType.IMAGE] as const;
+const AI_INPUT_VIDEO_ASSET_TYPES = [AssetType.IMAGE, AssetType.VIDEO] as const;
 type AIInputResizeMode = 'collapsed' | 'expanded' | 'long-text';
 type AIInputSubmitTrigger = 'button' | 'keyboard';
 
@@ -591,7 +828,7 @@ function resizeAIInputTextarea(
   if (resizeMode === 'long-text') {
     const maxHeight = getAIInputLongTextMaxHeight();
     textarea.style.height = `${maxHeight}px`;
-    textarea.style.overflowY = contentHeight > maxHeight ? 'auto' : 'hidden';
+    textarea.style.overflowY = 'auto';
     return;
   }
 
@@ -600,33 +837,7 @@ function resizeAIInputTextarea(
   const nextHeight = Math.min(Math.max(contentHeight, minHeight), maxHeight);
 
   textarea.style.height = `${nextHeight}px`;
-  textarea.style.overflowY = contentHeight > maxHeight ? 'auto' : 'hidden';
-}
-
-function findMatchingSelectableModel(
-  models: ModelConfig[],
-  modelId?: string | null,
-  modelRef?: ModelRef | null
-): ModelConfig | undefined {
-  if (!modelId) {
-    return undefined;
-  }
-
-  const expectedKey = getSelectionKey(modelId, modelRef);
-  const expectedProfileId = modelRef?.profileId || null;
-
-  return (
-    models.find((model) => getSelectionKeyForModel(model) === expectedKey) ||
-    models.find(
-      (model) =>
-        model.id === modelId &&
-        (model.sourceProfileId || null) === expectedProfileId
-    ) ||
-    (expectedProfileId === null
-      ? models.find((model) => model.id === modelId && !model.sourceProfileId)
-      : undefined) ||
-    models.find((model) => model.id === modelId)
-  );
+  textarea.style.overflowY = 'auto';
 }
 
 function resolveGenerationTypeForModelSelection(
@@ -679,16 +890,19 @@ interface AIInputBarProps {
 }
 
 interface BoundImageTarget {
+  type: BoundGenerationTargetType;
   elementId: string;
   prompt: string;
   rect: { x: number; y: number; width: number; height: number };
   url: string;
+  text?: string;
   generationTaskId?: string;
   generationAnchorId?: string;
+  semanticReplacement?: SemanticForegroundEditContext;
   referenceOnly: boolean;
 }
 
-type BoundImageTargetDismissMode = 'once' | 'always';
+type BoundTargetDismissMode = 'once' | 'always';
 
 type BoundImageInputDraft = BoundTargetTaskbarDraft<
   SelectedContent,
@@ -703,17 +917,6 @@ function createBoundImageInputDraft(prompt = ''): BoundImageInputDraft {
   };
 }
 
-function readImageGenerationPrompt(element: unknown): string {
-  const record = element as Record<string, unknown> | null;
-  for (const key of ['generationPrompt', 'aiPrompt', 'prompt']) {
-    const value = record?.[key];
-    if (typeof value === 'string' && value.trim()) {
-      return value.trim();
-    }
-  }
-  return '';
-}
-
 function readImageUrl(element: unknown): string {
   const record = element as Record<string, unknown> | null;
   const url = record?.url;
@@ -721,7 +924,43 @@ function readImageUrl(element: unknown): string {
     return url.trim();
   }
   const imageItem = record?.imageItem as Record<string, unknown> | undefined;
-  return typeof imageItem?.url === 'string' ? imageItem.url.trim() : '';
+  if (typeof imageItem?.url === 'string' && imageItem.url.trim()) {
+    return imageItem.url.trim();
+  }
+  return typeof record?.audioUrl === 'string' ? record.audioUrl.trim() : '';
+}
+
+function isLegacyAudioImageElement(element: unknown): boolean {
+  const record = element as Record<string, unknown> | null;
+  return Boolean(
+    record &&
+      (record.isAudio === true ||
+        record.audioType === 'music-card' ||
+        typeof record.audioUrl === 'string')
+  );
+}
+
+function resolveGenerationTargetType(
+  element: PlaitElement
+): BoundGenerationTargetType | null {
+  if (isAudioNodeElement(element) || isLegacyAudioImageElement(element)) {
+    return 'audio';
+  }
+  if (isPlaitVideo(element)) {
+    return 'video';
+  }
+  if (PlaitDrawElement.isImage(element)) {
+    const record = element as Record<string, unknown>;
+    return record.isVideo === true ||
+      record.videoType ||
+      isVideoUrl(readImageUrl(element))
+      ? 'video'
+      : 'image';
+  }
+  if (isCardElement(element) || PlaitDrawElement.isText?.(element)) {
+    return 'text';
+  }
+  return null;
 }
 
 function resolveImageAnchorForElement(
@@ -757,19 +996,39 @@ function resolveImageAnchorForElement(
 
 async function resolveBoundImageTarget(
   board: PlaitBoard,
-  selectedElements: PlaitElement[]
+  selectedElements: PlaitElement[],
+  editPrompt?: string
 ): Promise<BoundImageTarget | null> {
   if (selectedElements.length !== 1) return null;
 
-  const [element] = selectedElements;
-  if (!PlaitDrawElement.isImage(element) || isPlaitVideo(element)) return null;
-
+  const selectedElement = selectedElements[0];
+  const element = resolveSemanticForegroundTarget(
+    board,
+    selectedElement,
+    editPrompt
+  );
+  const targetType = resolveGenerationTargetType(element);
+  if (!targetType) return null;
   const url = readImageUrl(element);
-  if (!url) return null;
-
   const record = element as Record<string, unknown>;
-  const anchor = resolveImageAnchorForElement(board, element);
-  let prompt = readImageGenerationPrompt(element) || anchor?.prompt || '';
+  const anchor =
+    targetType === 'image'
+      ? resolveImageAnchorForElement(board, element)
+      : null;
+  const semanticReplacement =
+    targetType === 'image'
+      ? getSemanticForegroundEditContext(board, element)
+      : null;
+  let prompt =
+    readBoundTargetGenerationPrompt(element, targetType) ||
+    anchor?.prompt ||
+    (semanticReplacement
+      ? `${semanticReplacement.semanticLayer.name}${
+          semanticReplacement.semanticLayer.description
+            ? `：${semanticReplacement.semanticLayer.description}`
+            : ''
+        }`
+      : '');
   let generationTaskId =
     typeof record.generationTaskId === 'string'
       ? record.generationTaskId
@@ -782,52 +1041,130 @@ async function resolveBoundImageTarget(
     prompt = typeof task?.params?.prompt === 'string' ? task.params.prompt : '';
   }
 
-  if (!prompt && !isAssetLibraryUrl(url)) {
+  if (!prompt && targetType === 'image' && url && !isAssetLibraryUrl(url)) {
     const task = await taskQueueService.findImageTaskByResultUrl(url);
     prompt = typeof task?.params?.prompt === 'string' ? task.params.prompt : '';
     generationTaskId = generationTaskId || task?.id;
   }
 
+  if (!shouldBindGenerationTarget(targetType, prompt)) {
+    return null;
+  }
+
+  if (!readBoundTargetGenerationPrompt(element, targetType) && prompt) {
+    try {
+      Transforms.setNode(
+        board,
+        {
+          aiPrompt: prompt,
+          generationPrompt: prompt,
+        } as Partial<PlaitElement>,
+        PlaitBoard.findPath(board, element)
+      );
+    } catch {
+      // 元数据回写失败不应阻断本次目标绑定。
+    }
+  }
+
   try {
     return {
+      type: targetType,
       elementId: String((element as { id?: string }).id || ''),
       prompt: prompt.trim(),
       rect: getRectangleByElements(board, [element], false),
       url,
+      text:
+        targetType === 'text'
+          ? extractTextFromElement(element, board).trim() || undefined
+          : undefined,
       generationTaskId,
       generationAnchorId:
         typeof record.generationAnchorId === 'string'
           ? record.generationAnchorId
           : anchor?.id,
-      referenceOnly: isBoundTargetReferenceOnly(record),
+      ...(semanticReplacement ? { semanticReplacement } : {}),
+      referenceOnly:
+        supportsBoundTargetFollowControls(targetType) &&
+        isBoundTargetReferenceOnly(record),
     };
   } catch {
     return null;
   }
 }
 
-function selectedContentFromBoundImage(
+function selectedContentFromBoundTarget(
   target: BoundImageTarget | null,
   language: string,
   referenceOnly = false
 ): SelectedContent | null {
-  return target
-    ? {
-        type: 'image',
-        url: target.url,
-        name:
-          language === 'zh'
-            ? referenceOnly
-              ? '参考图'
-              : '目标图片'
-            : referenceOnly
-            ? 'Reference image'
-            : 'Target image',
-        width: target.rect.width,
-        height: target.rect.height,
-      }
-    : null;
+  if (!target) {
+    return null;
+  }
+
+  if (target.type === 'text') {
+    const text = target.text?.trim();
+    return text
+      ? {
+          type: 'text',
+          text,
+          name:
+            language === 'zh'
+              ? referenceOnly
+                ? '参考文本'
+                : '目标文本'
+              : referenceOnly
+              ? 'Reference text'
+              : 'Target text',
+        }
+      : null;
+  }
+
+  if (!target.url || !['image', 'video'].includes(target.type)) return null;
+
+  const isVideo = target.type === 'video';
+
+  return {
+    type: target.type as 'image' | 'video',
+    url: target.url,
+    name:
+      language === 'zh'
+        ? referenceOnly
+          ? isVideo
+            ? '参考视频'
+            : '参考图'
+          : isVideo
+          ? '目标视频'
+          : '目标图片'
+        : referenceOnly
+        ? isVideo
+          ? 'Reference video'
+          : 'Reference image'
+        : isVideo
+        ? 'Target video'
+        : 'Target image',
+    width: target.rect.width,
+    height: target.rect.height,
+  };
 }
+
+type CanvasAssociationAppState = {
+  pointer?: string;
+};
+
+type CanvasAssociationPointerBoard = PlaitBoard & {
+  appState?: CanvasAssociationAppState;
+};
+
+interface CanvasAssociationPointerSession {
+  token: symbol;
+  ownership: CanvasAssociationPointerOwnership;
+}
+
+// A WeakMap keeps delayed cleanups isolated per board without retaining boards.
+const canvasAssociationPointerSessions = new WeakMap<
+  PlaitBoard,
+  CanvasAssociationPointerSession
+>();
 
 /**
  * 独立的选择内容监听组件
@@ -835,8 +1172,15 @@ function selectedContentFromBoundImage(
  */
 const SelectionWatcher: React.FC<{
   language: string;
+  semanticEditPrompt?: string;
   currentBoardId?: string | null;
   onSelectionChange: (content: SelectedContent[]) => void;
+  canvasAssociationPicking?: boolean;
+  canvasAssociationPickingToken?: CanvasAssociationTrigger | null;
+  onCanvasAssociationSelection?: (
+    board: PlaitBoard,
+    elements: PlaitElement[]
+  ) => boolean;
   onBoundImageTargetChange?: (target: BoundImageTarget | null) => void;
   onBoundInputViewportChange?: () => void;
   /** 用于存储 board 引用的 ref，供父组件使用 */
@@ -852,8 +1196,12 @@ const SelectionWatcher: React.FC<{
 }> = React.memo(
   ({
     language,
+    semanticEditPrompt,
     currentBoardId,
     onSelectionChange,
+    canvasAssociationPicking,
+    canvasAssociationPickingToken,
+    onCanvasAssociationSelection,
     onBoundImageTargetChange,
     onBoundInputViewportChange,
     externalBoardRef,
@@ -864,10 +1212,12 @@ const SelectionWatcher: React.FC<{
     const board = useBoard();
     const boardRef = useRef(board);
     boardRef.current = board;
+    const semanticEditPromptRef = useRef(semanticEditPrompt || '');
+    semanticEditPromptRef.current = semanticEditPrompt || '';
 
     // 设置 canvas board 引用给 MCP 工具使用
     useEffect(() => {
-      setCanvasBoard(board);
+      setCanvasBoard(board, currentBoardId);
       setMcpCanvasBoard(board);
       setBoard(board);
       setCapabilitiesBoard(board);
@@ -877,7 +1227,7 @@ const SelectionWatcher: React.FC<{
         externalBoardRef.current = board;
       }
       return () => {
-        setCanvasBoard(null);
+        clearCanvasBoard(board);
         setMcpCanvasBoard(null);
         setBoard(null);
         setCapabilitiesBoard(null);
@@ -886,7 +1236,12 @@ const SelectionWatcher: React.FC<{
           externalBoardRef.current = null;
         }
       };
-    }, [board, externalBoardRef]);
+    }, [board, currentBoardId, externalBoardRef]);
+
+    useEffect(() => {
+      if (!isDataReady) return;
+      flushDeferredCanvasAssociationLines(board, currentBoardId);
+    }, [board, currentBoardId, isDataReady]);
 
     // 监听画板元素数量变化，通知父组件画板是否为空
     const onCanvasEmptyChangeRef = useRef(onCanvasEmptyChange);
@@ -917,6 +1272,31 @@ const SelectionWatcher: React.FC<{
     const onSelectionChangeRef = useRef(onSelectionChange);
     onSelectionChangeRef.current = onSelectionChange;
 
+    const canvasAssociationPickingRef = useRef(canvasAssociationPicking);
+    canvasAssociationPickingRef.current = canvasAssociationPicking;
+    const canvasAssociationPickingTokenRef = useRef(
+      canvasAssociationPickingToken
+    );
+    const canvasAssociationPickingEpochRef = useRef(0);
+    const suppressedCanvasAssociationSelectionIdsRef = useRef<Set<string>>(
+      new Set()
+    );
+    useLayoutEffect(() => {
+      if (
+        canvasAssociationPickingTokenRef.current !==
+        canvasAssociationPickingToken
+      ) {
+        canvasAssociationPickingTokenRef.current =
+          canvasAssociationPickingToken;
+        canvasAssociationPickingEpochRef.current += 1;
+      }
+    }, [canvasAssociationPickingToken]);
+
+    const onCanvasAssociationSelectionRef = useRef(
+      onCanvasAssociationSelection
+    );
+    onCanvasAssociationSelectionRef.current = onCanvasAssociationSelection;
+
     const onBoundImageTargetChangeRef = useRef(onBoundImageTargetChange);
     onBoundImageTargetChangeRef.current = onBoundImageTargetChange;
 
@@ -930,18 +1310,59 @@ const SelectionWatcher: React.FC<{
     currentBoardIdRef.current = currentBoardId;
 
     useEffect(() => {
-      const handleSelectionChange = async () => {
+      const handleSelectionChange = async (
+        canvasAssociationPickElements?: PlaitElement[]
+      ) => {
         const currentBoard = boardRef.current;
         if (!currentBoard) return;
         const selectionBoardId = currentBoardIdRef.current;
         const runId = selectionRunIdRef.current + 1;
         selectionRunIdRef.current = runId;
 
-        const selectedElements = getSelectedElements(currentBoard);
+        const selectedElements =
+          canvasAssociationPickElements ?? getSelectedElements(currentBoard);
         onBoundInputViewportChangeRef.current?.();
+        if (canvasAssociationPickingRef.current) {
+          if (canvasAssociationPickElements !== undefined) {
+            const consumed =
+              onCanvasAssociationSelectionRef.current?.(
+                currentBoard,
+                selectedElements
+              ) || false;
+            if (consumed || selectedElements.length === 0) {
+              if (consumed) {
+                suppressedCanvasAssociationSelectionIdsRef.current = new Set(
+                  selectedElements.map((element) => element.id)
+                );
+              }
+              clearSelectedElement(currentBoard);
+              onSelectionChangeRef.current([]);
+              onBoundImageTargetChangeRef.current?.(null);
+              onFrameSelectedRef.current?.(null);
+            }
+          }
+          return;
+        }
+        const suppressedSelectionIds =
+          suppressedCanvasAssociationSelectionIdsRef.current;
+        if (
+          selectedElements.some((element) =>
+            suppressedSelectionIds.has(element.id)
+          )
+        ) {
+          clearSelectedElement(currentBoard);
+          onSelectionChangeRef.current([]);
+          onBoundImageTargetChangeRef.current?.(null);
+          onFrameSelectedRef.current?.(null);
+          return;
+        }
+        if (selectedElements.length === 0) {
+          suppressedCanvasAssociationSelectionIdsRef.current = new Set();
+        }
         const boundImageTarget = await resolveBoundImageTarget(
           currentBoard,
-          selectedElements
+          selectedElements,
+          semanticEditPromptRef.current
         );
         if (
           runId !== selectionRunIdRef.current ||
@@ -1042,8 +1463,60 @@ const SelectionWatcher: React.FC<{
 
       handleSelectionChange();
 
-      const handleMouseUp = () => {
-        setTimeout(handleSelectionChange, 50);
+      let selectionChangeTimer: ReturnType<typeof setTimeout> | null = null;
+      const handlePointerUp = (event: PointerEvent) => {
+        const currentBoard = boardRef.current;
+        const pointerBoard = currentBoard;
+        const pointerBoardId = currentBoardIdRef.current;
+        const pickingAtPointer = Boolean(canvasAssociationPickingRef.current);
+        const pointerPickingEpoch = canvasAssociationPickingEpochRef.current;
+        const boardContainer = currentBoard
+          ? PlaitBoard.getBoardContainer(currentBoard)
+          : null;
+        const pointerTarget =
+          event.target instanceof Element ? event.target : null;
+        const isCanvasPointer = Boolean(
+          pointerTarget &&
+            boardContainer?.contains(pointerTarget) &&
+            !pointerTarget.closest(`.${ATTACHED_ELEMENT_CLASS_NAME}`)
+        );
+
+        if (pickingAtPointer && !isCanvasPointer) {
+          return;
+        }
+        const pointer = {
+          clientX: event.clientX,
+          clientY: event.clientY,
+          pointerType: event.pointerType,
+        };
+        if (selectionChangeTimer !== null) {
+          clearTimeout(selectionChangeTimer);
+        }
+        selectionChangeTimer = setTimeout(() => {
+          selectionChangeTimer = null;
+          const activeBoard = boardRef.current;
+          if (
+            !isCanvasAssociationPickingSessionCurrent(
+              pickingAtPointer,
+              Boolean(canvasAssociationPickingRef.current),
+              pointerPickingEpoch,
+              canvasAssociationPickingEpochRef.current,
+              pointerBoardId,
+              currentBoardIdRef.current,
+              activeBoard === pointerBoard
+            )
+          ) {
+            return;
+          }
+          const pickElements =
+            isCanvasPointer && pickingAtPointer && activeBoard
+              ? getCanvasAssociationPickElements(activeBoard, pointer)
+              : undefined;
+          void handleSelectionChange(pickElements);
+        }, 50);
+      };
+      const handleSelectionRefresh = () => {
+        void handleSelectionChange();
       };
       let viewportRaf: number | null = null;
       const handleViewportChange = () => {
@@ -1051,6 +1524,7 @@ const SelectionWatcher: React.FC<{
         viewportRaf = requestAnimationFrame(() => {
           viewportRaf = null;
           onBoundInputViewportChangeRef.current?.();
+          if (canvasAssociationPickingRef.current) return;
           const currentBoard = boardRef.current;
           if (!currentBoard) return;
           const selectionBoardId = currentBoardIdRef.current;
@@ -1058,7 +1532,8 @@ const SelectionWatcher: React.FC<{
           selectionRunIdRef.current = runId;
           void resolveBoundImageTarget(
             currentBoard,
-            getSelectedElements(currentBoard)
+            getSelectedElements(currentBoard),
+            semanticEditPromptRef.current
           ).then((target) => {
             if (
               runId === selectionRunIdRef.current &&
@@ -1069,7 +1544,7 @@ const SelectionWatcher: React.FC<{
           });
         });
       };
-      document.addEventListener('mouseup', handleMouseUp);
+      document.addEventListener('pointerup', handlePointerUp);
       document.addEventListener('keyup', handleViewportChange);
       document.addEventListener('pointermove', handleViewportChange);
       document.addEventListener('wheel', handleViewportChange, {
@@ -1080,14 +1555,17 @@ const SelectionWatcher: React.FC<{
       window.visualViewport?.addEventListener('scroll', handleViewportChange);
       document.addEventListener(
         AI_SELECTION_CONTENT_REFRESH_EVENT,
-        handleSelectionChange
+        handleSelectionRefresh
       );
 
       return () => {
-        document.removeEventListener('mouseup', handleMouseUp);
+        document.removeEventListener('pointerup', handlePointerUp);
         document.removeEventListener('keyup', handleViewportChange);
         document.removeEventListener('pointermove', handleViewportChange);
         document.removeEventListener('wheel', handleViewportChange);
+        if (selectionChangeTimer !== null) {
+          clearTimeout(selectionChangeTimer);
+        }
         if (viewportRaf !== null) cancelAnimationFrame(viewportRaf);
         window.removeEventListener('resize', handleViewportChange);
         window.visualViewport?.removeEventListener(
@@ -1100,10 +1578,32 @@ const SelectionWatcher: React.FC<{
         );
         document.removeEventListener(
           AI_SELECTION_CONTENT_REFRESH_EVENT,
-          handleSelectionChange
+          handleSelectionRefresh
         );
       };
     }, [currentBoardId, language]);
+
+    useEffect(() => {
+      if (canvasAssociationPickingRef.current) return;
+      const currentBoard = boardRef.current;
+      const selectedElements = getSelectedElements(currentBoard);
+      if (selectedElements.length !== 1) return;
+      const selectionBoardId = currentBoardIdRef.current;
+      const runId = selectionRunIdRef.current + 1;
+      selectionRunIdRef.current = runId;
+      void resolveBoundImageTarget(
+        currentBoard,
+        selectedElements,
+        semanticEditPrompt
+      ).then((target) => {
+        if (
+          runId === selectionRunIdRef.current &&
+          selectionBoardId === currentBoardIdRef.current
+        ) {
+          onBoundImageTargetChangeRef.current?.(target);
+        }
+      });
+    }, [semanticEditPrompt]);
 
     return null; // 这个组件不渲染任何内容
   }
@@ -1123,9 +1623,21 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
 
     const { language } = useI18n();
     const imageModels = useSelectableModels('image');
+    const configuredImageModels = useConfiguredSelectableModels('image');
     const videoModels = useSelectableModels('video');
+    const configuredVideoModels = useConfiguredSelectableModels('video');
     const audioModels = useSelectableModels('audio');
     const textModels = useSelectableModels('text');
+    // Configured model lists stay referentially stable until discovery,
+    // credentials, or bindings change, so route planning stays off hot renders.
+    const executablePptImageModels = useMemo(
+      () => filterExecutablePptModels('image', configuredImageModels),
+      [configuredImageModels]
+    );
+    const executablePptVideoModels = useMemo(
+      () => filterExecutablePptModels('video', configuredVideoModels),
+      [configuredVideoModels]
+    );
 
     const chatDrawerControl = useChatDrawerControl();
     const workflowControl = useWorkflowControl();
@@ -1169,6 +1681,11 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
     );
     registerGenerationSubmitterRef.current =
       chatDrawerControl.registerGenerationSubmitter;
+    const submitGenerationWithCredentialGateRef = useRef(
+      chatDrawerControl.submitGenerationWithCredentialGate
+    );
+    submitGenerationWithCredentialGateRef.current =
+      chatDrawerControl.submitGenerationWithCredentialGate;
 
     // 当前工作流的重试上下文（用于在更新时保持 retryContext）
     const currentRetryContextRef = useRef<WorkflowRetryContext | null>(null);
@@ -1184,6 +1701,10 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
       new Map<string, BoundTargetTaskbarDraftEntry<BoundImageInputDraft>>()
     );
     const unboundTaskbarDraftRef = useRef(createBoundImageInputDraft());
+    const boundCanvasAssociationDraftsRef = useRef(
+      new Map<string, CanvasAssociationRef[]>()
+    );
+    const unboundCanvasAssociationDraftRef = useRef<CanvasAssociationRef[]>([]);
     const activeDraftElementIdRef = useRef<string | null>(null);
     const activeDraftBaselineRef = useRef<BoundImageInputDraft | null>(null);
     const activeTaskbarBoardIdRef = useRef(currentBoardId ?? null);
@@ -1436,14 +1957,16 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
     const boundImageTargetRef = useRef<BoundImageTarget | null>(null);
     const dismissedPromptElementIdRef = useRef<string | null>(null);
     const dismissedPromptGenerationTaskIdRef = useRef<string | null>(null);
-    const [boundTargetDismissHintCount, setBoundTargetDismissHintCount] =
-      useState(() => readBoundTargetDismissHintCount());
     const [boundTargetFollowEnabled, setBoundTargetFollowEnabled] = useState(
       () => readBoundTargetFollowEnabled()
     );
+    const [centerImageOnClickEnabled, setCenterImageOnClickEnabled] =
+      useState(() => readCenterImageOnClickEnabled());
     const [boundTargetError, setBoundTargetError] = useState<string | null>(
       null
     );
+    const [isBoundTargetDismissMenuOpen, setIsBoundTargetDismissMenuOpen] =
+      useState(false);
     const [boundInputLayoutTick, setBoundInputLayoutTick] = useState(0);
     const [uploadedContent, setUploadedContent] = useState<SelectedContent[]>(
       []
@@ -1451,7 +1974,21 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
     const [knowledgeContextRefs, setKnowledgeContextRefs] = useState<
       KnowledgeContextRef[]
     >([]);
+    const [canvasAssociationEnabled, setCanvasAssociationEnabled] = useState(
+      () => readCanvasAssociationEnabled()
+    );
+    const [canvasAssociationRefs, setCanvasAssociationRefs] = useState<
+      CanvasAssociationRef[]
+    >([]);
+    const [canvasAssociationTrigger, setCanvasAssociationTrigger] =
+      useState<CanvasAssociationTrigger | null>(null);
     const [isSubmitting, setIsSubmitting] = useState(false); // 防止快速重复点击（3秒防抖）
+    const [pptExplainerDialogOpen, setPptExplainerDialogOpen] = useState(false);
+    const [pptExplainerInitialSource, setPptExplainerInitialSource] =
+      useState<PptExplainerCreateSourceKind>();
+    const [pptExplainerFrameIds, setPptExplainerFrameIds] = useState<
+      string[] | undefined
+    >();
     const submitLockRef = useRef(false);
     const submitCooldownRef = useRef<NodeJS.Timeout | null>(null); // 提交冷却定时器
     const inputResizeFrameRef = useRef<number | null>(null);
@@ -1495,6 +2032,8 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
     const [selectedSkillMediaTypes, setSelectedSkillMediaTypes] = useState<
       SkillMediaType[]
     >([]);
+    const usesStrictPptModels =
+      selectedSkillId === 'generate_ppt_explainer_video';
     const visibleImageModels = useMemo(() => {
       if (generationType !== 'image') {
         return imageModels;
@@ -1580,13 +2119,19 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
       return pinnedModel ? [pinnedModel, ...textModels] : textModels;
     }, [generationType, selectedModel, selectedModelRef, textModels]);
     const visibleAgentImageModels = useMemo(() => {
+      const availableModels = usesStrictPptModels
+        ? executablePptImageModels
+        : imageModels;
+      if (usesStrictPptModels) {
+        return availableModels;
+      }
       const currentMatch = findMatchingSelectableModel(
-        imageModels,
+        availableModels,
         selectedAgentImageModel,
         selectedAgentImageModelRef
       );
       if (currentMatch) {
-        return imageModels;
+        return availableModels;
       }
 
       const pinnedModel = getPinnedSelectableModel(
@@ -1594,16 +2139,28 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
         selectedAgentImageModel,
         selectedAgentImageModelRef
       );
-      return pinnedModel ? [pinnedModel, ...imageModels] : imageModels;
-    }, [imageModels, selectedAgentImageModel, selectedAgentImageModelRef]);
+      return pinnedModel ? [pinnedModel, ...availableModels] : availableModels;
+    }, [
+      executablePptImageModels,
+      imageModels,
+      selectedAgentImageModel,
+      selectedAgentImageModelRef,
+      usesStrictPptModels,
+    ]);
     const visibleAgentVideoModels = useMemo(() => {
+      const availableModels = usesStrictPptModels
+        ? executablePptVideoModels
+        : videoModels;
+      if (usesStrictPptModels) {
+        return availableModels;
+      }
       const currentMatch = findMatchingSelectableModel(
-        videoModels,
+        availableModels,
         selectedAgentVideoModel,
         selectedAgentVideoModelRef
       );
       if (currentMatch) {
-        return videoModels;
+        return availableModels;
       }
 
       const pinnedModel = getPinnedSelectableModel(
@@ -1611,8 +2168,14 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
         selectedAgentVideoModel,
         selectedAgentVideoModelRef
       );
-      return pinnedModel ? [pinnedModel, ...videoModels] : videoModels;
-    }, [selectedAgentVideoModel, selectedAgentVideoModelRef, videoModels]);
+      return pinnedModel ? [pinnedModel, ...availableModels] : availableModels;
+    }, [
+      selectedAgentVideoModel,
+      selectedAgentVideoModelRef,
+      usesStrictPptModels,
+      executablePptVideoModels,
+      videoModels,
+    ]);
     const visibleAgentAudioModels = useMemo(() => {
       const currentMatch = findMatchingSelectableModel(
         audioModels,
@@ -1666,7 +2229,61 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
     const selectedContentRef = useRef<SelectedContent[]>(selectedContent);
     const uploadedContentRef = useRef<SelectedContent[]>(uploadedContent);
     const knowledgeContextRefsRef = useRef(knowledgeContextRefs);
+    const canvasAssociationRefsRef = useRef(canvasAssociationRefs);
+    // Preserve trusted picks across transient selection/draft ownership changes.
+    const canvasAssociationRegistryRef = useRef<CanvasAssociationRef[]>(
+      snapshotCanvasAssociationRefs(canvasAssociationRefs)
+    );
+    const canvasAssociationTriggerRef = useRef<CanvasAssociationTrigger | null>(
+      canvasAssociationTrigger
+    );
     const suppressSelectionContentUrlsRef = useRef<Set<string>>(new Set());
+    const applyCanvasAssociationRefs = useCallback(
+      (references: readonly CanvasAssociationRef[]) => {
+        const snapshot = snapshotCanvasAssociationRefs(references);
+        canvasAssociationRegistryRef.current = snapshotCanvasAssociationRefs([
+          ...snapshot,
+          ...canvasAssociationRegistryRef.current,
+        ]);
+        canvasAssociationRefsRef.current = snapshot;
+        setCanvasAssociationRefs(snapshot);
+        return snapshot;
+      },
+      []
+    );
+    const saveActiveCanvasAssociationDraft = useCallback(
+      (references = canvasAssociationRefsRef.current) => {
+        const snapshot = snapshotCanvasAssociationRefs(references);
+        const elementId = activeDraftElementIdRef.current;
+        if (elementId) {
+          if (snapshot.length > 0) {
+            boundCanvasAssociationDraftsRef.current.set(elementId, snapshot);
+          } else {
+            boundCanvasAssociationDraftsRef.current.delete(elementId);
+          }
+        } else {
+          unboundCanvasAssociationDraftRef.current = snapshot;
+        }
+        return snapshot;
+      },
+      []
+    );
+    const applyCanvasAssociationDraft = useCallback(
+      (elementId: string | null) =>
+        applyCanvasAssociationRefs(
+          elementId
+            ? boundCanvasAssociationDraftsRef.current.get(elementId) || []
+            : unboundCanvasAssociationDraftRef.current
+        ),
+      [applyCanvasAssociationRefs]
+    );
+    const updateCanvasAssociationTrigger = useCallback(
+      (trigger: CanvasAssociationTrigger | null) => {
+        canvasAssociationTriggerRef.current = trigger;
+        setCanvasAssociationTrigger(trigger);
+      },
+      []
+    );
     const readCurrentTaskbarDraft = useCallback((): BoundImageInputDraft => {
       return {
         prompt: promptRef.current,
@@ -1684,6 +2301,7 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
     }, []);
     const saveActiveTaskbarDraft = useCallback(() => {
       const draft = readCurrentTaskbarDraft();
+      saveActiveCanvasAssociationDraft();
       const elementId = activeDraftElementIdRef.current;
       const baseline = activeDraftBaselineRef.current;
       if (elementId && baseline) {
@@ -1697,7 +2315,7 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
         unboundTaskbarDraftRef.current = draft;
       }
       return draft;
-    }, [readCurrentTaskbarDraft]);
+    }, [readCurrentTaskbarDraft, saveActiveCanvasAssociationDraft]);
     const detachTaskbarDraft = useCallback(
       (copyCurrentToUnbound = false) => {
         const draft = saveActiveTaskbarDraft();
@@ -1705,16 +2323,24 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
         activeDraftBaselineRef.current = null;
         if (copyCurrentToUnbound) {
           unboundTaskbarDraftRef.current = draft;
+          unboundCanvasAssociationDraftRef.current =
+            canvasAssociationRefsRef.current;
           return draft;
         }
         applyTaskbarDraft(unboundTaskbarDraftRef.current);
+        applyCanvasAssociationDraft(null);
         return unboundTaskbarDraftRef.current;
       },
-      [applyTaskbarDraft, saveActiveTaskbarDraft]
+      [applyCanvasAssociationDraft, applyTaskbarDraft, saveActiveTaskbarDraft]
     );
     const pruneBoundTargetTaskbarDrafts = useCallback(() => {
       const board = SelectionWatcherBoardRef.current;
-      if (!isDataReady || !board || boundTargetDraftsRef.current.size === 0) {
+      if (
+        !isDataReady ||
+        !board ||
+        (boundTargetDraftsRef.current.size === 0 &&
+          boundCanvasAssociationDraftsRef.current.size === 0)
+      ) {
         return;
       }
 
@@ -1723,9 +2349,14 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
         return;
       }
       lastPrunedBoardChildrenRef.current = children;
+      const existingElementIds = collectBoundTargetElementIds(children);
       pruneStaleBoundTargetTaskbarDrafts(
         boundTargetDraftsRef.current,
-        collectBoundTargetElementIds(children)
+        existingElementIds
+      );
+      pruneStaleBoundTargetTaskbarDrafts(
+        boundCanvasAssociationDraftsRef.current,
+        existingElementIds
       );
     }, [isDataReady]);
     const updatePromptSuggestion = useCallback((suggestion: string | null) => {
@@ -1748,6 +2379,8 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
         }
         activeTaskbarBoardIdRef.current = nextBoardId;
         boundTargetDraftsRef.current.clear();
+        boundCanvasAssociationDraftsRef.current.clear();
+        unboundCanvasAssociationDraftRef.current = [];
         activeDraftElementIdRef.current = null;
         activeDraftBaselineRef.current = null;
         lastBoundImageTargetKeyRef.current = null;
@@ -1764,10 +2397,19 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
         setBoundTargetError(null);
         updatePromptSuggestion(null);
         setSelectedContent([]);
+        applyCanvasAssociationRefs([]);
+        canvasAssociationRegistryRef.current = [];
+        updateCanvasAssociationTrigger(null);
         applyTaskbarDraft(unboundTaskbarDraftRef.current);
         return true;
       },
-      [applyTaskbarDraft, readCurrentTaskbarDraft, updatePromptSuggestion]
+      [
+        applyCanvasAssociationRefs,
+        applyTaskbarDraft,
+        readCurrentTaskbarDraft,
+        updateCanvasAssociationTrigger,
+        updatePromptSuggestion,
+      ]
     );
     useEffect(() => {
       resetBoundTaskbarDraftsForBoard(currentBoardId ?? null);
@@ -1778,6 +2420,9 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
     useEffect(() => {
       promptRef.current = prompt;
     }, [prompt]);
+    useEffect(() => {
+      promptSuggestionRef.current = promptSuggestion;
+    }, [promptSuggestion]);
     useEffect(() => {
       selectedContentRef.current = selectedContent;
     }, [selectedContent]);
@@ -1790,6 +2435,9 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
     useEffect(() => {
       knowledgeContextRefsRef.current = knowledgeContextRefs;
     }, [knowledgeContextRefs]);
+    useEffect(() => {
+      canvasAssociationRefsRef.current = canvasAssociationRefs;
+    }, [canvasAssociationRefs]);
     // 当前选中的生成数量
     const [selectedCount, setSelectedCount] = useState(
       initialPreferences.selectedCount
@@ -1823,14 +2471,31 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
     const allContent = useMemo(() => {
       return [...uploadedContent, ...selectedContent];
     }, [uploadedContent, selectedContent]);
+    const effectiveBoundTargetMode = resolveBoundTargetMode(
+      boundImageTargetMode,
+      boundTargetFollowEnabled,
+      boundImageTarget?.type
+    );
     const boundTargetContent = useMemo(
       () =>
-        selectedContentFromBoundImage(
+        selectedContentFromBoundTarget(
           boundImageTarget,
           language,
-          boundImageTargetMode === 'reference'
+          effectiveBoundTargetMode === 'reference'
         ),
-      [boundImageTarget, boundImageTargetMode, language]
+      [boundImageTarget, effectiveBoundTargetMode, language]
+    );
+    const boundTargetGenerationContent = useMemo(
+      () =>
+        boundTargetContent &&
+        effectiveBoundTargetMode === 'follow' &&
+        boundImageTarget?.semanticReplacement
+          ? {
+              ...boundTargetContent,
+              url: boundImageTarget.semanticReplacement.backgroundUrl,
+            }
+          : boundTargetContent,
+      [boundImageTarget, boundTargetContent, effectiveBoundTargetMode]
     );
     const followedBoundImageTarget =
       boundImageTargetMode === 'follow' ? boundImageTarget : null;
@@ -1843,20 +2508,31 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
     );
     const generationContent = useMemo(
       () =>
-        boundTargetContent
-          ? [boundTargetContent, ...uploadedContent]
+        boundTargetGenerationContent
+          ? [boundTargetGenerationContent, ...uploadedContent]
           : allContent,
-      [allContent, boundTargetContent, uploadedContent]
+      [allContent, boundTargetGenerationContent, uploadedContent]
     );
     const localImageMessages = useMemo(
       () => ({
         invalidFile:
-          language === 'zh' ? '请上传图片文件' : 'Please upload image files',
-        fileTooLarge:
+          language === 'zh'
+            ? '请上传图片或视频文件'
+            : 'Please upload image or video files',
+        imageTooLarge:
           language === 'zh'
             ? '图片大小不能超过 25MB'
-            : 'Image size cannot exceed 25MB',
-        loadFailed: language === 'zh' ? '加载图片失败' : 'Failed to load image',
+            : 'Images cannot exceed 25MB',
+        videoTooLarge: (maxSizeMb: number, requiresPublicUrl: boolean) =>
+          language === 'zh'
+            ? requiresPublicUrl
+              ? `MiniMax-H3 本地视频不能超过 ${maxSizeMb}MB；更大视频请使用公网 URL`
+              : `视频大小不能超过 ${maxSizeMb}MB`
+            : requiresPublicUrl
+            ? `Local MiniMax-H3 videos cannot exceed ${maxSizeMb}MB; use a public URL for larger videos`
+            : `Videos cannot exceed ${maxSizeMb}MB`,
+        loadFailed:
+          language === 'zh' ? '加载图片或视频失败' : 'Failed to load media',
         compressionFailed:
           language === 'zh' ? '图片压缩失败' : 'Image compression failed',
         compressing: (sizeMb: number) =>
@@ -1932,13 +2608,12 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
         selectedModelId: string,
         selectedRef: ModelRef | null,
         setModelId: (modelId: string) => void,
-        setModelRef: (modelRef: ModelRef | null) => void
+        setModelRef: (modelRef: ModelRef | null) => void,
+        clearWhenUnavailable = false
       ) => {
-        const currentModelConfig = findMatchingSelectableModel(
-          models,
-          selectedModelId,
-          selectedRef
-        );
+        const currentModelConfig = clearWhenUnavailable
+          ? findExactSelectableModel(models, selectedModelId, selectedRef)
+          : findMatchingSelectableModel(models, selectedModelId, selectedRef);
         if (currentModelConfig) {
           return;
         }
@@ -1947,6 +2622,9 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
         if (nextModelConfig) {
           setModelId(nextModelConfig.id);
           setModelRef(getModelRefFromConfig(nextModelConfig));
+        } else if (clearWhenUnavailable && (selectedModelId || selectedRef)) {
+          setModelId('');
+          setModelRef(null);
         }
       };
 
@@ -1956,7 +2634,8 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
         selectedAgentImageModel,
         selectedAgentImageModelRef,
         setSelectedAgentImageModel,
-        setSelectedAgentImageModelRef
+        setSelectedAgentImageModelRef,
+        usesStrictPptModels
       );
       syncAgentMediaModel(
         'video',
@@ -1964,7 +2643,8 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
         selectedAgentVideoModel,
         selectedAgentVideoModelRef,
         setSelectedAgentVideoModel,
-        setSelectedAgentVideoModelRef
+        setSelectedAgentVideoModelRef,
+        usesStrictPptModels
       );
       syncAgentMediaModel(
         'audio',
@@ -1982,6 +2662,7 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
       selectedAgentImageModelRef,
       selectedAgentVideoModel,
       selectedAgentVideoModelRef,
+      usesStrictPptModels,
       visibleAgentAudioModels,
       visibleAgentImageModels,
       visibleAgentVideoModels,
@@ -2170,8 +2851,8 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
               setBoundTargetError(
                 task.error?.message ||
                   (language === 'zh'
-                    ? '生成失败，原图已保留'
-                    : 'Generation failed. Original image kept.')
+                    ? '生成失败，原内容已保留'
+                    : 'Generation failed. Original kept.')
               );
             } else {
               setBoundTargetError(null);
@@ -2389,8 +3070,8 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
                 setBoundTargetError(
                   event.result.error ||
                     (language === 'zh'
-                      ? '目标图片已不存在，未插入新图片'
-                      : 'Target image is unavailable. No new image inserted.')
+                      ? '目标内容已不存在，未插入新内容'
+                      : 'Target is unavailable. No new content inserted.')
                 );
               }
               break;
@@ -2564,8 +3245,240 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
     });
 
     const inputRef = useRef<HTMLTextAreaElement>(null);
+    const promptHighlightLayerRef = useRef<HTMLDivElement>(null);
+    const isInputComposingRef = useRef(false);
+    const compositionInsertedAtSignRef = useRef(false);
+    const compositionHasUntrustedEditRef = useRef(false);
+    const pendingCanvasAssociationUntrustedInputRef = useRef(false);
+    const pendingCanvasAssociationUntrustedInputTimerRef = useRef<
+      number | null
+    >(null);
+    const pendingCanvasAssociationEditRef =
+      useRef<CanvasAssociationBeforeInputSnapshot | null>(null);
     const containerRef = useRef<HTMLDivElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
+
+    const clearPendingCanvasAssociationUntrustedInput = useCallback(() => {
+      pendingCanvasAssociationUntrustedInputRef.current = false;
+      if (pendingCanvasAssociationUntrustedInputTimerRef.current !== null) {
+        window.clearTimeout(
+          pendingCanvasAssociationUntrustedInputTimerRef.current
+        );
+        pendingCanvasAssociationUntrustedInputTimerRef.current = null;
+      }
+    }, []);
+
+    useEffect(
+      () => () => clearPendingCanvasAssociationUntrustedInput(),
+      [clearPendingCanvasAssociationUntrustedInput]
+    );
+
+    const cancelCanvasAssociationPicking = useCallback(
+      (focusInput = true) => {
+        updateCanvasAssociationTrigger(null);
+        if (focusInput) {
+          requestAnimationFrame(() => inputRef.current?.focus());
+        }
+      },
+      [updateCanvasAssociationTrigger]
+    );
+
+    const handleCanvasAssociationSelection = useCallback(
+      (board: PlaitBoard, elements: PlaitElement[]): boolean => {
+        const trigger = canvasAssociationTriggerRef.current;
+        if (!trigger) return false;
+        if (!currentBoardId?.trim()) {
+          MessagePlugin.error(
+            language === 'zh'
+              ? '当前画板尚未就绪，无法添加联想'
+              : 'The current board is not ready for associations'
+          );
+          return false;
+        }
+        if (elements.length === 0) return false;
+        if (elements.length !== 1) {
+          MessagePlugin.warning(
+            language === 'zh'
+              ? '请一次选择一个画布元素'
+              : 'Select one canvas element at a time'
+          );
+          return false;
+        }
+
+        const rawReference = createCanvasAssociationRef(
+          board,
+          currentBoardId,
+          elements[0]
+        );
+        if (!rawReference) {
+          MessagePlugin.warning(
+            language === 'zh'
+              ? '该元素不能作为联想引用'
+              : 'This element cannot be used as an association'
+          );
+          return false;
+        }
+        const preservedReferences = mergeTrustedCanvasAssociationRefs(
+          promptRef.current,
+          [
+            canvasAssociationRefsRef.current,
+            canvasAssociationRegistryRef.current,
+          ]
+        );
+        const reference = {
+          ...rawReference,
+          label: getNextCanvasAssociationLabel(
+            rawReference.kind,
+            preservedReferences
+          ),
+        };
+
+        const insertion = replaceCanvasAssociationTriggerWithMention(
+          promptRef.current,
+          trigger,
+          reference
+        );
+        if (!insertion.inserted) {
+          updateCanvasAssociationTrigger(null);
+          return false;
+        }
+
+        const shiftedReferences = reconcileCanvasAssociationRefsForPromptEdit(
+          promptRef.current,
+          insertion.prompt,
+          preservedReferences,
+          { start: trigger.start, end: trigger.end }
+        );
+        const appended = appendCanvasAssociationRef(
+          shiftedReferences,
+          insertion.reference
+        );
+        if (appended.added) {
+          const nextReferences = applyCanvasAssociationRefs(
+            appended.references
+          );
+          saveActiveCanvasAssociationDraft(nextReferences);
+        } else if (appended.duplicate) {
+          MessagePlugin.warning(
+            language === 'zh'
+              ? '该元素已在联想引用中'
+              : 'This element is already associated'
+          );
+        } else if (appended.limitReached) {
+          MessagePlugin.warning(
+            language === 'zh'
+              ? '最多添加 20 个联想引用'
+              : 'You can add up to 20 associations'
+          );
+        }
+
+        if (!appended.added) return false;
+
+        updateCanvasAssociationTrigger(null);
+        promptRef.current = insertion.prompt;
+        setPrompt(insertion.prompt);
+        requestAnimationFrame(() => {
+          const input = inputRef.current;
+          if (!input) return;
+          input.focus();
+          input.setSelectionRange(
+            insertion.cursorPosition,
+            insertion.cursorPosition
+          );
+        });
+        return true;
+      },
+      [
+        applyCanvasAssociationRefs,
+        currentBoardId,
+        language,
+        saveActiveCanvasAssociationDraft,
+        updateCanvasAssociationTrigger,
+      ]
+    );
+
+    const handleCanvasAssociationToggle = useCallback(() => {
+      const nextEnabled = !canvasAssociationEnabled;
+      persistCanvasAssociationEnabled(nextEnabled);
+      setCanvasAssociationEnabled(nextEnabled);
+      if (!nextEnabled) {
+        cancelCanvasAssociationPicking();
+        return;
+      }
+      setIsFocused(true);
+      requestAnimationFrame(() => inputRef.current?.focus());
+    }, [cancelCanvasAssociationPicking, canvasAssociationEnabled]);
+
+    useEffect(() => {
+      if (!canvasAssociationTrigger) return;
+      const board =
+        SelectionWatcherBoardRef.current as CanvasAssociationPointerBoard | null;
+      if (!board) return;
+      const boardContainer = PlaitBoard.getBoardContainer(board);
+      if (!boardContainer) return;
+
+      const forcedPointer = PlaitPointerType.selection;
+      const existingSession = canvasAssociationPointerSessions.get(board);
+      const currentAppStatePointer = board.appState?.pointer;
+      const ownership =
+        existingSession &&
+        shouldRestoreCanvasAssociationPointer(
+          existingSession.ownership,
+          board.pointer,
+          currentAppStatePointer
+        )
+          ? existingSession.ownership
+          : {
+              forcedPointer,
+              previousBoardPointer: board.pointer,
+              previousAppStatePointer: currentAppStatePointer,
+            };
+      const token = Symbol('canvas-association-pointer-session');
+      canvasAssociationPointerSessions.set(board, { token, ownership });
+
+      BoardTransforms.updatePointerType(board, forcedPointer);
+      boardContainer.classList.add('canvas-association-picking');
+
+      return () => {
+        boardContainer.classList.remove('canvas-association-picking');
+        requestAnimationFrame(() => {
+          const activeSession = canvasAssociationPointerSessions.get(board);
+          if (activeSession?.token !== token) return;
+          canvasAssociationPointerSessions.delete(board);
+
+          if (
+            !shouldRestoreCanvasAssociationPointer(
+              ownership,
+              board.pointer,
+              board.appState?.pointer
+            )
+          ) {
+            return;
+          }
+
+          BoardTransforms.updatePointerType(
+            board,
+            ownership.previousBoardPointer
+          );
+        });
+      };
+    }, [canvasAssociationTrigger, currentBoardId]);
+
+    useEffect(() => {
+      if (!canvasAssociationTrigger) return;
+
+      const handleDocumentEscape = (event: KeyboardEvent) => {
+        if (event.key !== 'Escape' || event.isComposing) return;
+        event.preventDefault();
+        event.stopPropagation();
+        cancelCanvasAssociationPicking();
+      };
+
+      document.addEventListener('keydown', handleDocumentEscape, true);
+      return () => {
+        document.removeEventListener('keydown', handleDocumentEscape, true);
+      };
+    }, [cancelCanvasAssociationPicking, canvasAssociationTrigger]);
 
     // 使用自定义 hook 处理文本选择和复制，同时阻止事件冒泡
     useTextSelection(inputRef, {
@@ -2586,13 +3499,21 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
         const hasUploadedContent = uploadedContentRef.current.length > 0;
         const hasSelectedContent = selectedContentRef.current.length > 0;
         const hasKnowledgeContext = knowledgeContextRefs.length > 0;
+        const hasCanvasAssociations = hasCanvasAssociationOverwriteContent(
+          canvasAssociationRefsRef.current,
+          canvasAssociationTriggerRef.current
+        );
         const shouldConfirm =
           source === 'canvas-toolbar'
-            ? hasPrompt || hasUploadedContent || hasKnowledgeContext
+            ? hasPrompt ||
+              hasUploadedContent ||
+              hasKnowledgeContext ||
+              hasCanvasAssociations
             : hasPrompt ||
               hasUploadedContent ||
               hasSelectedContent ||
-              hasKnowledgeContext;
+              hasKnowledgeContext ||
+              hasCanvasAssociations;
 
         if (!shouldConfirm) {
           return true;
@@ -2613,6 +3534,24 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
       [confirm, knowledgeContextRefs.length, language]
     );
 
+    const applyCanvasAssociationPromptOverwrite = useCallback(
+      (nextPrompt: string) => {
+        dismissPromptSuggestion();
+        pendingCanvasAssociationEditRef.current = null;
+        updateCanvasAssociationTrigger(null);
+        applyCanvasAssociationRefs([]);
+        saveActiveCanvasAssociationDraft([]);
+        promptRef.current = nextPrompt;
+        setPrompt(nextPrompt);
+      },
+      [
+        applyCanvasAssociationRefs,
+        dismissPromptSuggestion,
+        saveActiveCanvasAssociationDraft,
+        updateCanvasAssociationTrigger,
+      ]
+    );
+
     useEffect(() => {
       const handleAIInputFocus = (
         event: Event | CustomEvent<AIInputFocusEventDetail>
@@ -2628,6 +3567,17 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
           if (systemSkill) {
             setSelectedSkillMediaTypes(inferSkillMediaTypes(systemSkill));
           }
+        }
+        if (detail?.pptExplainerSource) {
+          setPptExplainerInitialSource(detail.pptExplainerSource);
+        }
+        if (detail?.openPptExplainer) {
+          setPptExplainerFrameIds(
+            detail.pptExplainerFrameIds?.length
+              ? [...detail.pptExplainerFrameIds]
+              : undefined
+          );
+          setPptExplainerDialogOpen(true);
         }
 
         focusInput();
@@ -2718,12 +3668,10 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
         const nextKnowledgeContextRefs = normalizeKnowledgeContextRefs(
           detail.knowledgeContextRefs
         );
-        dismissPromptSuggestion();
-        promptRef.current = nextPrompt;
+        applyCanvasAssociationPromptOverwrite(nextPrompt);
         uploadedContentRef.current = nextUploadedContent;
         knowledgeContextRefsRef.current = nextKnowledgeContextRefs;
         setGenerationType(nextGenerationType);
-        setPrompt(nextPrompt);
         setUploadedContent(nextUploadedContent);
         setSelectedModel(nextModelId);
         setSelectedModelRef(nextModelRef);
@@ -2754,8 +3702,8 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
       };
     }, [
       audioModels,
+      applyCanvasAssociationPromptOverwrite,
       confirmOverwriteInputIfNeeded,
-      dismissPromptSuggestion,
       focusInput,
       imageModels,
       language,
@@ -2775,59 +3723,61 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
         title?: string;
         category?: string;
       }) => {
-        dismissPromptSuggestion();
-        promptRef.current = info.prompt;
-        setPrompt(info.prompt);
-        setIsInspirationSendGuideActive(true);
-        setGenerationType('agent');
-        if (info.skillId) {
-          setSelectedSkillId(info.skillId);
-          const systemSkill = findSystemSkillById(info.skillId);
-          if (systemSkill) {
-            setSelectedSkillMediaTypes(inferSkillMediaTypes(systemSkill));
+        void confirmOverwriteInputIfNeeded().then((confirmed) => {
+          if (!confirmed) return;
+          applyCanvasAssociationPromptOverwrite(info.prompt);
+          setIsInspirationSendGuideActive(true);
+          setGenerationType('agent');
+          if (info.skillId) {
+            setSelectedSkillId(info.skillId);
+            const systemSkill = findSystemSkillById(info.skillId);
+            if (systemSkill) {
+              setSelectedSkillMediaTypes(inferSkillMediaTypes(systemSkill));
+            }
           }
-        }
-        inputRef.current?.focus();
+          inputRef.current?.focus();
 
-        // 埋点：灵感模板选择（用于追踪转化率）
-        analytics.track('inspiration_selected', {
-          promptLength: info.prompt.length,
-          modelType: info.modelType,
-          skillId: info.skillId,
-          templateId: info.templateId,
-          title: info.title,
-          category: info.category,
+          // 埋点：灵感模板选择（用于追踪转化率）
+          analytics.track('inspiration_selected', {
+            promptLength: info.prompt.length,
+            modelType: info.modelType,
+            skillId: info.skillId,
+            templateId: info.templateId,
+            title: info.title,
+            category: info.category,
+          });
         });
       },
-      [dismissPromptSuggestion]
+      [applyCanvasAssociationPromptOverwrite, confirmOverwriteInputIfNeeded]
     );
 
     // 处理历史提示词选择：将提示词回填到输入框并切换生成类型
     const handleSelectHistoryPrompt = useCallback(
       (info: { content: string; modelType?: PromptType }) => {
-        dismissPromptSuggestion();
-        promptRef.current = info.content;
-        setPrompt(info.content);
-        setIsInspirationSendGuideActive(false);
+        void confirmOverwriteInputIfNeeded().then((confirmed) => {
+          if (!confirmed) return;
+          applyCanvasAssociationPromptOverwrite(info.content);
+          setIsInspirationSendGuideActive(false);
 
-        // 根据 modelType 自动切换生成类型
-        if (info.modelType) {
-          if (info.modelType === 'image') {
-            setGenerationType('image');
-          } else if (info.modelType === 'video') {
-            setGenerationType('video');
-          } else if (info.modelType === 'audio') {
-            setGenerationType('audio');
-          } else if (info.modelType === 'text') {
-            setGenerationType('text');
-          } else if (info.modelType === 'agent') {
-            setGenerationType('agent');
+          // 根据 modelType 自动切换生成类型
+          if (info.modelType) {
+            if (info.modelType === 'image') {
+              setGenerationType('image');
+            } else if (info.modelType === 'video') {
+              setGenerationType('video');
+            } else if (info.modelType === 'audio') {
+              setGenerationType('audio');
+            } else if (info.modelType === 'text') {
+              setGenerationType('text');
+            } else if (info.modelType === 'agent') {
+              setGenerationType('agent');
+            }
           }
-        }
 
-        inputRef.current?.focus();
+          inputRef.current?.focus();
+        });
       },
-      [dismissPromptSuggestion]
+      [applyCanvasAssociationPromptOverwrite, confirmOverwriteInputIfNeeded]
     );
 
     // 处理添加 Skill：打开知识库并定位到 Skill 目录，自动新建笔记
@@ -2911,6 +3861,17 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
         new Promise((resolve) => {
           const runtimeUrl = getAssetRuntimeUrl(asset);
           try {
+            if (
+              asset.type === AssetType.VIDEO ||
+              asset.type === AssetType.AUDIO
+            ) {
+              resolve({
+                type: asset.type === AssetType.VIDEO ? 'video' : 'audio',
+                url: asset.url,
+                name: asset.name,
+              });
+              return;
+            }
             const img = new Image();
             img.onload = () => {
               resolve({
@@ -3034,17 +3995,59 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
         const newContent: SelectedContent[] = [];
 
         for (const [index, file] of fileList.entries()) {
-          if (!file.type.startsWith('image/')) {
+          const isImage = file.type.startsWith('image/');
+          const videoMime = getSupportedVideoFileMimeType(file);
+          const isVideo = Boolean(videoMime);
+          if (!isImage && !isVideo) {
             MessagePlugin.error(localImageMessages.invalidFile);
             continue;
           }
 
-          if (file.size > 25 * 1024 * 1024) {
-            MessagePlugin.error(localImageMessages.fileTooLarge);
+          const isMiniMaxH3Video =
+            isVideo && isMiniMaxH3Model(selectedModel);
+          const videoSizeLimit = isMiniMaxH3Video
+            ? MINIMAX_H3_MAX_LOCAL_VIDEO_BYTES
+            : 50 * 1024 * 1024;
+          if (file.size > (isVideo ? videoSizeLimit : 25 * 1024 * 1024)) {
+            MessagePlugin.error(
+              isVideo
+                ? localImageMessages.videoTooLarge(
+                    videoSizeLimit / (1024 * 1024),
+                    isMiniMaxH3Video
+                  )
+                : localImageMessages.imageTooLarge
+            );
             continue;
           }
 
           try {
+            if (videoMime) {
+              const normalizedVideo = new File([file], file.name, {
+                type: videoMime,
+              });
+              const asset = await addAsset(
+                normalizedVideo,
+                AssetType.VIDEO,
+                AssetSource.LOCAL,
+                file.name
+              );
+              const objectUrl = URL.createObjectURL(normalizedVideo);
+              let dimensions;
+              try {
+                dimensions = await getVideoDimensions(objectUrl);
+              } finally {
+                URL.revokeObjectURL(objectUrl);
+              }
+              newContent.push({
+                type: 'video',
+                url: asset.url,
+                name: file.name || `上传视频 ${index + 1}`,
+                width: dimensions.width,
+                height: dimensions.height,
+              });
+              continue;
+            }
+
             let processedBlob: Blob = file;
 
             if (file.size > 10 * 1024 * 1024) {
@@ -3141,8 +4144,21 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
         assetToSelectedContent,
         fileToBase64WithDimensions,
         localImageMessages,
+        selectedModel,
       ]
     );
+
+    const handleDroppedInputFiles = useCallback(
+      (files: File[]) => importLocalImages(files),
+      [importLocalImages]
+    );
+    const {
+      isDraggingFiles: isDraggingInputFiles,
+      dropTargetProps: inputFileDropTargetProps,
+    } = useLocalFileDrop({
+      disabled: isSubmitting,
+      onFiles: handleDroppedInputFiles,
+    });
 
     // 处理文件选择
     const handleFileChange = useCallback(
@@ -3216,13 +4232,20 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
     const handleBoundImageTargetChange = useCallback(
       (target: BoundImageTarget | null) => {
         resetBoundTaskbarDraftsForBoard(currentBoardId ?? null);
+        const targetSupportsFollowControls = Boolean(
+          target && supportsBoundTargetFollowControls(target.type)
+        );
         const suppression = resolveBoundTargetSuppression(
-          target?.elementId || null,
+          targetSupportsFollowControls ? target?.elementId || null : null,
           suppressedBoundImageElementIdRef.current
         );
         suppressedBoundImageElementIdRef.current =
           suppression.nextSuppressedElementId;
-        if (target && (suppression.suppressTarget || target.referenceOnly)) {
+        if (
+          target &&
+          targetSupportsFollowControls &&
+          (suppression.suppressTarget || target.referenceOnly)
+        ) {
           const referenceTarget =
             suppression.suppressTarget &&
             boundImageTargetRef.current?.elementId === target.elementId &&
@@ -3233,7 +4256,10 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
             referenceTarget,
             'reference'
           );
-          if (lastBoundImageTargetKeyRef.current === targetKey) {
+          if (
+            lastBoundImageTargetKeyRef.current === targetKey &&
+            boundImageTargetRef.current?.text === referenceTarget.text
+          ) {
             return;
           }
           lastBoundImageTargetKeyRef.current = targetKey;
@@ -3274,13 +4300,16 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
         }
 
         const targetKey = createBoundImageTargetStateKey(target, 'follow');
-        if (lastBoundImageTargetKeyRef.current === targetKey) {
+        if (
+          lastBoundImageTargetKeyRef.current === targetKey &&
+          boundImageTargetRef.current?.text === target.text
+        ) {
           return;
         }
 
         lastBoundImageTargetKeyRef.current = targetKey;
         setBoundTargetError(null);
-        setGenerationType('image');
+        setGenerationType(target.type);
         if (activeDraftElementIdRef.current !== target.elementId) {
           saveActiveTaskbarDraft();
           dismissedPromptElementIdRef.current = null;
@@ -3294,6 +4323,7 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
           activeDraftElementIdRef.current = target.elementId;
           activeDraftBaselineRef.current = restored.baseline;
           applyTaskbarDraft(restored.draft);
+          applyCanvasAssociationDraft(target.elementId);
           updatePromptSuggestion(
             restored.draft.prompt
               ? null
@@ -3320,10 +4350,10 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
         suppressSelectionContentUrlsRef.current = new Set();
       },
       [
+        applyCanvasAssociationDraft,
         applyTaskbarDraft,
         detachTaskbarDraft,
         pruneBoundTargetTaskbarDrafts,
-        readCurrentTaskbarDraft,
         currentBoardId,
         resetBoundTaskbarDraftsForBoard,
         saveActiveTaskbarDraft,
@@ -3331,11 +4361,17 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
       ]
     );
 
-    const handleDismissBoundImageTarget = useCallback(
-      (mode: BoundImageTargetDismissMode) => {
+    const handleDismissBoundTarget = useCallback(
+      (mode: BoundTargetDismissMode) => {
         const target = boundImageTarget;
         const board = SelectionWatcherBoardRef.current;
-        if (!target || !board) return;
+        if (
+          !target ||
+          !supportsBoundTargetFollowControls(target.type) ||
+          !board
+        ) {
+          return;
+        }
 
         const selectedElement =
           getSelectedElements(board).find(
@@ -3348,8 +4384,20 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
         if (!selectedElement) {
           MessagePlugin.error(
             language === 'zh'
-              ? '无法读取当前图片的跟随设置'
-              : 'Failed to read the follow setting for this image'
+              ? `无法读取当前${
+                  target.type === 'text'
+                    ? '文本'
+                    : target.type === 'video'
+                    ? '视频'
+                    : '图片'
+                }的跟随设置`
+              : `Failed to read the follow setting for this ${
+                  target.type === 'text'
+                    ? 'text'
+                    : target.type === 'video'
+                    ? 'video'
+                    : 'image'
+                }`
           );
           return;
         }
@@ -3389,22 +4437,17 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
         setBoundTargetError(null);
         dismissPromptSuggestion();
         setBoundInputLayoutTick((tick) => tick + 1);
-        setBoundTargetDismissHintCount(
-          recordBoundTargetDismiss(boundTargetDismissHintCount)
-        );
       },
-      [
-        boundImageTarget,
-        boundTargetDismissHintCount,
-        detachTaskbarDraft,
-        dismissPromptSuggestion,
-        language,
-      ]
+      [boundImageTarget, detachTaskbarDraft, dismissPromptSuggestion, language]
     );
 
     const handleBoundTargetFollowChange = useCallback((enabled: boolean) => {
       setBoundTargetFollowEnabled(persistBoundTargetFollowEnabled(enabled));
       setBoundInputLayoutTick((tick) => tick + 1);
+    }, []);
+
+    const handleCenterImageOnClickChange = useCallback((enabled: boolean) => {
+      setCenterImageOnClickEnabled(persistCenterImageOnClickEnabled(enabled));
     }, []);
 
     const handleBoundInputViewportChange = useCallback(() => {
@@ -3428,7 +4471,7 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
     );
 
     const chatDrawerContent =
-      boundImageTargetMode === 'reference' ? generationContent : allContent;
+      effectiveBoundTargetMode === 'reference' ? generationContent : allContent;
 
     // 仅作参考模式与生成请求使用同一份内容，确保目标图不会在抽屉中丢失。
     useEffect(() => {
@@ -3493,14 +4536,29 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
     const clearTriggerSymbol = useCallback(() => {
       if (triggerPositionRef.current !== null) {
         const pos = triggerPositionRef.current;
-        setPrompt((prev) => {
-          const nextPrompt = prev.substring(0, pos) + prev.substring(pos + 1);
-          promptRef.current = nextPrompt;
-          return nextPrompt;
-        });
+        const previousPrompt = promptRef.current;
+        const nextPrompt =
+          previousPrompt.substring(0, pos) + previousPrompt.substring(pos + 1);
+        const nextReferences = reconcileCanvasAssociationRefsForPromptEdit(
+          previousPrompt,
+          nextPrompt,
+          canvasAssociationRefsRef.current,
+          { start: pos, end: pos + 1 }
+        );
+        promptRef.current = nextPrompt;
+        setPrompt(nextPrompt);
+        if (
+          !areCanvasAssociationRefsEqual(
+            canvasAssociationRefsRef.current,
+            nextReferences
+          )
+        ) {
+          const appliedReferences = applyCanvasAssociationRefs(nextReferences);
+          saveActiveCanvasAssociationDraft(appliedReferences);
+        }
         triggerPositionRef.current = null;
       }
-    }, []);
+    }, [applyCanvasAssociationRefs, saveActiveCanvasAssociationDraft]);
 
     const applyModelSelection = useCallback(
       (model: ModelConfig) => {
@@ -3741,10 +4799,7 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
               selectedParamsRef.current
             );
       const baseParams = { ...loadedParams };
-      if (
-        selectedModel.startsWith('doubao-seedance-2-0-') &&
-        baseParams.size?.includes('@')
-      ) {
+      if (isSeedance2ModelId(selectedModel) && baseParams.size?.includes('@')) {
         const [resolution, legacyRatio] = baseParams.size.split('@');
         baseParams.size = resolution;
         if (legacyRatio && !baseParams.ratio) {
@@ -3830,7 +4885,7 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
           } else {
             next[paramId] = value;
           }
-          return next;
+          return normalizeGPTImage25ResolutionParams(selectedModel, next);
         });
 
         // 关闭下拉菜单并保持焦点
@@ -3839,7 +4894,7 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
           setTimeout(() => inputRef.current?.focus(), 0);
         }
       },
-      [clearTriggerSymbol]
+      [clearTriggerSymbol, selectedModel]
     );
 
     // 处理个数选择
@@ -3857,6 +4912,14 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
       [clearTriggerSymbol]
     );
 
+    const handleCreatePptExplainerTask = useCallback(
+      async (input: Parameters<typeof createPptExplainerTask>[0]) => {
+        onEnableRuntime?.();
+        return createPptExplainerTask(input);
+      },
+      [onEnableRuntime]
+    );
+
     // Handle generation
     const handleGenerate = useCallback(
       async (
@@ -3869,32 +4932,94 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
         const trigger =
           typeof triggerOrOverride === 'string' ? triggerOrOverride : 'button';
         const effectivePrompt = override?.prompt ?? prompt;
-        const activeBoundImageTarget =
-          override ||
-          !shouldUseBoundTargetForSubmission(
+        const submittedBoard =
+          (SelectionWatcherBoardRef.current as
+            | (PlaitBoard & { host?: HTMLElement })
+            | null) ?? null;
+        const canUseActiveBoundTarget =
+          !override &&
+          shouldUseBoundTargetForSubmission(
             generationType,
-            boundImageTargetMode
-          )
-            ? null
-            : boundImageTarget;
-        const effectiveContent = override
+            effectiveBoundTargetMode
+          );
+        let activeBoundImageTarget =
+          canUseActiveBoundTarget && boundImageTarget?.type === generationType
+            ? boundImageTarget
+            : null;
+        if (
+          !activeBoundImageTarget &&
+          canUseActiveBoundTarget &&
+          generationType === 'image' &&
+          submittedBoard
+        ) {
+          const selectedElements = getSelectedElements(submittedBoard);
+          const selectedSemanticGroup =
+            selectedElements.length === 1 &&
+            selectedElements[0].type === 'group' &&
+            Boolean(
+              selectedElements[0].metadata?.semanticLayerGroup?.providerGroupId
+            );
+          if (selectedSemanticGroup) {
+            const resolvedTarget = await resolveBoundImageTarget(
+              submittedBoard,
+              selectedElements,
+              effectivePrompt
+            );
+            if (resolvedTarget?.semanticReplacement) {
+              activeBoundImageTarget = resolvedTarget;
+              setBoundTargetError(null);
+            } else {
+              setBoundTargetError(
+                language === 'zh'
+                  ? '未能唯一识别要替换的旧主体，请在提示词中明确对象名称'
+                  : 'Could not uniquely identify the subject to replace. Name it explicitly in the prompt.'
+              );
+              return;
+            }
+          }
+        }
+        const activeBoundTargetContent = activeBoundImageTarget
+          ? selectedContentFromBoundTarget(
+              activeBoundImageTarget,
+              language,
+              effectiveBoundTargetMode === 'reference'
+            )
+          : null;
+        const activeBoundTargetGenerationContent =
+          activeBoundTargetContent &&
+          effectiveBoundTargetMode === 'follow' &&
+          activeBoundImageTarget?.semanticReplacement
+            ? {
+                ...activeBoundTargetContent,
+                url: activeBoundImageTarget.semanticReplacement.backgroundUrl,
+              }
+            : activeBoundTargetContent;
+        const baseEffectiveContent = override
           ? pinBoundTargetReferenceContent(
               override.content,
               boundTargetContent,
-              boundImageTargetMode
+              effectiveBoundTargetMode
             )
+          : activeBoundTargetGenerationContent
+          ? [activeBoundTargetGenerationContent, ...uploadedContent]
           : generationContent;
+        let effectiveContent = baseEffectiveContent;
         const effectiveGenerationType = activeBoundImageTarget
-          ? 'image'
+          ? activeBoundImageTarget.type
           : override?.generationType ?? generationType;
         const effectiveSelectedModel = override?.selectedModel ?? selectedModel;
         const effectiveSelectedModelRef =
           override?.selectedModelRef ?? selectedModelRef;
         const effectiveSelectedParams =
           override?.selectedParams ?? selectedParams;
-        const effectiveSelectedCount = override?.selectedCount ?? selectedCount;
+        const effectiveSelectedCount =
+          activeBoundImageTarget?.type === 'text' ||
+          activeBoundImageTarget?.type === 'audio'
+            ? 1
+            : override?.selectedCount ?? selectedCount;
         const appendToCurrentChatSession =
           override?.appendToCurrentChatSession ?? false;
+        const targetChatSessionId = override?.targetSessionId ?? null;
         const shouldClearLocalInput = !override && !activeBoundImageTarget;
         const submittedTaskbarDraft = override
           ? null
@@ -3903,6 +5028,13 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
           ? null
           : activeDraftElementIdRef.current;
         const submittedDraftBoardId = activeTaskbarBoardIdRef.current;
+        const submittedCanvasAssociations = override
+          ? []
+          : mergeTrustedCanvasAssociationRefs(effectivePrompt, [
+              canvasAssociationRefsRef.current,
+              canvasAssociationRegistryRef.current,
+            ]);
+        let resolvedCanvasAssociations = submittedCanvasAssociations;
         const finalizeSubmittedBoundDraft = (clearSubmittedInput: boolean) => {
           if (!submittedDraftElementId || !submittedTaskbarDraft) return false;
           if (activeTaskbarBoardIdRef.current !== submittedDraftBoardId) {
@@ -3940,8 +5072,65 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
           }
           return true;
         };
+        const clearSubmittedCanvasAssociations = () => {
+          if (
+            override ||
+            !submittedTaskbarDraft ||
+            activeTaskbarBoardIdRef.current !== submittedDraftBoardId
+          ) {
+            return;
+          }
+
+          const activeElementId = activeDraftElementIdRef.current;
+          const currentTaskbarDraft = submittedDraftElementId
+            ? activeElementId === submittedDraftElementId
+              ? readCurrentTaskbarDraft()
+              : boundTargetDraftsRef.current.get(submittedDraftElementId)?.draft
+            : activeElementId === null
+            ? readCurrentTaskbarDraft()
+            : unboundTaskbarDraftRef.current;
+          const currentReferences = submittedDraftElementId
+            ? activeElementId === submittedDraftElementId
+              ? canvasAssociationRefsRef.current
+              : boundCanvasAssociationDraftsRef.current.get(
+                  submittedDraftElementId
+                ) || []
+            : activeElementId === null
+            ? canvasAssociationRefsRef.current
+            : unboundCanvasAssociationDraftRef.current;
+          if (
+            !currentTaskbarDraft ||
+            !areBoundTargetTaskbarDraftsEqual(
+              currentTaskbarDraft,
+              submittedTaskbarDraft
+            ) ||
+            !areCanvasAssociationRefsEqual(
+              currentReferences,
+              submittedCanvasAssociations
+            )
+          ) {
+            return;
+          }
+
+          if (submittedDraftElementId) {
+            boundCanvasAssociationDraftsRef.current.delete(
+              submittedDraftElementId
+            );
+          } else {
+            unboundCanvasAssociationDraftRef.current = [];
+          }
+          if (activeElementId === submittedDraftElementId) {
+            applyCanvasAssociationRefs([]);
+          }
+        };
         const clearSubmittedLocalInput = () => {
-          if (activeTaskbarBoardIdRef.current !== submittedDraftBoardId) return;
+          if (
+            activeTaskbarBoardIdRef.current !== submittedDraftBoardId &&
+            submittedDraftElementId
+          ) {
+            return;
+          }
+          clearSubmittedCanvasAssociations();
           if (finalizeSubmittedBoundDraft(true)) return;
 
           if (
@@ -3974,7 +5163,20 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
           : knowledgeContextRefs;
         const trimmedPrompt = effectivePrompt.trim();
 
-        if (!trimmedPrompt && effectiveContent.length === 0) {
+        if (
+          !override &&
+          effectiveGenerationType === 'agent' &&
+          selectedSkillId === 'generate_ppt_explainer_video'
+        ) {
+          setPptExplainerDialogOpen(true);
+          return;
+        }
+
+        if (
+          !trimmedPrompt &&
+          baseEffectiveContent.length === 0 &&
+          submittedCanvasAssociations.length === 0
+        ) {
           return;
         }
         if (submitLockRef.current || isSubmitting) {
@@ -3994,10 +5196,18 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
           model: effectiveSelectedModel,
           profileId: effectiveSelectedModelRef?.profileId || null,
           profile_id: effectiveSelectedModelRef?.profileId || null,
-          hasAttachedContent: effectiveContent.length > 0,
-          has_attached_content: effectiveContent.length > 0,
-          attachedCount: effectiveContent.length,
-          attached_count: effectiveContent.length,
+          hasAttachedContent:
+            baseEffectiveContent.length > 0 ||
+            submittedCanvasAssociations.length > 0,
+          has_attached_content:
+            baseEffectiveContent.length > 0 ||
+            submittedCanvasAssociations.length > 0,
+          attachedCount:
+            baseEffectiveContent.length + submittedCanvasAssociations.length,
+          attached_count:
+            baseEffectiveContent.length + submittedCanvasAssociations.length,
+          canvasAssociationCount: submittedCanvasAssociations.length,
+          canvas_association_count: submittedCanvasAssociations.length,
           knowledgeContextCount: effectiveKnowledgeContextRefs.length,
           knowledge_context_count: effectiveKnowledgeContextRefs.length,
           promptLength,
@@ -4018,12 +5228,174 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
             ...extras,
           });
         };
+        const abortIfSubmittedBoardChanged = (stage: string): boolean => {
+          if (
+            override ||
+            isSubmittedBoardCurrent(
+              submittedBoard,
+              submittedDraftBoardId,
+              (SelectionWatcherBoardRef.current as PlaitBoard | null) ?? null,
+              activeTaskbarBoardIdRef.current
+            )
+          ) {
+            return false;
+          }
+
+          MessagePlugin.warning(
+            language === 'zh'
+              ? '画板已切换，本次提交已取消；输入和联想引用已保留，请重新确认后提交'
+              : 'The board changed, so this submission was cancelled. Your input and associations were kept.'
+          );
+          trackSubmitStatus('failed', {
+            submitMode: 'preflight',
+            submit_mode: 'preflight',
+            failureReason: 'submission_board_changed',
+            failure_reason: 'submission_board_changed',
+            failureStage: stage,
+            failure_stage: stage,
+          });
+          submitLockRef.current = false;
+          setIsSubmitting(false);
+          return true;
+        };
 
         setIsSubmitting(true);
         trackSubmitStatus('start');
 
         try {
-          // 检查 API key，如果没有配置则弹窗获取
+          if (submittedCanvasAssociations.length > 0) {
+            const submissionBoardId = submittedDraftBoardId?.trim();
+            if (!submittedBoard || !submissionBoardId) {
+              MessagePlugin.error(
+                language === 'zh'
+                  ? '当前画板尚未就绪，无法提交联想引用'
+                  : 'The current board is not ready for associations'
+              );
+              trackSubmitStatus('failed', {
+                submitMode: 'preflight',
+                submit_mode: 'preflight',
+                failureReason: 'canvas_association_board_unavailable',
+                failure_reason: 'canvas_association_board_unavailable',
+              });
+              submitLockRef.current = false;
+              setIsSubmitting(false);
+              return;
+            }
+
+            const resolution = await resolveCanvasAssociationsForSubmission(
+              submittedBoard,
+              submissionBoardId,
+              submittedCanvasAssociations,
+              {
+                enforceSeedanceAudioDataUrlLimit:
+                  effectiveGenerationType === 'video' &&
+                  isSeedance2ModelId(effectiveSelectedModel),
+              }
+            );
+            if (abortIfSubmittedBoardChanged('association_resolution')) return;
+            if (resolution.errors.length > 0) {
+              MessagePlugin.error(
+                resolution.errors.map((error) => error.message).join('；')
+              );
+              trackSubmitStatus('failed', {
+                submitMode: 'preflight',
+                submit_mode: 'preflight',
+                failureReason: 'canvas_association_resolution_failed',
+                failure_reason: 'canvas_association_resolution_failed',
+                errorCount: resolution.errors.length,
+                error_count: resolution.errors.length,
+              });
+              submitLockRef.current = false;
+              setIsSubmitting(false);
+              return;
+            }
+
+            const isTextFlow =
+              effectiveGenerationType === 'text' ||
+              effectiveGenerationType === 'agent';
+            const isVideoFlow = effectiveGenerationType === 'video';
+            const capabilityContent =
+              isTextFlow || isVideoFlow
+                ? [...baseEffectiveContent, ...resolution.content]
+                : resolution.content;
+            const hasVisualContent = capabilityContent.some(
+              (item) => item.type === 'image' || item.type === 'graphics'
+            );
+            const textPlan =
+              isTextFlow && hasVisualContent
+                ? resolveInvocationPlanFromRoute(
+                    'text',
+                    effectiveSelectedModelRef || effectiveSelectedModel
+                  )
+                : null;
+            const capabilityErrors = validateCanvasAssociationCapability({
+              generationType: effectiveGenerationType,
+              modelId: effectiveSelectedModel,
+              content: capabilityContent,
+              textImageInput:
+                isTextFlow && hasVisualContent
+                  ? {
+                      supported: supportsTextBindingImageInput(
+                        textPlan?.binding
+                      ),
+                      maxCount: getTextBindingMaxImageCount(textPlan?.binding),
+                    }
+                  : undefined,
+              videoImageInput:
+                isVideoFlow && hasVisualContent
+                  ? {
+                      maxCount: getEffectiveVideoModelConfigForSelection(
+                        effectiveSelectedModel,
+                        effectiveSelectedModelRef || effectiveSelectedModel,
+                        effectiveSelectedParams
+                      ).imageUpload.maxCount,
+                    }
+                  : undefined,
+            });
+            if (capabilityErrors.length > 0) {
+              MessagePlugin.error(capabilityErrors.join('；'));
+              trackSubmitStatus('failed', {
+                submitMode: 'preflight',
+                submit_mode: 'preflight',
+                failureReason: 'canvas_association_capability_mismatch',
+                failure_reason: 'canvas_association_capability_mismatch',
+                errorCount: capabilityErrors.length,
+                error_count: capabilityErrors.length,
+              });
+              submitLockRef.current = false;
+              setIsSubmitting(false);
+              return;
+            }
+
+            resolvedCanvasAssociations = resolution.references;
+            effectiveContent = [
+              ...baseEffectiveContent,
+              ...resolution.content.map((item) => ({ ...item })),
+            ];
+          }
+
+          // 引用预检通过后再请求凭据，避免无效引用触发无意义的 API Key 弹窗。
+          if (effectiveContent.some((item) => item.type === 'video')) {
+            const errors = validateCanvasAssociationCapability({
+              generationType: effectiveGenerationType,
+              modelId: effectiveSelectedModel,
+              content: effectiveContent,
+            });
+            if (errors.length > 0) {
+              MessagePlugin.error(errors.join('；'));
+              trackSubmitStatus('failed', {
+                submitMode: 'preflight',
+                submit_mode: 'preflight',
+                failureReason: 'input_capability_mismatch',
+                failure_reason: 'input_capability_mismatch',
+                errorCount: errors.length,
+                error_count: errors.length,
+              });
+              submitLockRef.current = false;
+              setIsSubmitting(false);
+              return;
+            }
+          }
           const currentRouteType =
             effectiveGenerationType === 'video'
               ? 'video'
@@ -4033,23 +5405,81 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
                 effectiveGenerationType === 'agent'
               ? 'text'
               : 'image';
-          const hasRouteCredentials = hasInvocationRouteCredentials(
+          await settingsManager.waitForInitialization();
+          if (abortIfSubmittedBoardChanged('settings_initialization')) return;
+          const initialRoute = resolveInvocationRoute(
             currentRouteType,
             effectiveSelectedModelRef || effectiveSelectedModel
           );
-          if (!hasRouteCredentials) {
-            const newApiKey = await promptForApiKey();
-            if (!newApiKey) {
-              trackSubmitStatus('cancelled', {
-                reason: 'missing_api_key',
-                submitMode: 'preflight',
-                submit_mode: 'preflight',
-              });
+          let hasRouteCredentials = Boolean(
+            initialRoute.baseUrl && initialRoute.apiKey
+          );
+          const routePreparation = await prepareTuziManagedRoute(initialRoute);
+          if (
+            !hasRouteCredentials ||
+            routePreparation.context ||
+            routePreparation.managedRoute ||
+            routePreparation.requiresSetup
+          ) {
+            if (abortIfSubmittedBoardChanged('tuzi_context')) return;
+            hasRouteCredentials =
+              !routePreparation.requiresSetup &&
+              hasInvocationRouteCredentials(
+                currentRouteType,
+                effectiveSelectedModelRef || effectiveSelectedModel
+              ) &&
+              (!routePreparation.managedRoute ||
+                routePreparation.context?.status === 'ready');
+            if (
+              !hasRouteCredentials &&
+              (routePreparation.context || routePreparation.requiresSetup) &&
+              !override
+            ) {
+              const delegated =
+                await submitGenerationWithCredentialGateRef.current({
+                  prompt: effectivePrompt,
+                  selectedContent: effectiveContent,
+                  generationType: effectiveGenerationType,
+                  selectedModel: effectiveSelectedModel,
+                  selectedModelRef: effectiveSelectedModelRef,
+                  selectedParams: effectiveSelectedParams,
+                  selectedCount: effectiveSelectedCount,
+                  targetSessionId: targetChatSessionId,
+                });
+              if (delegated) {
+                clearSubmittedLocalInput();
+                trackSubmitStatus('cancelled', {
+                  reason: 'credential_setup_pending',
+                  submitMode: 'preflight',
+                  submit_mode: 'preflight',
+                });
+                submitLockRef.current = false;
+                setIsSubmitting(false);
+                return;
+              }
+            }
+            if (routePreparation.requiresSetup) {
+              MessagePlugin.error('请先完成 Tuzi 账户关联和分组配置，再重试');
               submitLockRef.current = false;
               setIsSubmitting(false);
               return;
             }
+            if (!hasRouteCredentials && !routePreparation.context) {
+              const newApiKey = await promptForApiKey();
+              if (abortIfSubmittedBoardChanged('api_key_prompt')) return;
+              if (!newApiKey) {
+                trackSubmitStatus('cancelled', {
+                  reason: 'missing_api_key',
+                  submitMode: 'preflight',
+                  submit_mode: 'preflight',
+                });
+                submitLockRef.current = false;
+                setIsSubmitting(false);
+                return;
+              }
+            }
           }
+          if (abortIfSubmittedBoardChanged('credentials_ready')) return;
 
           // 构建选中元素的分类信息（使用合并后的 allContent）
           // 收集图片和图形的尺寸信息（按顺序：先 images，后 graphics）
@@ -4079,6 +5509,9 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
             videos: effectiveContent
               .filter((item) => item.type === 'video' && item.url)
               .map((item) => item.url!),
+            audios: effectiveContent
+              .filter((item) => item.type === 'audio' && item.url)
+              .map((item) => item.url!),
             graphics: graphicsItems.map((item) => item.url!),
             // 添加图片尺寸信息（始终传递数组，避免下游处理 undefined）
             imageDimensions: imageDimensions,
@@ -4096,6 +5529,7 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
             generationType: effectiveGenerationType,
             count: effectiveSelectedCount,
             knowledgeContextRefs: effectiveKnowledgeContextRefs,
+            canvasAssociations: resolvedCanvasAssociations,
             defaultModels:
               effectiveGenerationType === 'agent'
                 ? agentMediaDefaultModels
@@ -4105,12 +5539,72 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
                 ? agentMediaDefaultModelRefs
                 : undefined,
           });
-          const boundTargetGenerationParams = buildBoundTargetGenerationParams(
-            activeBoundImageTarget,
-            effectiveSelectedCount
-          );
+          const promptForHistory = effectivePrompt;
+          let imageBoundTargetGenerationParams =
+            activeBoundImageTarget?.type === 'image'
+              ? buildBoundTargetGenerationParams(
+                  activeBoundImageTarget,
+                  effectiveSelectedCount
+                )
+              : null;
+          const semanticReplacement =
+            activeBoundImageTarget?.type === 'image'
+              ? activeBoundImageTarget.semanticReplacement
+              : undefined;
+          if (imageBoundTargetGenerationParams && semanticReplacement) {
+            const semanticMask = await createSemanticForegroundEditMask(
+              semanticReplacement
+            );
+            const semanticLayer = semanticReplacement.semanticLayer;
+            parsedParams.prompt = buildSemanticReplacementGenerationPrompt(
+              parsedParams.prompt,
+              semanticLayer.name,
+              semanticLayer.description
+            );
+            imageBoundTargetGenerationParams = {
+              ...imageBoundTargetGenerationParams,
+              generationMode: 'image_edit',
+              referenceImages: [
+                semanticReplacement.originalCompositeUrl ||
+                  semanticReplacement.backgroundUrl,
+              ],
+              maskImage: semanticMask,
+              semanticReplacement: true,
+              semanticReplacementOldName: semanticLayer.name,
+              semanticReplacementOldDescription: semanticLayer.description,
+              semanticReplacementBackgroundUrl:
+                semanticReplacement.backgroundUrl,
+              semanticReplacementReferenceUrl:
+                semanticReplacement.originalCompositeUrl ||
+                semanticReplacement.backgroundUrl,
+              semanticReplacementBackgroundElementId:
+                semanticReplacement.backgroundElementId,
+              semanticReplacementForegroundUrl:
+                semanticReplacement.foregroundUrl,
+            };
+          }
+          const boundTargetGenerationParams = activeBoundImageTarget
+            ? activeBoundImageTarget.type === 'image'
+              ? imageBoundTargetGenerationParams
+                ? {
+                    ...imageBoundTargetGenerationParams,
+                    boundTargetFollowControlled: true,
+                  }
+                : null
+              : effectiveSelectedCount === 1
+              ? {
+                  replaceElementId: activeBoundImageTarget.elementId,
+                  sourcePrompt: activeBoundImageTarget.prompt,
+                  ...(activeBoundImageTarget.type !== 'audio'
+                    ? { boundTargetFollowControlled: true }
+                    : {}),
+                }
+              : null
+            : null;
           const replacementBoundImageTarget = boundTargetGenerationParams
-            ? activeBoundImageTarget
+            ? activeBoundImageTarget?.type === 'image'
+              ? activeBoundImageTarget
+              : null
             : null;
           if (boundTargetGenerationParams) {
             parsedParams.extraParams = {
@@ -4121,6 +5615,65 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
 
           // 收集所有参考媒体（图片 + 图形 + 视频）
           const referenceImages = [...selection.images, ...selection.graphics];
+
+          if (
+            parsedParams.generationType === 'video' &&
+            isMiniMaxH3Model(parsedParams.modelId) &&
+            isMiniMaxH3PromptEnhancementEnabled(parsedParams.extraParams)
+          ) {
+            try {
+              const plan = resolveInvocationPlanFromRoute(
+                'video',
+                parsedParams.modelRef || parsedParams.modelId
+              );
+              if (!plan) {
+                throw new Error(
+                  language === 'zh'
+                    ? '未找到 MiniMax-H3 的视频供应商配置'
+                    : 'No video provider is configured for MiniMax-H3'
+                );
+              }
+
+              const miniMaxReferenceImages: string[] = [];
+              for (const referenceImage of referenceImages) {
+                const imageData = await unifiedCacheService.getImageForAI(
+                  referenceImage
+                );
+                miniMaxReferenceImages.push(imageData.value);
+              }
+
+              parsedParams.prompt = await enhanceMiniMaxH3Prompt(
+                {
+                  prompt: parsedParams.prompt,
+                  promptLanguage: language === 'zh' ? 'zh' : 'en',
+                  duration: parsedParams.duration,
+                  size: parsedParams.size,
+                  ratio: parsedParams.extraParams?.ratio,
+                  referenceImages: miniMaxReferenceImages,
+                  referenceVideos: selection.videos,
+                  params: parsedParams.extraParams,
+                },
+                { provider: plan.provider }
+              );
+              // The prompt has already been enhanced in this preflight. Keep
+              // the flag for the UI, but prevent the downstream video executor
+              // from submitting a second Context IR task.
+              parsedParams.extraParams = {
+                ...(parsedParams.extraParams || {}),
+                [MINIMAX_H3_PROMPT_ENHANCEMENT_PARAM_ID]: false,
+              };
+              if (abortIfSubmittedBoardChanged('prompt_enhancement')) return;
+            } catch (error) {
+              MessagePlugin.error(
+                error instanceof Error
+                  ? error.message
+                  : language === 'zh'
+                  ? 'MiniMax-H3 提示词增强失败，请重试'
+                  : 'MiniMax-H3 prompt enhancement failed. Please retry.'
+              );
+              throw error;
+            }
+          }
 
           // 创建工作流定义（仅用于 WorkZone 显示，实际工作流由 submitWorkflowToSW 创建）
           let workflow: WorkflowDefinition;
@@ -4225,8 +5778,12 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
           } else {
             workflow = convertToWorkflow(parsedParams, referenceImages);
           }
-          const board = SelectionWatcherBoardRef.current;
+          if (abortIfSubmittedBoardChanged('workflow_conversion')) return;
+
+          const board = submittedBoard;
+          let publishedTaskTargetElementId: string | null = null;
           if (board) {
+            if (abortIfSubmittedBoardChanged('before_canvas_write')) return;
             // WorkZone 固定尺寸
             const WORKZONE_WIDTH = 360;
             const WORKZONE_HEIGHT = 240;
@@ -4486,6 +6043,7 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
               currentWorkZoneIdRef.current = null;
               const [firstAnchor] = imageAnchorElements;
               if (firstAnchor) {
+                publishedTaskTargetElementId = firstAnchor.id;
                 setTimeout(() => {
                   const anchorRect = RectangleClient.getRectangleByPoints(
                     firstAnchor.points
@@ -4513,6 +6071,7 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
 
               currentWorkZoneIdRef.current = workzoneElement.id;
               currentImageAnchorIdsRef.current = [];
+              publishedTaskTargetElementId = workzoneElement.id;
               setTimeout(() => {
                 const workzoneCenterX = workzoneX + WORKZONE_WIDTH / 2;
                 const workzoneCenterY = workzoneY + WORKZONE_HEIGHT / 2;
@@ -4523,6 +6082,17 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
                 );
               }, 100);
             }
+          }
+
+          if (board && publishedTaskTargetElementId) {
+            // 任务节点已可见；异步提交返回后的建线仍作为幂等重试。
+            linkWorkflowCanvasAssociationsToTaskTarget(
+              board,
+              workflow,
+              publishedTaskTargetElementId,
+              submittedDraftBoardId,
+              resolvedCanvasAssociations
+            );
           }
 
           const imageRoute = resolveInvocationRoute('image');
@@ -4555,6 +6125,7 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
             selection,
             finalPrompt: parsedParams.prompt,
             knowledgeContextRefs: parsedParams.knowledgeContextRefs,
+            canvasAssociations: parsedParams.canvasAssociations,
           };
 
           const textModel = resolveInvocationRoute('text').modelId;
@@ -4567,15 +6138,50 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
           currentRetryContextRef.current = retryContext;
 
           try {
+            if (abortIfSubmittedBoardChanged('before_service_worker_submit')) {
+              return;
+            }
             const { usedSW } = await submitWorkflowToSW(
               parsedParams,
               referenceImages,
               retryContext,
               workflow,
-              { appendToCurrentChatSession }
+              {
+                appendToCurrentChatSession,
+                targetSessionId: targetChatSessionId,
+              }
             );
             if (usedSW) {
+              const submittedBoardStillCurrent = isSubmittedBoardCurrent(
+                submittedBoard,
+                submittedDraftBoardId,
+                (SelectionWatcherBoardRef.current as PlaitBoard | null) ?? null,
+                activeTaskbarBoardIdRef.current
+              );
+              if (board && publishedTaskTargetElementId) {
+                if (submittedBoardStillCurrent) {
+                  linkWorkflowCanvasAssociationsToTaskTarget(
+                    board,
+                    workflow,
+                    publishedTaskTargetElementId,
+                    submittedDraftBoardId
+                  );
+                } else {
+                  const context = getWorkflowCanvasAssociationLineContext(
+                    workflow,
+                    submittedDraftBoardId
+                  );
+                  if (context) {
+                    deferCanvasAssociationLines({
+                      ...context,
+                      resultElementId: publishedTaskTargetElementId,
+                      workflowId: workflow.id,
+                    });
+                  }
+                }
+              }
               finalizeSubmittedBoundDraft(false);
+              clearSubmittedCanvasAssociations();
               trackSubmitStatus('success', {
                 submitMode: 'service_worker',
                 submit_mode: 'service_worker',
@@ -4584,11 +6190,14 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
                 stepCount: workflow.steps.length,
                 step_count: workflow.steps.length,
               });
-              if (effectiveGenerationType === 'image') {
+              if (
+                effectiveGenerationType === 'image' &&
+                submittedBoardStillCurrent
+              ) {
                 applyCurrentImageAnchorPresentationState(board, 'accepted');
               }
-              if (effectivePrompt.trim()) {
-                const trimmedPrompt = effectivePrompt.trim();
+              if (promptForHistory.trim()) {
+                const trimmedPrompt = promptForHistory.trim();
                 const hasSelection = effectiveContent.length > 0;
                 addPromptHistory(
                   trimmedPrompt,
@@ -4617,9 +6226,18 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
               return;
             }
           } catch (swError) {
-            console.warn(
-              '[AIInputBar] SW execution failed, falling back to main thread:',
-              swError
+            // Submission now runs on the main thread; a failed preparation
+            // must reach the outer cleanup instead of starting generation.
+            console.warn('[AIInputBar] Workflow preparation failed:', swError);
+            throw swError;
+          }
+          if (abortIfSubmittedBoardChanged('service_worker_fallback')) return;
+          if (board && publishedTaskTargetElementId) {
+            linkWorkflowCanvasAssociationsToTaskTarget(
+              board,
+              workflow,
+              publishedTaskTargetElementId,
+              submittedDraftBoardId
             );
           }
           if (effectiveGenerationType === 'image') {
@@ -4627,8 +6245,8 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
           }
 
           // 工作流已提交，立即保存历史、清空输入并解锁，步骤执行在后台继续
-          if (effectivePrompt.trim()) {
-            const trimmedPrompt = effectivePrompt.trim();
+          if (promptForHistory.trim()) {
+            const trimmedPrompt = promptForHistory.trim();
             const hasSelection = effectiveContent.length > 0;
             addPromptHistory(
               trimmedPrompt,
@@ -4822,10 +6440,30 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
                 workflow,
                 step
               );
-              const result = (await mcpRegistry.executeTool(
-                { name: executableStep.mcp, arguments: executableStep.args },
-                executeOptions
-              )) as MCPTaskResult;
+              const result =
+                (executableStep.mcp === 'insert_to_canvas'
+                  ? getCanvasAssociationInsertionGuardResult(
+                      workflow,
+                      activeTaskbarBoardIdRef.current
+                    )
+                  : null) ||
+                ((await mcpRegistry.executeTool(
+                  { name: executableStep.mcp, arguments: executableStep.args },
+                  executeOptions
+                )) as MCPTaskResult);
+              if (
+                result.success &&
+                executableStep.mcp === 'insert_to_canvas' &&
+                board
+              ) {
+                linkWorkflowCanvasAssociationsToInsertionResult(
+                  board,
+                  workflow,
+                  result,
+                  activeTaskbarBoardIdRef.current,
+                  step.options?.batchIndex
+                );
+              }
               // 根据结果更新步骤状态
               const currentStepStatus = workflowControl
                 .getWorkflow()
@@ -4900,6 +6538,7 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
                       step.mcp === 'generate_text'
                         ? '将生成文本插入画布'
                         : '将 AI 回复插入画布',
+                    options: step.options ? { ...step.options } : undefined,
                     status: 'pending' as const,
                   };
                   workflowControl.addSteps([insertStep]);
@@ -4995,7 +6634,6 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
             // 所有步骤都已完成且没有创建任务，立即删除 WorkZone
             const workZoneId = currentWorkZoneIdRef.current;
             const imageAnchorIds = currentImageAnchorIdsRef.current;
-            const board = SelectionWatcherBoardRef.current;
             if ((workZoneId || imageAnchorIds.length > 0) && board) {
               // 检查是否所有后处理都已完成
               const allPostProcessingFinished = finalWorkflow?.steps.every(
@@ -5036,6 +6674,14 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
               }
             }
           }
+          if (
+            shouldClearSubmittedCanvasAssociations(
+              workflowFailed,
+              createdTaskIds.length
+            )
+          ) {
+            clearSubmittedCanvasAssociations();
+          }
           if (!workflowFailed) {
             finalizeSubmittedBoundDraft(false);
           }
@@ -5059,14 +6705,10 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
             error: error instanceof Error ? error.message : String(error),
           });
           if (effectiveGenerationType === 'image') {
-            applyCurrentImageAnchorPresentationState(
-              SelectionWatcherBoardRef.current,
-              'failed',
-              {
-                error:
-                  error instanceof Error ? error.message : '创建图片任务失败',
-              }
-            );
+            applyCurrentImageAnchorPresentationState(submittedBoard, 'failed', {
+              error:
+                error instanceof Error ? error.message : '创建图片任务失败',
+            });
           }
           workflowControl.abortWorkflow();
           submitLockRef.current = false;
@@ -5078,6 +6720,7 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
         boundImageTarget,
         boundImageTargetMode,
         boundTargetContent,
+        effectiveBoundTargetMode,
         generationContent,
         isSubmitting,
         selectedModel,
@@ -5096,7 +6739,9 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
         applyCurrentImageAnchorPresentationState,
         removeCurrentImageAnchor,
         onEnableRuntime,
+        applyCanvasAssociationRefs,
         applyTaskbarDraft,
+        language,
         readCurrentTaskbarDraft,
       ]
     );
@@ -5120,6 +6765,7 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
           selectedParams: params.selectedParams,
           selectedCount: params.selectedCount,
           appendToCurrentChatSession: true,
+          targetSessionId: params.targetSessionId,
         });
       };
 
@@ -5189,6 +6835,7 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
             referenceImages: retryContext.referenceImages,
             selection: retryContext.aiContext.selection,
             knowledgeContextRefs: retryContext.aiContext.knowledgeContextRefs,
+            canvasAssociations: retryContext.aiContext.canvasAssociations,
           },
           createdAt: Date.now(),
         };
@@ -5360,10 +7007,30 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
               workflowDefinition,
               step
             );
-            const result = (await mcpRegistry.executeTool(
-              { name: executableStep.mcp, arguments: executableStep.args },
-              executeOptions
-            )) as MCPTaskResult;
+            const result =
+              (executableStep.mcp === 'insert_to_canvas'
+                ? getCanvasAssociationInsertionGuardResult(
+                    workflowDefinition,
+                    activeTaskbarBoardIdRef.current
+                  )
+                : null) ||
+              ((await mcpRegistry.executeTool(
+                { name: executableStep.mcp, arguments: executableStep.args },
+                executeOptions
+              )) as MCPTaskResult);
+            if (
+              result.success &&
+              executableStep.mcp === 'insert_to_canvas' &&
+              board
+            ) {
+              linkWorkflowCanvasAssociationsToInsertionResult(
+                board,
+                workflowDefinition,
+                result,
+                activeTaskbarBoardIdRef.current,
+                step.options?.batchIndex
+              );
+            }
 
             const currentStepStatus = workflowControl
               .getWorkflow()
@@ -5434,6 +7101,7 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
                     step.mcp === 'generate_text'
                       ? '将生成文本插入画布'
                       : '将 AI 回复插入画布',
+                  options: step.options ? { ...step.options } : undefined,
                   status: 'pending' as const,
                 };
                 workflowControl.addSteps([insertStep]);
@@ -5562,6 +7230,57 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
           return;
         }
 
+        if (event.key === 'Backspace' || event.key === 'Delete') {
+          const input = inputRef.current;
+          const deletion = input
+            ? removeCanvasAssociationMentionAtBoundary(
+                promptRef.current,
+                canvasAssociationRefsRef.current,
+                input.selectionStart,
+                input.selectionEnd,
+                event.key === 'Backspace' ? 'backward' : 'forward'
+              )
+            : null;
+          if (deletion) {
+            event.preventDefault();
+            pendingCanvasAssociationEditRef.current = null;
+            dismissPromptSuggestion();
+            updateCanvasAssociationTrigger(null);
+            promptRef.current = deletion.prompt;
+            setPrompt(deletion.prompt);
+            const nextReferences = applyCanvasAssociationRefs(
+              deletion.references
+            );
+            saveActiveCanvasAssociationDraft(nextReferences);
+            requestAnimationFrame(() => {
+              const currentInput = inputRef.current;
+              if (!currentInput) return;
+              currentInput.focus();
+              currentInput.setSelectionRange(
+                deletion.cursorPosition,
+                deletion.cursorPosition
+              );
+            });
+            return;
+          }
+        }
+
+        if (canvasAssociationTriggerRef.current && event.key === 'Escape') {
+          event.preventDefault();
+          cancelCanvasAssociationPicking();
+          return;
+        }
+
+        if (
+          canvasAssociationTriggerRef.current &&
+          event.key === 'Enter' &&
+          !event.shiftKey &&
+          !event.altKey
+        ) {
+          event.preventDefault();
+          return;
+        }
+
         if (
           (modelDropdownOpen || paramsDropdownOpen || countDropdownOpen) &&
           (event.key === 'Enter' || event.key === 'Tab')
@@ -5584,9 +7303,7 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
         if (suggestionAction === 'reuse') {
           event.preventDefault();
           const nextPrompt = suggestion || '';
-          promptRef.current = nextPrompt;
-          setPrompt(nextPrompt);
-          dismissPromptSuggestion();
+          applyCanvasAssociationPromptOverwrite(nextPrompt);
           setIsInspirationSendGuideActive(false);
           requestAnimationFrame(() => {
             const input = inputRef.current;
@@ -5618,11 +7335,16 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
         }
       },
       [
+        applyCanvasAssociationRefs,
+        applyCanvasAssociationPromptOverwrite,
         countDropdownOpen,
+        cancelCanvasAssociationPicking,
         dismissPromptSuggestion,
         handleGenerate,
         modelDropdownOpen,
         paramsDropdownOpen,
+        saveActiveCanvasAssociationDraft,
+        updateCanvasAssociationTrigger,
       ]
     );
 
@@ -5651,15 +7373,202 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
       []
     );
 
+    const syncCanvasAssociationTrigger = useCallback(
+      (
+        input: HTMLTextAreaElement,
+        isComposing = false,
+        allowNewTrigger = false
+      ): boolean => {
+        const selectionStart = input.selectionStart;
+        const selectionEnd = input.selectionEnd;
+        let activeTrigger = canvasAssociationTriggerRef.current;
+
+        if (
+          activeTrigger &&
+          !isCanvasAssociationTriggerActive(
+            input.value,
+            selectionStart,
+            selectionEnd,
+            activeTrigger,
+            isComposing
+          )
+        ) {
+          updateCanvasAssociationTrigger(null);
+          activeTrigger = null;
+        }
+
+        if (
+          !canvasAssociationEnabled ||
+          isComposing ||
+          !allowNewTrigger ||
+          selectionStart === null ||
+          selectionStart !== selectionEnd
+        ) {
+          return Boolean(activeTrigger);
+        }
+
+        const trigger = findCanvasAssociationTrigger(
+          input.value,
+          selectionStart
+        );
+        if (!trigger) return false;
+
+        if (
+          activeTrigger?.start !== trigger.start ||
+          activeTrigger?.end !== trigger.end
+        ) {
+          updateCanvasAssociationTrigger(trigger);
+        }
+        setModelDropdownOpen(false);
+        setParamsDropdownOpen(false);
+        setCountDropdownOpen(false);
+        return true;
+      },
+      [canvasAssociationEnabled, updateCanvasAssociationTrigger]
+    );
+
+    const handleInputBeforeInput = useCallback(
+      (event: React.FormEvent<HTMLTextAreaElement>) => {
+        const input = event.currentTarget;
+        const nativeEvent = event.nativeEvent as InputEvent;
+        const inputType =
+          typeof nativeEvent.inputType === 'string'
+            ? nativeEvent.inputType
+            : '';
+        const data =
+          typeof nativeEvent.data === 'string' ? nativeEvent.data : null;
+        if (hasCanvasAssociationUntrustedInputType(inputType)) {
+          pendingCanvasAssociationUntrustedInputRef.current = true;
+        }
+        if (
+          isInputComposingRef.current &&
+          pendingCanvasAssociationUntrustedInputRef.current
+        ) {
+          compositionHasUntrustedEditRef.current = true;
+        }
+        pendingCanvasAssociationEditRef.current = {
+          selectionStart: input.selectionStart,
+          selectionEnd: input.selectionEnd,
+          inputType,
+          data,
+        };
+      },
+      []
+    );
+
     // 处理输入变化，检测特殊符号触发下拉菜单
     const handleInputChange = useCallback(
       (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-        const newValue = e.target.value;
-        const cursorPos = e.target.selectionStart || newValue.length;
+        const input = e.currentTarget;
+        const nativeInputEvent = e.nativeEvent as InputEvent;
+        const newValue = input.value;
+        const cursorPos = input.selectionStart ?? newValue.length;
+        const previousPrompt = promptRef.current;
+        const beforeInputSnapshot = pendingCanvasAssociationEditRef.current;
+        pendingCanvasAssociationEditRef.current = null;
+        const hasExplicitUntrustedInput =
+          pendingCanvasAssociationUntrustedInputRef.current;
+        clearPendingCanvasAssociationUntrustedInput();
+        const changeInputType =
+          typeof nativeInputEvent.inputType === 'string'
+            ? nativeInputEvent.inputType
+            : '';
+        const changeInputData =
+          typeof nativeInputEvent.data === 'string'
+            ? nativeInputEvent.data
+            : null;
+        const recoveryInputData = beforeInputSnapshot?.data || changeInputData;
+        const promptEdit =
+          resolveCanvasAssociationPromptEdit(
+            previousPrompt,
+            newValue,
+            beforeInputSnapshot
+          ) ??
+          resolveCanvasAssociationPromptEditFromInputEvent(
+            previousPrompt,
+            newValue,
+            {
+              selectionStart: input.selectionStart,
+              selectionEnd: input.selectionEnd,
+              inputType: changeInputType,
+              data: changeInputData,
+            }
+          );
+        const nextCanvasAssociationRefs =
+          reconcileCanvasAssociationRefsForPromptEdit(
+            previousPrompt,
+            newValue,
+            canvasAssociationRefsRef.current,
+            promptEdit,
+            {
+              allowUniqueMentionRecovery:
+                shouldRecoverCanvasAssociationMentions(
+                  beforeInputSnapshot?.inputType,
+                  changeInputType,
+                  recoveryInputData,
+                  hasExplicitUntrustedInput
+                ),
+              recoveryInputData,
+            }
+          );
         dismissPromptSuggestion();
         promptRef.current = newValue;
         setPrompt(newValue);
         setIsInspirationSendGuideActive(false);
+        if (
+          !areCanvasAssociationRefsEqual(
+            canvasAssociationRefsRef.current,
+            nextCanvasAssociationRefs
+          )
+        ) {
+          const nextReferences = applyCanvasAssociationRefs(
+            nextCanvasAssociationRefs
+          );
+          saveActiveCanvasAssociationDraft(nextReferences);
+        }
+
+        const isComposing = Boolean(
+          nativeInputEvent.isComposing || isInputComposingRef.current
+        );
+        const hasUntrustedInputType = hasCanvasAssociationUntrustedInputType(
+          beforeInputSnapshot?.inputType,
+          changeInputType
+        );
+        if (
+          isComposing &&
+          (hasUntrustedInputType || hasExplicitUntrustedInput)
+        ) {
+          compositionHasUntrustedEditRef.current = true;
+        }
+        if (
+          isComposing &&
+          !compositionHasUntrustedEditRef.current &&
+          (hasInsertedCanvasAssociationAtSign(
+            previousPrompt,
+            newValue,
+            promptEdit
+          ) ||
+            (typeof nativeInputEvent.data === 'string' &&
+              nativeInputEvent.data.includes('@')))
+        ) {
+          compositionInsertedAtSignRef.current = true;
+        }
+        const mayStartCanvasAssociationPicking =
+          shouldStartCanvasAssociationPicking(
+            beforeInputSnapshot?.inputType,
+            changeInputType,
+            beforeInputSnapshot?.data,
+            hasExplicitUntrustedInput
+          );
+        if (
+          syncCanvasAssociationTrigger(
+            input,
+            isComposing,
+            mayStartCanvasAssociationPicking
+          )
+        ) {
+          return;
+        }
 
         // 检测光标前最后一个字符
         if (cursorPos > 0) {
@@ -5677,8 +7586,72 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
           }
         }
       },
-      [dismissPromptSuggestion]
+      [
+        applyCanvasAssociationRefs,
+        clearPendingCanvasAssociationUntrustedInput,
+        dismissPromptSuggestion,
+        saveActiveCanvasAssociationDraft,
+        syncCanvasAssociationTrigger,
+      ]
     );
+
+    const handleInputSelect = useCallback(
+      (event: React.SyntheticEvent<HTMLTextAreaElement>) => {
+        syncCanvasAssociationTrigger(
+          event.currentTarget,
+          isInputComposingRef.current
+        );
+      },
+      [syncCanvasAssociationTrigger]
+    );
+
+    const handleInputCompositionStart = useCallback(() => {
+      isInputComposingRef.current = true;
+      compositionInsertedAtSignRef.current = false;
+      compositionHasUntrustedEditRef.current = false;
+      clearPendingCanvasAssociationUntrustedInput();
+      pendingCanvasAssociationEditRef.current = null;
+    }, [clearPendingCanvasAssociationUntrustedInput]);
+
+    const handleInputCompositionEnd = useCallback(
+      (event: React.CompositionEvent<HTMLTextAreaElement>) => {
+        isInputComposingRef.current = false;
+        const allowNewTrigger = shouldAllowCanvasAssociationCompositionTrigger(
+          compositionInsertedAtSignRef.current,
+          compositionHasUntrustedEditRef.current,
+          event.data
+        );
+        compositionInsertedAtSignRef.current = false;
+        compositionHasUntrustedEditRef.current = false;
+        clearPendingCanvasAssociationUntrustedInput();
+        syncCanvasAssociationTrigger(
+          event.currentTarget,
+          false,
+          allowNewTrigger
+        );
+      },
+      [
+        clearPendingCanvasAssociationUntrustedInput,
+        syncCanvasAssociationTrigger,
+      ]
+    );
+
+    const handleInputUntrustedInsertion = useCallback(() => {
+      if (pendingCanvasAssociationUntrustedInputTimerRef.current !== null) {
+        window.clearTimeout(
+          pendingCanvasAssociationUntrustedInputTimerRef.current
+        );
+      }
+      pendingCanvasAssociationUntrustedInputRef.current = true;
+      pendingCanvasAssociationUntrustedInputTimerRef.current =
+        window.setTimeout(() => {
+          pendingCanvasAssociationUntrustedInputRef.current = false;
+          pendingCanvasAssociationUntrustedInputTimerRef.current = null;
+        }, 0);
+      if (isInputComposingRef.current) {
+        compositionHasUntrustedEditRef.current = true;
+      }
+    }, []);
 
     const handleTaskbarControlPointerDown = useCallback(
       (event: React.PointerEvent<HTMLDivElement>) => {
@@ -5697,13 +7670,16 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
           generationType,
           model: selectedModel,
           profileId: selectedModelRef?.profileId || null,
-          hasAttachedContent: displayContent.length > 0,
-          attachedCount: displayContent.length,
+          hasAttachedContent:
+            displayContent.length > 0 || canvasAssociationRefs.length > 0,
+          attachedCount: displayContent.length + canvasAssociationRefs.length,
+          canvasAssociationCount: canvasAssociationRefs.length,
           knowledgeContextCount: knowledgeContextRefs.length,
           promptLengthBucket: getPromptLengthBucket(prompt.trim().length),
         }),
       [
         displayContent.length,
+        canvasAssociationRefs.length,
         generationType,
         knowledgeContextRefs.length,
         prompt,
@@ -5711,8 +7687,14 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
         selectedModelRef?.profileId,
       ]
     );
+    const isPptExplainerSkillSelected =
+      generationType === 'agent' && usesStrictPptModels;
     const canGenerate =
-      prompt.trim().length > 0 || generationContent.length > 0;
+      !canvasAssociationTrigger &&
+      (isPptExplainerSkillSelected ||
+        prompt.trim().length > 0 ||
+        generationContent.length > 0 ||
+        canvasAssociationRefs.length > 0);
     const shouldHighlightInspirationSend =
       isInspirationSendGuideActive && canGenerate && !isSubmitting;
     const showInspirationBoard = isCanvasEmpty === true;
@@ -5723,7 +7705,9 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
       prompt.length > 0 ||
       Boolean(promptSuggestion) ||
       displayContent.length > 0 ||
-      knowledgeContextRefs.length > 0;
+      knowledgeContextRefs.length > 0 ||
+      canvasAssociationRefs.length > 0 ||
+      Boolean(canvasAssociationTrigger);
     const shouldKeepExpanded =
       isPromptManuallyExpanded ||
       isFocused ||
@@ -5767,6 +7751,7 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
         }
 
         resizeAIInputTextarea(textarea, inputResizeMode);
+        if (promptHighlightLayerRef.current) promptHighlightLayerRef.current.scrollTop = textarea.scrollTop;
       });
 
       return () => {
@@ -5781,6 +7766,40 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
       followedBoundImageTarget,
       boundTargetFollowEnabled
     );
+    useEffect(() => {
+      const container = containerRef.current;
+      if (!container || typeof ResizeObserver === 'undefined') {
+        return;
+      }
+
+      let layoutFrameId: number | null = null;
+      const observer = new ResizeObserver(() => {
+        if (layoutFrameId !== null) return;
+        layoutFrameId = window.requestAnimationFrame(() => {
+          layoutFrameId = null;
+          setBoundInputLayoutTick((tick) => tick + 1);
+        });
+      });
+      observer.observe(container);
+
+      return () => {
+        observer.disconnect();
+        if (layoutFrameId !== null) {
+          window.cancelAnimationFrame(layoutFrameId);
+        }
+      };
+    }, []);
+    const inputViewport = useMemo(() => {
+      const viewport = window.visualViewport;
+      return {
+        left: viewport?.offsetLeft ?? 0,
+        top: viewport?.offsetTop ?? 0,
+        width: viewport?.width ?? window.innerWidth,
+        height: viewport?.height ?? window.innerHeight,
+      };
+      // Viewport events from SelectionWatcher invalidate these measurements.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [boundInputLayoutTick]);
     const boundInputPosition = useMemo(() => {
       if (!positionedBoundImageTarget) return null;
 
@@ -5812,49 +7831,225 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
       const viewportMargin = 12;
       const barWidth = getBoundTaskbarWidth(
         containerRef.current?.getBoundingClientRect().width,
-        window.innerWidth
+        inputViewport.width
       );
       const left = Math.min(
-        Math.max(targetCenterX, viewportMargin + barWidth / 2),
-        window.innerWidth - viewportMargin - barWidth / 2
+        Math.max(
+          targetCenterX,
+          inputViewport.left + viewportMargin + barWidth / 2
+        ),
+        inputViewport.left + inputViewport.width - viewportMargin - barWidth / 2
       );
-      const estimatedHeight = shouldKeepExpanded ? 112 : 76;
-      const belowTop = targetBottom + 8;
-      const top =
-        belowTop + estimatedHeight <= window.innerHeight - viewportMargin
-          ? belowTop
-          : Math.max(viewportMargin, targetTop - estimatedHeight - 8);
+      const estimatedHeight = getBoundTaskbarHeight(
+        containerRef.current?.getBoundingClientRect().height,
+        shouldKeepExpanded
+      );
+      const top = clampBoundTaskbarPosition(
+        targetTop,
+        targetBottom,
+        estimatedHeight,
+        inputViewport.height,
+        viewportMargin,
+        8,
+        inputViewport.top
+      );
 
       return { left, top };
-    }, [boundInputLayoutTick, positionedBoundImageTarget, shouldKeepExpanded]);
+      // ResizeObserver increments the tick to invalidate these DOM measurements.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [
+      boundInputLayoutTick,
+      inputViewport,
+      positionedBoundImageTarget,
+      shouldKeepExpanded,
+    ]);
 
+    const followControlsTarget =
+      followedBoundImageTarget &&
+      supportsBoundTargetFollowControls(followedBoundImageTarget.type)
+        ? followedBoundImageTarget
+        : null;
+    const followControlsTargetType = followControlsTarget?.type;
+    useEffect(() => {
+      setIsBoundTargetDismissMenuOpen(false);
+    }, [
+      boundTargetFollowEnabled,
+      followControlsTarget?.elementId,
+      isSubmitting,
+    ]);
+    const boundTargetFollowCopy = useMemo(() => {
+      if (language === 'zh') {
+        if (followControlsTargetType === 'text') {
+          return {
+            once: '本次只作上下文',
+            always: '对此文本始终只作上下文',
+            stop: '关闭任务栏跟随',
+          };
+        }
+        if (followControlsTargetType === 'video') {
+          return {
+            once: '本次只作参考视频',
+            always: '对此视频始终只作参考视频',
+            stop: '关闭任务栏跟随',
+          };
+        }
+        return {
+          once: '本次只作参考图',
+          always: '对此图始终只作参考图',
+          stop: '关闭任务栏跟随',
+        };
+      }
+
+      if (followControlsTargetType === 'text') {
+        return {
+          once: 'Use as context this time',
+          always: 'Always use this text as context',
+          stop: 'Stop following this text',
+        };
+      }
+      if (followControlsTargetType === 'video') {
+        return {
+          once: 'Use this video as a reference this time',
+          always: 'Always use this video as reference',
+          stop: 'Stop following this video',
+        };
+      }
+      return {
+        once: 'Use as reference this time',
+        always: 'Always use this image as reference',
+        stop: 'Stop following this image',
+      };
+    }, [followControlsTargetType, language]);
     const boundTargetDismissOptions = useMemo<DropdownOption[]>(
       () => [
         {
-          content:
-            language === 'zh' ? '本次只作参考图' : 'Use as reference this time',
+          content: boundTargetFollowCopy.once,
           value: 'once',
           prefixIcon: <Unlink size={14} aria-hidden="true" />,
         },
         {
-          content:
-            language === 'zh'
-              ? '对此图始终只作参考图'
-              : 'Always use this image as reference',
+          content: boundTargetFollowCopy.always,
           value: 'always',
           prefixIcon: <PinOff size={14} aria-hidden="true" />,
         },
       ],
-      [language]
+      [boundTargetFollowCopy]
     );
+    const boundTargetFollowActions = followControlsTarget ? (
+      <Popup
+        trigger="click"
+        placement="top-right"
+        overlayClassName="ai-input-bar__settings-popup"
+        content={
+          <div
+            className="ai-input-bar__settings-panel"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="ai-input-bar__settings-title">
+              {language === 'zh' ? '任务栏设置' : 'Taskbar settings'}
+            </div>
+            <div className="ai-input-bar__settings-row">
+              <span>
+                {language === 'zh' ? '任务栏跟随' : 'Taskbar follow'}
+              </span>
+              <Switch
+                size="small"
+                value={boundTargetFollowEnabled}
+                aria-label={language === 'zh' ? '任务栏跟随' : 'Taskbar follow'}
+                onChange={(checked) =>
+                  handleBoundTargetFollowChange(checked as boolean)
+                }
+              />
+            </div>
+            <div className="ai-input-bar__settings-row">
+              <span>
+                {language === 'zh'
+                  ? '点击图片后自动居中'
+                  : 'Center image after clicking'}
+              </span>
+              <Switch
+                size="small"
+                value={centerImageOnClickEnabled}
+                aria-label={language === 'zh' ? '点击图片后自动居中' : 'Center image after clicking'}
+                onChange={(checked) =>
+                  handleCenterImageOnClickChange(checked as boolean)
+                }
+              />
+            </div>
+            {boundTargetFollowEnabled ? (
+              <div className="ai-input-bar__settings-actions">
+                <button
+                  type="button"
+                  className="ai-input-bar__bound-dismiss-btn"
+                  aria-label={boundTargetFollowCopy.once}
+                  onClick={() => handleDismissBoundTarget('once')}
+                  disabled={isSubmitting}
+                >
+                  <X size={16} aria-hidden="true" />
+                </button>
+                <Dropdown
+                  options={boundTargetDismissOptions}
+                  trigger="hover"
+                  placement="top-right"
+                  minColumnWidth={190}
+                  popupProps={{
+                    visible: isBoundTargetDismissMenuOpen,
+                    onVisibleChange: setIsBoundTargetDismissMenuOpen,
+                  }}
+                  onClick={(data) =>
+                    handleDismissBoundTarget(data.value as BoundTargetDismissMode)
+                  }
+                >
+                  <button
+                    type="button"
+                    className="ai-input-bar__bound-dismiss-menu-btn"
+                    aria-label={
+                      language === 'zh' ? '选择跟随方式' : 'Choose follow behavior'
+                    }
+                    aria-haspopup="menu"
+                    aria-expanded={isBoundTargetDismissMenuOpen}
+                    onClick={() => setIsBoundTargetDismissMenuOpen(true)}
+                    disabled={isSubmitting}
+                  >
+                    <ChevronDown size={14} aria-hidden="true" />
+                  </button>
+                </Dropdown>
+              </div>
+            ) : null}
+          </div>
+        }
+      >
+        <button
+          type="button"
+          className="ai-input-bar__settings-btn"
+          aria-label={language === 'zh' ? '设置' : 'Settings'}
+          data-testid="ai-input-settings"
+          onMouseDown={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+          }}
+        >
+          <Settings2 size={18} aria-hidden="true" />
+        </button>
+      </Popup>
+    ) : null;
 
-    const boundInputStyle = boundInputPosition
-      ? ({
-          left: `${boundInputPosition.left}px`,
-          top: `${boundInputPosition.top}px`,
-          bottom: 'auto',
-        } as React.CSSProperties)
-      : undefined;
+    const boundInputStyle = {
+      '--ai-input-viewport-width': `${inputViewport.width}px`,
+      '--ai-input-viewport-height': `${inputViewport.height}px`,
+      '--ai-input-viewport-center': `${inputViewport.left + inputViewport.width / 2}px`,
+      '--ai-input-viewport-bottom-offset': `${Math.max(
+        0,
+        window.innerHeight - inputViewport.top - inputViewport.height
+      )}px`,
+      ...(boundInputPosition
+        ? {
+            left: `${boundInputPosition.left}px`,
+            top: `${boundInputPosition.top}px`,
+            bottom: 'auto',
+          }
+        : {}),
+    } as React.CSSProperties;
 
     const selectedContentPreview =
       displayContent.length > 0 ? (
@@ -5866,20 +8061,55 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
           removableStartIndex={uploadedContent.length}
         />
       ) : null;
+    const inputContentPreview = selectedContentPreview;
+    const canvasAssociationHighlightSegments = useMemo(
+      () =>
+        buildCanvasAssociationHighlightSegments(prompt, canvasAssociationRefs),
+      [canvasAssociationRefs, prompt]
+    );
     const composerPreview = boundTargetError ? (
       <>
         <div className="ai-input-bar__bound-status ai-input-bar__bound-status--failed">
           {boundTargetError}
         </div>
-        {selectedContentPreview}
+        {inputContentPreview}
       </>
     ) : (
-      selectedContentPreview
+      inputContentPreview
     );
 
     return (
       <>
         {confirmDialog}
+        {pptExplainerDialogOpen ? (
+          <PptExplainerDialog
+            open
+            sourceBoardId={currentBoardId}
+            initialTopic={promptRef.current}
+            initialSource={pptExplainerInitialSource}
+            currentPptFrameIds={pptExplainerFrameIds}
+            textModel={selectedModel}
+            textModelRef={selectedModelRef}
+            imageModel={selectedAgentImageModel}
+            imageModelRef={selectedAgentImageModelRef}
+            imageModels={visibleAgentImageModels}
+            onImageModelChange={(modelId, modelRef) =>
+              handleAgentMediaModelSelect('image', modelId, modelRef)
+            }
+            videoModel={selectedAgentVideoModel}
+            videoModelRef={selectedAgentVideoModelRef}
+            videoModels={visibleAgentVideoModels}
+            onVideoModelChange={(modelId, modelRef) =>
+              handleAgentMediaModelSelect('video', modelId, modelRef)
+            }
+            onCreate={handleCreatePptExplainerTask}
+            onClose={() => {
+              setPptExplainerDialogOpen(false);
+              setPptExplainerInitialSource(undefined);
+              setPptExplainerFrameIds(undefined);
+            }}
+          />
+        ) : null}
         <div
           ref={containerRef}
           className={classNames(
@@ -5889,6 +8119,9 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
             {
               'ai-input-bar--with-inspiration': showInspirationBoard,
               'ai-input-bar--bound-image': Boolean(boundInputPosition),
+              'ai-input-bar--canvas-association-picking': Boolean(
+                canvasAssociationTrigger
+              ),
             }
           )}
           style={boundInputStyle}
@@ -5897,8 +8130,12 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
         >
           <SelectionWatcher
             language={language}
+            semanticEditPrompt={prompt}
             currentBoardId={currentBoardId}
             onSelectionChange={handleSelectionChange}
+            canvasAssociationPicking={Boolean(canvasAssociationTrigger)}
+            canvasAssociationPickingToken={canvasAssociationTrigger}
+            onCanvasAssociationSelection={handleCanvasAssociationSelection}
             onBoundImageTargetChange={handleBoundImageTargetChange}
             onBoundInputViewportChange={handleBoundInputViewportChange}
             externalBoardRef={SelectionWatcherBoardRef}
@@ -5913,134 +8150,43 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
             onOpenPromptTool={handleOpenPromptToolFromInspiration}
           />
 
-          {followedBoundImageTarget ? (
-            <div className="ai-input-bar__bound-dismiss">
-              {boundTargetFollowEnabled &&
-              boundTargetDismissHintCount < BOUND_TARGET_DISMISS_HINT_LIMIT ? (
-                <div className="ai-input-bar__bound-dismiss-hint" role="status">
-                  {language === 'zh'
-                    ? '关闭跟随，当前图仍作参考图'
-                    : 'Stop following; keep this reference'}
-                </div>
-              ) : null}
-              <div className="ai-input-bar__bound-dismiss-actions">
-                <HoverTip
-                  content={
-                    boundTargetFollowEnabled
-                      ? language === 'zh'
-                        ? '任务栏跟随已开启'
-                        : 'Taskbar follow is on'
-                      : language === 'zh'
-                      ? '任务栏跟随已关闭'
-                      : 'Taskbar follow is off'
-                  }
-                  showArrow={false}
-                >
-                  <span
-                    className="ai-input-bar__bound-follow-toggle"
-                    onMouseDown={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                    }}
-                  >
-                    <Switch
-                      size="small"
-                      value={boundTargetFollowEnabled}
-                      label={
-                        <span className="ai-input-bar__bound-follow-label">
-                          {language === 'zh' ? '任务栏跟随' : 'Taskbar follow'}
-                        </span>
-                      }
-                      onChange={(checked) =>
-                        handleBoundTargetFollowChange(checked as boolean)
-                      }
-                    />
-                  </span>
-                </HoverTip>
-                {boundTargetFollowEnabled ? (
-                  <>
-                    <HoverTip
-                      content={
-                        language === 'zh'
-                          ? '关闭任务栏跟随'
-                          : 'Stop following this image'
-                      }
-                      showArrow={false}
-                    >
-                      <button
-                        type="button"
-                        className="ai-input-bar__bound-dismiss-btn"
-                        aria-label={
-                          language === 'zh'
-                            ? '本次只作参考图'
-                            : 'Use as reference this time'
-                        }
-                        onMouseDown={(event) => {
-                          event.preventDefault();
-                          event.stopPropagation();
-                        }}
-                        onClick={() => handleDismissBoundImageTarget('once')}
-                        disabled={isSubmitting}
-                      >
-                        <X size={16} aria-hidden="true" />
-                      </button>
-                    </HoverTip>
-                    <Dropdown
-                      options={boundTargetDismissOptions}
-                      trigger="click"
-                      placement="top-right"
-                      minColumnWidth={190}
-                      onClick={(data) =>
-                        handleDismissBoundImageTarget(
-                          data.value as BoundImageTargetDismissMode
-                        )
-                      }
-                    >
-                      <button
-                        type="button"
-                        className="ai-input-bar__bound-dismiss-menu-btn"
-                        aria-label={
-                          language === 'zh'
-                            ? '选择跟随方式'
-                            : 'Choose follow behavior'
-                        }
-                        onMouseDown={(event) => {
-                          event.preventDefault();
-                          event.stopPropagation();
-                        }}
-                        disabled={isSubmitting}
-                      >
-                        <ChevronDown size={14} aria-hidden="true" />
-                      </button>
-                    </Dropdown>
-                  </>
-                ) : null}
-              </div>
-            </div>
-          ) : null}
-
           <AIInputComposerShell
             variant="canvas"
             expanded={shouldKeepExpanded}
             longText={isPromptManuallyExpanded}
             disabled={isSubmitting}
+            className={classNames({
+              'ai-input-composer-shell--image-drag-active':
+                isDraggingInputFiles,
+            })}
+            {...inputFileDropTargetProps}
             leftTools={
               <>
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept="image/*"
+                  accept="image/*,video/*"
                   multiple
                   onChange={handleFileChange}
                   style={{ display: 'none' }}
                 />
 
                 <HoverTip
-                  content={language === 'zh' ? '上传图片' : 'Upload images'}
+                  content={
+                    language === 'zh'
+                      ? '上传图片或视频'
+                      : 'Upload images or videos'
+                  }
                   showArrow={false}
                 >
                   <button
                     className="ai-input-bar__upload-btn"
+                    aria-label={
+                      language === 'zh'
+                        ? '上传图片或视频'
+                        : 'Upload images or videos'
+                    }
+                    disabled={isSubmitting}
                     onMouseDown={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
@@ -6060,6 +8206,9 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
                 >
                   <button
                     className="ai-input-bar__library-btn"
+                    aria-label={
+                      language === 'zh' ? '从素材库选择' : 'Select from library'
+                    }
                     onMouseDown={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
@@ -6079,6 +8228,51 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
                   variant="compact"
                   className="ai-input-bar__knowledge-selector"
                 />
+
+                <HoverTip
+                  content={
+                    canvasAssociationEnabled
+                      ? language === 'zh'
+                        ? '关闭联想'
+                        : 'Disable associations'
+                      : language === 'zh'
+                      ? '开启联想'
+                      : 'Enable associations'
+                  }
+                  showArrow={false}
+                >
+                  <button
+                    type="button"
+                    className={classNames(
+                      'ai-input-bar__canvas-association-toggle',
+                      {
+                        'ai-input-bar__canvas-association-toggle--active':
+                          canvasAssociationEnabled,
+                        'ai-input-bar__canvas-association-toggle--picking':
+                          Boolean(canvasAssociationTrigger),
+                      }
+                    )}
+                    aria-label={
+                      canvasAssociationEnabled
+                        ? language === 'zh'
+                          ? '关闭联想'
+                          : 'Disable associations'
+                        : language === 'zh'
+                        ? '开启联想'
+                        : 'Enable associations'
+                    }
+                    aria-pressed={canvasAssociationEnabled}
+                    onMouseDown={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                    }}
+                    onClick={handleCanvasAssociationToggle}
+                    disabled={isSubmitting}
+                    data-track="ai_input_toggle_canvas_association"
+                  >
+                    <AtSign size={18} aria-hidden="true" />
+                  </button>
+                </HoverTip>
               </>
             }
             controls={
@@ -6110,6 +8304,9 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
                   onSelectModel={handleModelConfigSelect}
                   language={language}
                   models={currentModels}
+                  modelType={
+                    generationType === 'agent' ? 'text' : generationType
+                  }
                   header={
                     language === 'zh'
                       ? generationType === 'agent'
@@ -6140,11 +8337,27 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
                       }
                       language={language}
                       models={visibleAgentImageModels}
+                      modelType="image"
                       header={
                         language === 'zh'
                           ? '选择图片模型 (↑↓ Tab)'
                           : 'Select image model (↑↓ Tab)'
                       }
+                      emptyTriggerLabel={
+                        usesStrictPptModels
+                          ? language === 'zh'
+                            ? '暂无已配置图片模型'
+                            : 'No configured image model'
+                          : undefined
+                      }
+                      emptyText={
+                        usesStrictPptModels
+                          ? language === 'zh'
+                            ? '请先在供应商设置中获取并勾选图片模型'
+                            : 'Get and select an image model in provider settings first'
+                          : undefined
+                      }
+                      strictModelList={usesStrictPptModels}
                     />
                   )}
 
@@ -6165,11 +8378,27 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
                       }
                       language={language}
                       models={visibleAgentVideoModels}
+                      modelType="video"
                       header={
                         language === 'zh'
                           ? '选择视频模型 (↑↓ Tab)'
                           : 'Select video model (↑↓ Tab)'
                       }
+                      emptyTriggerLabel={
+                        usesStrictPptModels
+                          ? language === 'zh'
+                            ? '暂无已配置视频模型'
+                            : 'No configured video model'
+                          : undefined
+                      }
+                      emptyText={
+                        usesStrictPptModels
+                          ? language === 'zh'
+                            ? '请先在供应商设置中获取并勾选视频模型'
+                            : 'Get and select a video model in provider settings first'
+                          : undefined
+                      }
+                      strictModelList={usesStrictPptModels}
                     />
                   )}
 
@@ -6190,6 +8419,7 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
                       }
                       language={language}
                       models={visibleAgentAudioModels}
+                      modelType="audio"
                       header={
                         language === 'zh'
                           ? '选择音频模型 (↑↓ Tab)'
@@ -6233,6 +8463,9 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
                   'ai-input-bar__send-btn--guide':
                     shouldHighlightInspirationSend,
                 })}
+                aria-label={
+                  language === 'zh' ? '发送生成请求' : 'Send generation request'
+                }
                 onMouseDown={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
@@ -6277,6 +8510,28 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
                       </button>
                     </HoverTip>
                   ) : null}
+                  {canvasAssociationRefs.length > 0 ? (
+                    <div
+                      ref={promptHighlightLayerRef}
+                      className="ai-input-bar__highlight-layer"
+                      aria-hidden="true"
+                    >
+                      {canvasAssociationHighlightSegments.map(
+                        (segment, index) => (
+                          <span
+                            key={`${segment.referenceId || 'text'}-${index}`}
+                            className={
+                              segment.referenceId
+                                ? 'ai-input-bar__highlight-tag ai-input-bar__highlight-tag--association'
+                                : 'ai-input-bar__highlight-text'
+                            }
+                          >
+                            {segment.text}
+                          </span>
+                        )
+                      )}
+                    </div>
+                  ) : null}
                   <textarea
                     ref={inputRef}
                     className={classNames('ai-input-bar__input', {
@@ -6287,8 +8542,20 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
                         Boolean(promptSuggestion),
                     })}
                     value={prompt}
+                    onBeforeInput={handleInputBeforeInput}
                     onChange={handleInputChange}
+                    onSelect={handleInputSelect}
+                    onCompositionStart={handleInputCompositionStart}
+                    onCompositionEnd={handleInputCompositionEnd}
+                    onPaste={handleInputUntrustedInsertion}
+                    onDrop={handleInputUntrustedInsertion}
                     onKeyDown={handleKeyDown}
+                    onScroll={(event) => {
+                      if (promptHighlightLayerRef.current) {
+                        promptHighlightLayerRef.current.scrollTop =
+                          event.currentTarget.scrollTop;
+                      }
+                    }}
                     onFocus={handleFocus}
                     onBlur={handleBlur}
                     placeholder={
@@ -6339,31 +8606,34 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
                   language={language}
                   onBeforeOpenMyPrompts={onEnableToolWindows}
                   extraActions={
-                    shouldKeepExpanded ? (
-                      <PromptOptimizeButton
-                        className="prompt-history-popover__action-btn"
-                        originalPrompt={prompt}
-                        language={language}
-                        scenarioId={`ai-input.${generationType}` as const}
-                        disabled={isSubmitting}
-                        allowStructuredMode={true}
-                        onOpenChange={setIsPromptOptimizeOpen}
-                        onMouseDown={(event) => {
-                          event.preventDefault();
-                          event.stopPropagation();
-                          setIsFocused(true);
-                        }}
-                        onApply={(optimizedPrompt) => {
-                          dismissPromptSuggestion();
-                          promptRef.current = optimizedPrompt;
-                          setPrompt(optimizedPrompt);
-                          setIsFocused(true);
-                          requestAnimationFrame(() => {
-                            inputRef.current?.focus();
-                          });
-                        }}
-                      />
-                    ) : null
+                    <>
+                      {shouldKeepExpanded ? (
+                        <PromptOptimizeButton
+                          className="prompt-history-popover__action-btn"
+                          originalPrompt={prompt}
+                          language={language}
+                          scenarioId={`ai-input.${generationType}` as const}
+                          disabled={isSubmitting}
+                          allowStructuredMode={true}
+                          onOpenChange={setIsPromptOptimizeOpen}
+                          onMouseDown={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            setIsFocused(true);
+                          }}
+                          onApply={(optimizedPrompt) => {
+                            applyCanvasAssociationPromptOverwrite(
+                              optimizedPrompt
+                            );
+                            setIsFocused(true);
+                            requestAnimationFrame(() => {
+                              inputRef.current?.focus();
+                            });
+                          }}
+                        />
+                      ) : null}
+                      {boundTargetFollowActions}
+                    </>
                   }
                 />
               </>
@@ -6375,7 +8645,11 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
               isOpen={showMediaLibrary}
               onClose={() => setShowMediaLibrary(false)}
               mode={SelectionMode.SELECT}
-              filterType={AssetType.IMAGE}
+              allowedTypes={
+                generationType === 'video'
+                  ? AI_INPUT_VIDEO_ASSET_TYPES
+                  : AI_INPUT_IMAGE_ASSET_TYPES
+              }
               onSelect={handleMediaLibrarySelect}
               onSelectMultiple={handleMediaLibrarySelectMultiple}
               batchSelectButtonText="批量插入对话框"

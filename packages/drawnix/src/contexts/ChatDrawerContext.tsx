@@ -23,7 +23,12 @@ import type { ModelRef } from '../utils/settings-manager';
 import type { Task } from '../types/task.types';
 
 /** 选中内容类型 */
-export type SelectedContentType = 'image' | 'video' | 'graphics' | 'text';
+export type SelectedContentType =
+  | 'image'
+  | 'video'
+  | 'audio'
+  | 'graphics'
+  | 'text';
 
 /** 选中内容项 */
 export interface SelectedContentItem {
@@ -51,11 +56,16 @@ export interface DrawerGenerationSubmitParams {
   selectedModelRef?: ModelRef | null;
   selectedParams: Record<string, string>;
   selectedCount: number;
+  targetSessionId?: string | null;
 }
 
 export type DrawerGenerationSubmitter = (
   params: DrawerGenerationSubmitParams
 ) => Promise<void>;
+
+export type DrawerGenerationCredentialGate = (
+  params: DrawerGenerationSubmitParams
+) => Promise<boolean>;
 
 interface ChatDrawerContextValue {
   chatDrawerRef: MutableRefObject<ChatDrawerRef | null>;
@@ -82,12 +92,24 @@ interface ChatDrawerContextValue {
   registerGenerationSubmitter: (
     submitter: DrawerGenerationSubmitter | null
   ) => void;
+  /** 主画布生成提交器是否已经挂载 */
+  generationSubmitterReady: boolean;
   /** 从抽屉提交生成任务 */
   submitGenerationFromDrawer: (
     params: DrawerGenerationSubmitParams
   ) => Promise<boolean>;
+  /** 注册由抽屉负责的生成凭据引导 */
+  registerGenerationCredentialGate: (
+    gate: DrawerGenerationCredentialGate | null
+  ) => void;
+  /** 将缺少凭据的生成请求交给抽屉暂存并引导配置 */
+  submitGenerationWithCredentialGate: (
+    params: DrawerGenerationSubmitParams
+  ) => Promise<boolean>;
   /** 根据任务队列事件同步已有工作流消息 */
   syncWorkflowTaskUpdate: (task: Task) => boolean;
+  /** 获取当前会话 ID */
+  getActiveSessionId: () => string | null;
 }
 
 const ChatDrawerContext = createContext<ChatDrawerContextValue | null>(null);
@@ -110,6 +132,10 @@ export const ChatDrawerProvider: React.FC<ChatDrawerProviderProps> = ({
   const chatDrawerRef = useRef<ChatDrawerRef>(null);
   const retryHandlerRef = useRef<RetryHandler | null>(null);
   const generationSubmitterRef = useRef<DrawerGenerationSubmitter | null>(null);
+  const [generationSubmitterReady, setGenerationSubmitterReady] =
+    useState(false);
+  const generationCredentialGateRef =
+    useRef<DrawerGenerationCredentialGate | null>(null);
   const [selectedContent, setSelectedContent] = useState<SelectedContentItem[]>(
     []
   );
@@ -134,6 +160,7 @@ export const ChatDrawerProvider: React.FC<ChatDrawerProviderProps> = ({
   const registerGenerationSubmitter = useCallback(
     (submitter: DrawerGenerationSubmitter | null) => {
       generationSubmitterRef.current = submitter;
+      setGenerationSubmitterReady(Boolean(submitter));
     },
     []
   );
@@ -150,8 +177,29 @@ export const ChatDrawerProvider: React.FC<ChatDrawerProviderProps> = ({
     []
   );
 
+  const registerGenerationCredentialGate = useCallback(
+    (gate: DrawerGenerationCredentialGate | null) => {
+      generationCredentialGateRef.current = gate;
+    },
+    []
+  );
+
+  const submitGenerationWithCredentialGate = useCallback(
+    async (params: DrawerGenerationSubmitParams) => {
+      if (!generationCredentialGateRef.current) {
+        return false;
+      }
+      return generationCredentialGateRef.current(params);
+    },
+    []
+  );
+
   const syncWorkflowTaskUpdate = useCallback((task: Task) => {
     return chatDrawerRef.current?.syncWorkflowTaskUpdate(task) ?? false;
+  }, []);
+
+  const getActiveSessionId = useCallback(() => {
+    return chatDrawerRef.current?.getActiveSessionId() ?? null;
   }, []);
 
   return (
@@ -167,8 +215,12 @@ export const ChatDrawerProvider: React.FC<ChatDrawerProviderProps> = ({
         drawerWidth,
         setDrawerWidth,
         registerGenerationSubmitter,
+        generationSubmitterReady,
         submitGenerationFromDrawer,
+        registerGenerationCredentialGate,
+        submitGenerationWithCredentialGate,
         syncWorkflowTaskUpdate,
+        getActiveSessionId,
       }}
     >
       {children}
@@ -203,8 +255,12 @@ export function useChatDrawerControl() {
     drawerWidth,
     setDrawerWidth,
     registerGenerationSubmitter,
+    generationSubmitterReady,
     submitGenerationFromDrawer,
+    registerGenerationCredentialGate,
+    submitGenerationWithCredentialGate,
     syncWorkflowTaskUpdate,
+    getActiveSessionId,
   } = useChatDrawer();
 
   return {
@@ -267,10 +323,18 @@ export function useChatDrawerControl() {
     setSelectedContent,
     /** 注册抽屉生成提交处理器 */
     registerGenerationSubmitter,
+    /** 主画布生成提交器是否已经挂载 */
+    generationSubmitterReady,
     /** 从抽屉提交生成任务 */
     submitGenerationFromDrawer,
+    /** 注册由抽屉负责的生成凭据引导 */
+    registerGenerationCredentialGate,
+    /** 将缺少凭据的生成请求交给抽屉暂存并引导配置 */
+    submitGenerationWithCredentialGate,
     /** 根据任务队列事件同步已有工作流消息 */
     syncWorkflowTaskUpdate,
+    /** 获取当前会话 ID */
+    getActiveSessionId,
   };
 }
 

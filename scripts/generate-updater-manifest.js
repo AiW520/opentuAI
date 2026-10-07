@@ -3,7 +3,10 @@ const path = require('path');
 
 const dir = path.resolve(process.argv.find((value) => value.startsWith('--assets-dir='))?.slice(13) || '.');
 const tag = process.env.RELEASE_TAG;
-const repository = process.env.GITHUB_REPOSITORY || 'tuziapi/opentu';
+const repository =
+  process.env.OPENTU_UPDATER_REPOSITORY ||
+  process.env.GITHUB_REPOSITORY ||
+  'AiW520/opentuAI';
 
 if (!tag || !/^v\d+\.\d+\.\d+/.test(tag)) {
   console.error('RELEASE_TAG 必须是语义化版本标签');

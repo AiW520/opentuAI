@@ -3,6 +3,10 @@ import { isTauriEnvironment } from './tauri-api';
 declare global {
   interface Window {
     __OPENTU_DESKTOP_UPDATER_ACTIVE__?: boolean;
+    __OPENTU_DESKTOP_UPDATE_EVENT__?: {
+      version: string;
+      desktop: true;
+    };
   }
 }
 
@@ -18,9 +22,13 @@ export async function initializeDesktopUpdater(): Promise<void> {
     if (!update) return;
 
     window.__OPENTU_DESKTOP_UPDATER_ACTIVE__ = true;
+    window.__OPENTU_DESKTOP_UPDATE_EVENT__ = {
+      version: update.version,
+      desktop: true,
+    };
     window.dispatchEvent(
       new CustomEvent('sw-update-available', {
-        detail: { version: update.version, desktop: true },
+        detail: window.__OPENTU_DESKTOP_UPDATE_EVENT__,
       })
     );
 
@@ -32,6 +40,14 @@ export async function initializeDesktopUpdater(): Promise<void> {
       } catch (error) {
         console.error('[Desktop Updater] 安装更新失败:', error);
         window.__OPENTU_DESKTOP_UPDATER_ACTIVE__ = false;
+        window.dispatchEvent(
+          new CustomEvent('desktop-update-error', {
+            detail: { version: update.version },
+          })
+        );
+        window.addEventListener('user-confirmed-upgrade', install, {
+          once: true,
+        });
       }
     };
     window.addEventListener('user-confirmed-upgrade', install);

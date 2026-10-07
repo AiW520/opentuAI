@@ -6,18 +6,27 @@ import { RefreshIcon } from 'tdesign-icons-react';
 import { useI18n } from '../../i18n';
 import './version-update-prompt.scss';
 
+declare global {
+  interface Window {
+    __OPENTU_DESKTOP_UPDATE_EVENT__?: {
+      version: string;
+      desktop: true;
+    };
+  }
+}
+
 export const VersionUpdatePrompt: React.FC = () => {
   const [updateAvailable, setUpdateAvailable] = useState<{ version: string; changelog?: string[] } | null>(null);
+  const [updateError, setUpdateError] = useState(false);
   const [showChangelog, setShowChangelog] = useState(false);
   const { activeTasks } = useTaskQueue();
   // const { t } = useI18n(); // Assuming i18n is available, if not fallback to strings
 
   useEffect(() => {
-    // Listen for custom event from main.tsx
     const handleUpdateAvailable = async (event: Event) => {
       const customEvent = event as CustomEvent;
-      
       const newVersion = customEvent.detail?.version;
+      const isDesktopUpdate = customEvent.detail?.desktop === true;
       
       // 获取当前运行的版本（从 HTML meta 标签）
       const currentVersionMeta = document.querySelector('meta[name="app-version"]');
@@ -29,15 +38,19 @@ export const VersionUpdatePrompt: React.FC = () => {
         if (res.ok) {
           const data = await res.json();
           
-          // 如果当前版本已经是最新版本，不显示更新提示
-          if (currentVersion && data.version === currentVersion) {
+          // Tauri updater has already verified the signed update. Its version is
+          // authoritative; web version.json can belong to a different channel.
+          if (!isDesktopUpdate && currentVersion && data.version === currentVersion) {
             // console.log('[VersionUpdatePrompt] Already on latest version, skipping prompt');
             return;
           }
           
           // Use fetched data if versions match or if event didn't specify version
-          if (!newVersion || data.version === newVersion) {
-            setUpdateAvailable(data);
+          if (isDesktopUpdate || !newVersion || data.version === newVersion) {
+            setUpdateAvailable(
+              isDesktopUpdate ? { ...data, version: newVersion } : data
+            );
+            setUpdateError(false);
             return;
           }
         }
@@ -51,10 +64,24 @@ export const VersionUpdatePrompt: React.FC = () => {
       }
 
       // Fallback to event detail
-      setUpdateAvailable(customEvent.detail);
+      if (newVersion) {
+        setUpdateAvailable(customEvent.detail);
+        setUpdateError(false);
+      }
     };
 
+    const handleUpdateError = () => setUpdateError(true);
+
     window.addEventListener('sw-update-available', handleUpdateAvailable);
+    window.addEventListener('desktop-update-error', handleUpdateError);
+
+    const queuedUpdate = window.__OPENTU_DESKTOP_UPDATE_EVENT__;
+    if (queuedUpdate) {
+      delete window.__OPENTU_DESKTOP_UPDATE_EVENT__;
+      void handleUpdateAvailable(
+        new CustomEvent('sw-update-available', { detail: queuedUpdate })
+      );
+    }
 
     // 调试辅助：在开发环境下挂载手动触发方法
     if (process.env.NODE_ENV === 'development') {
@@ -69,6 +96,7 @@ export const VersionUpdatePrompt: React.FC = () => {
 
     return () => {
       window.removeEventListener('sw-update-available', handleUpdateAvailable);
+      window.removeEventListener('desktop-update-error', handleUpdateError);
     };
   }, []);
 
@@ -79,6 +107,26 @@ export const VersionUpdatePrompt: React.FC = () => {
     // Dispatch event to notify main.tsx to proceed with upgrade
     window.dispatchEvent(new CustomEvent('user-confirmed-upgrade'));
   };
+
+  const retryUpdate = () => {
+    setUpdateError(false);
+    window.dispatchEvent(new CustomEvent('user-confirmed-upgrade'));
+  };
+
+  if (updateError && updateAvailable) {
+    return (
+      <div className="version-update-prompt version-update-prompt--error">
+        <div className="version-update-prompt__content">
+          <span className="version-update-prompt__text">
+            更新 v{updateAvailable.version} 失败，请重试
+          </span>
+          <Button theme="primary" size="small" onClick={retryUpdate}>
+            重试
+          </Button>
+        </div>
+      </div>
+    );
+  }
 
   // Only show if update is available AND no active tasks
   if (!updateAvailable || activeTasks.length > 0) {

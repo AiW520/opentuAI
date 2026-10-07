@@ -4,6 +4,10 @@ const path = require('path');
 const output = process.argv.find((value) => value.startsWith('--output='))?.slice(9);
 const pubkey = process.env.TAURI_UPDATER_PUBLIC_KEY;
 const windowsSignCommand = process.env.OPENTU_WINDOWS_SIGN_COMMAND;
+const repository =
+  process.env.OPENTU_UPDATER_REPOSITORY ||
+  process.env.GITHUB_REPOSITORY ||
+  'AiW520/opentuAI';
 
 if (!output || !pubkey) {
   console.error('正式发布需要 --output 与 TAURI_UPDATER_PUBLIC_KEY');
@@ -15,7 +19,7 @@ const config = {
   plugins: {
     updater: {
       endpoints: [
-        'https://github.com/tuziapi/opentu/releases/latest/download/latest.json',
+        `https://github.com/${repository}/releases/latest/download/latest.json`,
       ],
       pubkey,
     },

@@ -2326,18 +2326,18 @@ $ai-input-small-expanded-max-height: $ai-input-small-line-height * 6 +
     padding: 0 8px;
     padding-left: calc(env(safe-area-inset-left, 0px) + 8px);
     padding-right: calc(env(safe-area-inset-right, 0px) + 8px);
-    // 移动端居中显示，工具栏在左下角不会遮挡
-    left: var(--ai-input-viewport-center, 50%);
+    // Reserve the left toolbar's width even when the composer is expanded.
+    left: calc(var(--ai-input-viewport-center, 50%) + 24px);
     transform: translateX(-50%);
-    max-width: calc(var(--ai-input-viewport-width, 100%) - 16px);
+    max-width: calc(var(--ai-input-viewport-width, 100%) - 64px);
     width: var(--ai-input-viewport-width, 100%);
 
     &--bound-image {
       top: auto !important;
       bottom: calc(var(--ai-input-viewport-bottom-offset, 0px) + env(safe-area-inset-bottom, 0px) + 8px) !important;
-      left: var(--ai-input-viewport-center, 50%) !important;
+      left: calc(var(--ai-input-viewport-center, 50%) + 24px) !important;
       width: var(--ai-input-viewport-width, 100%) !important;
-      max-width: calc(var(--ai-input-viewport-width, 100%) - 16px) !important;
+      max-width: calc(var(--ai-input-viewport-width, 100%) - 64px) !important;
     }
 
     &__bound-dismiss {

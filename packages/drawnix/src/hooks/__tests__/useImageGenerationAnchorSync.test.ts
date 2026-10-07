@@ -484,10 +484,56 @@ describe('useImageGenerationAnchorSync', () => {
     expect(anchor.phase).toBe('completed');
     expect(anchor.expectedInsertPosition).toEqual([200, 300]);
     expect(anchor.previewImageUrl).toBe('https://example.com/generated.png');
+    expect(anchor.resultElementId).toBe('image-1');
+    expect(anchor.prompt).toBe('生成图片');
+    expect(anchor.latestTaskId).toBe('task-1');
     expect(anchor.points).toEqual([
       [200, 300],
       [690, 578],
     ]);
+  });
+
+  it('does not restore the old target after follow-controlled insertion creates a new image', () => {
+    const board = createBoard(
+      createAnchor({
+        taskIds: ['task-1'],
+        targetElementId: 'image-target',
+      }),
+      [createImageElement({ id: 'image-new' })]
+    );
+    taskState.tasks = [
+      createTask({
+        status: TaskStatus.COMPLETED,
+        insertedToCanvas: true,
+        params: {
+          prompt: '生成新图片',
+          workflowId: 'wf-1',
+          size: '16x9',
+          replaceElementId: 'image-target',
+          targetElementId: 'image-target',
+          boundTargetFollowControlled: true,
+        },
+        result: {
+          url: 'https://example.com/generated-new.png',
+        },
+      }),
+    ];
+    completionState.byTaskId.set('task-1', {
+      taskId: 'task-1',
+      status: 'completed',
+      type: 'direct_insert',
+      firstElementPosition: [200, 300],
+      firstElementId: 'image-new',
+      firstElementSize: { width: 480, height: 270 },
+    });
+
+    renderHook(() => useImageGenerationAnchorSync({ board, enabled: true }));
+
+    const [anchor] = (
+      board as unknown as { children: PlaitImageGenerationAnchor[] }
+    ).children;
+    expect(anchor.resultElementId).toBe('image-new');
+    expect(anchor.targetElementId).toBeUndefined();
   });
 
   it('reconciles stale completed anchors before dispatching retry', () => {

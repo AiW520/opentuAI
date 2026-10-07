@@ -16,8 +16,23 @@ async function flushAsyncWork(turns = 6): Promise<void> {
   }
 }
 
-async function setupTaskQueueServiceHarness(statusSequence: TaskStatus[]) {
+async function setupTaskQueueServiceHarness(
+  statusSequence: TaskStatus[],
+  options: {
+    activeImageRoute?: {
+      profileId: string;
+      modelId: string;
+    };
+    customProfiles?: Array<{
+      id: string;
+      baseUrl: string;
+      apiKey: string;
+      enabled: boolean;
+    }>;
+  } = {}
+) {
   const storedTasks = new Map<string, any>();
+  const batchGuards = new Map<string, () => boolean>();
 
   const mocks = {
     saveTask: vi.fn(async (task: any) => {
@@ -34,7 +49,7 @@ async function setupTaskQueueServiceHarness(statusSequence: TaskStatus[]) {
     clearAllTasks: vi.fn(async () => {
       storedTasks.clear();
     }),
-    archiveTasks: vi.fn(async () => {}),
+    archiveTasks: vi.fn(async () => undefined),
     invalidateCache: vi.fn(),
     updateStatus: vi.fn(
       async (taskId: string, status: string, expectedRequestId?: string) => {
@@ -155,6 +170,8 @@ async function setupTaskQueueServiceHarness(statusSequence: TaskStatus[]) {
     })),
     cacheRemoteUrl: vi.fn(async (url: string) => url),
     stopImageRecovery: vi.fn(),
+    cancelPptExplainerRemoteTask: vi.fn(async () => undefined),
+    cleanupPptExplainerTask: vi.fn(async () => undefined),
   };
 
   const waitForTaskCompletion = vi.fn(async (taskId: string, options?: any) => {
@@ -205,7 +222,27 @@ async function setupTaskQueueServiceHarness(statusSequence: TaskStatus[]) {
   });
 
   vi.doMock('../media-executor/task-storage-writer', () => ({
+    isDocumentBatchTaskScopeCurrent: (task: Task) => !task.params.documentBatch || batchGuards.get(task.id)?.() === true,
+    registerDocumentBatchTaskGuard: (id: string, _identity: unknown, guard: () => boolean) => {
+      batchGuards.set(id, guard);
+      return () => batchGuards.delete(id);
+    },
     taskStorageWriter: {
+      prepareDocumentBatchTask: async (id: string, params: Task['params'], metadata: unknown, route: unknown) => {
+        if (!storedTasks.has(id)) storedTasks.set(id, {
+          id, type: 'image', status: 'pending', params: { ...params, documentBatch: metadata },
+          createdAt: Date.now(), updatedAt: Date.now(), invocationRoute: route,
+        });
+        return clone(storedTasks.get(id));
+      },
+      claimDocumentBatchTask: async (id: string, metadata: unknown, ticket: string) => {
+        const task = storedTasks.get(id);
+        if (!task || task.status !== 'pending') return null;
+        task.status = 'processing'; task.startedAt = Date.now();
+        task.params = { ...task.params, imageSubmissionAttempted: true,
+          documentBatch: { ...(metadata as object), dispatchTicket: ticket } };
+        return clone(task);
+      },
       saveTask: mocks.saveTask,
       getTask: mocks.getStoredTask,
       updateStatus: mocks.updateStatus,
@@ -242,6 +279,7 @@ async function setupTaskQueueServiceHarness(statusSequence: TaskStatus[]) {
   }));
 
   vi.doMock('../../utils/settings-manager', () => ({
+    LEGACY_DEFAULT_PROVIDER_PROFILE_ID: 'legacy-default',
     hasInvocationRouteCredentials: vi.fn(() => true),
     createModelRef: (profileId?: string | null, modelId?: string | null) =>
       profileId || modelId
@@ -250,22 +288,30 @@ async function setupTaskQueueServiceHarness(statusSequence: TaskStatus[]) {
             modelId: modelId || null,
           }
         : null,
-    resolveInvocationRoute: vi.fn((operation: string, routeModel?: any) => ({
-      routeType: operation,
-      modelId:
-        typeof routeModel === 'string'
-          ? routeModel
-          : routeModel?.modelId || 'default-model',
-      profileId:
-        typeof routeModel === 'object' ? routeModel?.profileId || null : null,
-      profileName: null,
-      providerType: null,
-      baseUrl: 'https://api.example.com/v1',
-      apiKey: 'test-key',
-      source: 'legacy',
-    })),
+    resolveInvocationRoute: vi.fn((operation: string, routeModel?: any) => {
+      const activeRoute =
+        operation === 'image' && !routeModel ? options.activeImageRoute : null;
+      return {
+        routeType: operation,
+        modelId:
+          activeRoute?.modelId ||
+          (typeof routeModel === 'string'
+            ? routeModel
+            : routeModel?.modelId || 'default-model'),
+        profileId:
+          activeRoute?.profileId ||
+          (typeof routeModel === 'object'
+            ? routeModel?.profileId || null
+            : null),
+        profileName: null,
+        providerType: null,
+        baseUrl: 'https://api.example.com/v1',
+        apiKey: 'test-key',
+        source: activeRoute ? 'preset' : 'legacy',
+      };
+    }),
     providerProfilesSettings: {
-      get: vi.fn(() => []),
+      get: vi.fn(() => options.customProfiles || []),
     },
     providerPricingCacheSettings: {
       get: vi.fn(() => []),
@@ -341,7 +387,7 @@ async function setupTaskQueueServiceHarness(statusSequence: TaskStatus[]) {
     };
   });
 
-  vi.doMock('../../utils/posthog-analytics', () => ({
+  vi.doMock('../../utils/umami-analytics', () => ({
     analytics: {
       track: vi.fn(),
       trackModelCall: vi.fn(),
@@ -363,11 +409,16 @@ async function setupTaskQueueServiceHarness(statusSequence: TaskStatus[]) {
     cacheRemoteUrl: mocks.cacheRemoteUrl,
   }));
 
+  vi.doMock('../ppt-explainer/orchestrator', () => ({
+    cancelPptExplainerRemoteTask: mocks.cancelPptExplainerRemoteTask,
+    cleanupPptExplainerTask: mocks.cleanupPptExplainerTask,
+  }));
+
   vi.doMock('../unified-cache-service', () => ({
     unifiedCacheService: {
       getImageForAI: vi.fn(),
       isCached: vi.fn(async () => false),
-      cacheMediaFromBlob: vi.fn(async () => {}),
+      cacheMediaFromBlob: vi.fn(async () => undefined),
     },
   }));
 
@@ -442,6 +493,64 @@ async function setupTaskQueueServiceHarness(statusSequence: TaskStatus[]) {
   };
 }
 
+function createPptExplainerLifecycleTask(
+  id: string,
+  status: TaskStatus,
+  options: {
+    remoteId?: string;
+    cancelBinding?: boolean;
+    updatedAt?: number;
+  } = {}
+): Task {
+  return {
+    id,
+    type: TaskType.VIDEO,
+    status,
+    remoteId: options.remoteId,
+    executionPhase:
+      status === TaskStatus.PROCESSING
+        ? options.remoteId
+          ? TaskExecutionPhase.POLLING
+          : TaskExecutionPhase.SUBMITTING
+        : undefined,
+    params: {
+      prompt: `PPT explainer lifecycle ${id}`,
+      model: 'video-model',
+      pptExplainer: {
+        schemaVersion: 1,
+        jobId: `job-${id}`,
+        source: 'pptx',
+        stage:
+          status === TaskStatus.CANCELLED
+            ? 'cancelled'
+            : status === TaskStatus.COMPLETED
+            ? 'completed'
+            : status === TaskStatus.FAILED
+            ? 'failed'
+            : options.remoteId
+            ? 'polling'
+            : 'submitting',
+        remoteId: options.remoteId,
+        idempotencyKey: `idem-${id}`,
+        diagnostics: [],
+        pptxImport: { status: 'completed' },
+        originalRoute: {
+          binding: {
+            pptExplainer: options.cancelBinding
+              ? { cancel: { method: 'POST' } }
+              : {},
+          },
+        },
+      },
+    },
+    createdAt: 1,
+    updatedAt: options.updatedAt ?? 1,
+    ...(status === TaskStatus.COMPLETED || status === TaskStatus.FAILED
+      ? { completedAt: options.updatedAt ?? 1 }
+      : {}),
+  };
+}
+
 describe('task-queue-service image edit retry persistence', () => {
   beforeEach(() => {
     vi.resetModules();
@@ -451,6 +560,41 @@ describe('task-queue-service image edit retry persistence', () => {
     vi.restoreAllMocks();
     vi.clearAllMocks();
     vi.unstubAllGlobals();
+  });
+
+  it('requires a fresh scheduler ticket for a prepared batch and cannot retry it generically', async () => {
+    const { taskQueueService, mocks } = await setupTaskQueueServiceHarness([TaskStatus.COMPLETED], {
+      customProfiles: [{ id: 'profile-a', enabled: true, apiKey: 'test-key', baseUrl: 'https://api.example.com/v1' }],
+    });
+    const metadata = { scopeId: 'scope', batchId: 'batch', workItemId: 'item', attemptId: 'attempt',
+      epoch: 1, dispatchOwner: 'document-batch' as const };
+    const prepared = await taskQueueService.prepareDocumentBatchTask('batch-task', {
+      prompt: 'batch image', modelRef: { profileId: 'profile-a', modelId: 'image' },
+    }, metadata);
+    expect(prepared.status).toBe(TaskStatus.PENDING);
+    expect(mocks.generateImage).not.toHaveBeenCalled();
+    const claimTicket = vi.fn(async () => false as const);
+    const options = { taskId: prepared.id, metadata, claimTicket, scopeGuard: () => true };
+    expect(await taskQueueService.startPreparedDocumentBatchTask(options)).toBe('rejected');
+    expect(mocks.generateImage).not.toHaveBeenCalled();
+    expect(await taskQueueService.startPreparedDocumentBatchTask({ ...options, claimTicket: async () => 'ticket' })).toBe('started');
+    await flushAsyncWork();
+    expect(mocks.generateImage).toHaveBeenCalledTimes(1);
+    expect(await taskQueueService.startPreparedDocumentBatchTask(options)).toBe('already-started');
+    taskQueueService.retryTask(prepared.id, { allowCompleted: true });
+    await flushAsyncWork();
+    expect(mocks.generateImage).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not consume a batch ticket after scope revocation', async () => {
+    const { taskQueueService, mocks } = await setupTaskQueueServiceHarness([TaskStatus.COMPLETED]);
+    const claimTicket = vi.fn(async () => 'ticket');
+    expect(await taskQueueService.startPreparedDocumentBatchTask({
+      taskId: 'missing', metadata: { scopeId: 'old', batchId: 'b', workItemId: 'w', attemptId: 'a',
+        epoch: 1, dispatchOwner: 'document-batch' }, claimTicket, scopeGuard: () => false,
+    })).toBe('rejected');
+    expect(claimTicket).not.toHaveBeenCalled();
+    expect(mocks.generateImage).not.toHaveBeenCalled();
   });
 
   it('reports only a live in-page execution as active', async () => {
@@ -1084,6 +1228,7 @@ describe('task-queue-service image edit retry persistence', () => {
 
   it('does not let a late analyzer response overwrite a newer same-id restore', async () => {
     vi.stubGlobal('window', {
+      location: { origin: 'http://localhost:7200' },
       setInterval: vi.fn(() => 1),
       clearInterval: vi.fn(),
     });
@@ -1411,6 +1556,7 @@ describe('task-queue-service image edit retry persistence', () => {
         referenceImages: ['data:image/png;base64,source'],
         maskImage: 'data:image/png;base64,mask',
         outputFormat: 'png',
+        resultVisibility: 'internal',
       },
       TaskType.IMAGE
     );
@@ -1435,10 +1581,146 @@ describe('task-queue-service image edit retry persistence', () => {
       referenceImages: ['data:image/png;base64,source'],
       maskImage: 'data:image/png;base64,mask',
       outputFormat: 'png',
+      resultVisibility: 'internal',
     });
     expect(storedTasks.get(task.id)?.params.referenceImages).toEqual([
       'data:image/png;base64,source',
     ]);
+  });
+
+  it.each([
+    [TaskStatus.COMPLETED, true],
+    [TaskStatus.COMPLETED, false],
+    [TaskStatus.FAILED, true],
+    [TaskStatus.FAILED, false],
+  ] as const)(
+    'preserves the video provider ID and route on %s writeback (progress callback: %s)',
+    async (terminalStatus, emitProgress) => {
+      const { taskQueueService, storedTasks, mocks } =
+        await setupTaskQueueServiceHarness([terminalStatus]);
+      const updates: Task[] = [];
+      const subscription = taskQueueService
+        .observeTaskUpdates()
+        .subscribe((event) => {
+          if (
+            event.type === 'taskUpdated' &&
+            event.task.status === terminalStatus
+          ) {
+            updates.push(clone(event.task));
+          }
+        });
+      let submittedRoute: Task['invocationRoute'];
+      mocks.generateVideo.mockImplementationOnce(async (params) => {
+        const storedTask = storedTasks.get(params.taskId);
+        submittedRoute = {
+          ...storedTask.invocationRoute,
+          providerProfileId: 'submitted-video-provider',
+          modelRef: {
+            profileId: 'submitted-video-provider',
+            modelId: 'MiniMax-H3',
+          },
+        };
+        // The executor writes submission metadata directly to IndexedDB.
+        storedTasks.set(params.taskId, {
+          ...storedTask,
+          remoteId: 'h3-provider-task-1',
+          invocationRoute: submittedRoute,
+        });
+      });
+      mocks.waitForTaskCompletion.mockImplementationOnce(
+        async (taskId, options) => {
+          const completedTask = {
+            ...clone(storedTasks.get(taskId)),
+            status: terminalStatus,
+            completedAt: Date.now(),
+            ...(terminalStatus === TaskStatus.COMPLETED
+              ? {
+                  result: {
+                    url: 'https://example.com/video.mp4',
+                    format: 'mp4',
+                    size: 1,
+                  },
+                }
+              : {
+                  error: {
+                    code: 'VIDEO_FAILED',
+                    message: 'Provider task failed',
+                  },
+                }),
+          };
+          storedTasks.set(taskId, clone(completedTask));
+          if (emitProgress) options?.onProgress?.(clone(completedTask));
+          return {
+            success: terminalStatus === TaskStatus.COMPLETED,
+            task: completedTask,
+          };
+        }
+      );
+
+      const task = taskQueueService.createTask(
+        { prompt: 'Generate a video', model: 'MiniMax-H3', size: '768P' },
+        TaskType.VIDEO
+      );
+      await flushAsyncWork();
+
+      expect(mocks.generateVideo).toHaveBeenCalledTimes(1);
+      expect(updates).toHaveLength(emitProgress ? 2 : 1);
+      for (const updatedTask of updates) {
+        expect(updatedTask).toMatchObject({
+          remoteId: 'h3-provider-task-1',
+          invocationRoute: submittedRoute,
+        });
+      }
+      expect(taskQueueService.getTask(task.id)).toMatchObject({
+        status: terminalStatus,
+        remoteId: 'h3-provider-task-1',
+        invocationRoute: submittedRoute,
+      });
+      expect(storedTasks.get(task.id)).toMatchObject({
+        status: terminalStatus,
+        remoteId: 'h3-provider-task-1',
+        invocationRoute: submittedRoute,
+      });
+      if (terminalStatus === TaskStatus.COMPLETED) {
+        const { getMiniMaxH3RegenerationEligibility } = await import(
+          '../minimax-h3-regeneration-service'
+        );
+        const completedTask = taskQueueService.getTask(task.id);
+        if (!completedTask) throw new Error('Completed video task is missing');
+        expect(
+          getMiniMaxH3RegenerationEligibility(completedTask)
+        ).toMatchObject({
+          supported: true,
+          enabled: true,
+        });
+      }
+      subscription.unsubscribe();
+    }
+  );
+
+  it('forwards internal result visibility when executing video tasks', async () => {
+    const { taskQueueService, mocks } = await setupTaskQueueServiceHarness([
+      TaskStatus.COMPLETED,
+    ]);
+
+    taskQueueService.createTask(
+      {
+        prompt: 'Generate an internal narration segment',
+        model: 'seedance-1.5-pro',
+        resultVisibility: 'internal',
+      },
+      TaskType.VIDEO
+    );
+
+    await flushAsyncWork();
+
+    expect(mocks.generateVideo).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: 'Generate an internal narration segment',
+        resultVisibility: 'internal',
+      }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
   });
 
   it('allows explicit manual retry for completed image tasks and clears stale results', async () => {
@@ -1479,6 +1761,255 @@ describe('task-queue-service image edit retry persistence', () => {
       prompt: 'Regenerate completed image',
       model: 'gpt-image-2',
       size: '1x1',
+    });
+  });
+
+  it('uses the invocation route model id when retrying a task with a stale model field', async () => {
+    const { taskQueueService, mocks } = await setupTaskQueueServiceHarness([
+      TaskStatus.COMPLETED,
+    ]);
+    const task: Task = {
+      id: 'task-image-edit-1',
+      type: TaskType.IMAGE,
+      status: TaskStatus.FAILED,
+      params: {
+        prompt: 'Retry routed image',
+        model: 'image2',
+      },
+      invocationRoute: {
+        operation: 'image',
+        providerProfileId: 'custom-profile',
+        modelId: 'gpt-image-2',
+        modelRef: {
+          profileId: 'custom-profile',
+          modelId: 'gpt-image-2',
+        },
+        binding: {
+          id: 'custom-profile:gpt-image-2:image',
+          protocol: 'openai.images.generations',
+          requestSchema: 'openai.image.gpt-generation-json',
+          responseSchema: 'openai.image.data',
+          submitPath: '/images/generations',
+        },
+      },
+      createdAt: 1,
+      updatedAt: 1,
+      error: {
+        code: 'EXECUTION_ERROR',
+        message: '分组 default 下模型 image2 无可用渠道 (distributor)',
+      },
+    };
+
+    taskQueueService.trackExternalTask(clone(task));
+    taskQueueService.retryTask(task.id);
+    await flushAsyncWork();
+
+    expect(mocks.generateImage).toHaveBeenCalledTimes(1);
+    expect(mocks.generateImage.mock.calls[0]?.[0]).toMatchObject({
+      model: 'gpt-image-2',
+      modelRef: {
+        profileId: 'custom-profile',
+        modelId: 'gpt-image-2',
+      },
+    });
+  });
+
+  it('uses the invocation route model id on the first execution of a new task', async () => {
+    const { taskQueueService, mocks } = await setupTaskQueueServiceHarness([
+      TaskStatus.COMPLETED,
+    ]);
+    const task: Task = {
+      id: 'task-image-first-execution',
+      type: TaskType.IMAGE,
+      status: TaskStatus.PROCESSING,
+      params: {
+        prompt: '兔子',
+        model: 'image2',
+      },
+      invocationRoute: {
+        operation: 'image',
+        providerProfileId: 'custom-profile',
+        modelId: 'gemini',
+        modelRef: {
+          profileId: 'custom-profile',
+          modelId: 'gemini',
+        },
+        binding: {
+          id: 'custom-profile:gemini:image:manual:custom-http',
+          protocol: 'custom-http',
+          requestSchema: 'custom-http',
+          responseSchema: 'custom-http.image',
+          submitPath: '/render',
+        },
+      },
+      createdAt: 1,
+      updatedAt: 1,
+    };
+
+    taskQueueService.trackExternalTask(clone(task));
+    await (taskQueueService as any).executeTask(
+      taskQueueService.getTask(task.id)
+    );
+    await flushAsyncWork();
+
+    expect(mocks.generateImage).toHaveBeenCalledTimes(1);
+    expect(mocks.generateImage.mock.calls[0]?.[0]).toMatchObject({
+      model: 'gemini',
+      modelRef: {
+        profileId: 'custom-profile',
+        modelId: 'gemini',
+      },
+    });
+  });
+
+  it('repairs an unrouted image2 channel failure with the active custom image route', async () => {
+    const { taskQueueService, mocks } = await setupTaskQueueServiceHarness(
+      [TaskStatus.COMPLETED],
+      {
+        activeImageRoute: {
+          profileId: 'custom-profile',
+          modelId: 'gpt-image-2',
+        },
+      }
+    );
+    const task: Task = {
+      id: 'task-image-edit-1',
+      type: TaskType.IMAGE,
+      status: TaskStatus.FAILED,
+      params: {
+        prompt: '兔子',
+        model: 'image2',
+      },
+      createdAt: 1,
+      updatedAt: 1,
+      error: {
+        code: 'EXECUTION_ERROR',
+        message: '分组 default 下模型 image2 无可用渠道 (distributor)',
+      },
+    };
+
+    taskQueueService.trackExternalTask(clone(task));
+    taskQueueService.retryTask(task.id);
+    await flushAsyncWork();
+
+    expect(mocks.generateImage).toHaveBeenCalledTimes(1);
+    expect(mocks.generateImage.mock.calls[0]?.[0]).toMatchObject({
+      model: 'gpt-image-2',
+      modelRef: {
+        profileId: 'custom-profile',
+        modelId: 'gpt-image-2',
+      },
+    });
+  });
+
+  it('repairs an unrouted custom model failure with its provider catalog binding', async () => {
+    const { taskQueueService, mocks } = await setupTaskQueueServiceHarness(
+      [TaskStatus.COMPLETED],
+      {
+        customProfiles: [
+          {
+            id: 'provider-custom',
+            baseUrl: 'https://api.example.com/v1',
+            apiKey: 'test-key',
+            enabled: true,
+          },
+        ],
+      }
+    );
+    const task: Task = {
+      id: 'task-custom-gemini-retry',
+      type: TaskType.IMAGE,
+      status: TaskStatus.FAILED,
+      params: {
+        prompt: '兔子',
+        model: 'gemini',
+      },
+      createdAt: 1,
+      updatedAt: 1,
+      error: {
+        code: 'EXECUTION_ERROR',
+        message: '分组 default 下模型 gemini 无可用渠道 (distributor)',
+      },
+    };
+
+    taskQueueService.trackExternalTask(clone(task));
+    taskQueueService.retryTask(task.id);
+    await flushAsyncWork();
+
+    expect(mocks.generateImage).toHaveBeenCalledTimes(1);
+    expect(mocks.generateImage.mock.calls[0]?.[0]).toMatchObject({
+      model: 'gemini',
+      modelRef: {
+        profileId: 'provider-custom',
+        modelId: 'gemini',
+      },
+    });
+  });
+
+  it('replaces a failed legacy-default route snapshot with the matching custom route', async () => {
+    const { taskQueueService, mocks } = await setupTaskQueueServiceHarness(
+      [TaskStatus.COMPLETED],
+      {
+        customProfiles: [
+          {
+            id: 'provider-custom',
+            baseUrl: 'https://api.example.com/v1',
+            apiKey: 'test-key',
+            enabled: true,
+          },
+        ],
+      }
+    );
+    const task: Task = {
+      id: 'task-custom-gemini-legacy-route-retry',
+      type: TaskType.IMAGE,
+      status: TaskStatus.FAILED,
+      params: {
+        prompt: '兔子',
+        model: 'gemini',
+      },
+      invocationRoute: {
+        operation: 'image',
+        providerProfileId: 'legacy-default',
+        modelId: 'gemini',
+        modelRef: {
+          profileId: 'legacy-default',
+          modelId: 'gemini',
+        },
+        binding: {
+          id: 'legacy-default:gemini:image',
+          protocol: 'google.generateContent',
+          requestSchema: 'google.gemini.generate-content.image',
+          responseSchema: 'google.gemini.generate-content',
+          submitPath: '/v1beta/models/{model}:generateContent',
+        },
+      },
+      createdAt: 1,
+      updatedAt: 1,
+      error: {
+        code: 'EXECUTION_ERROR',
+        message: '分组 default 下模型 gemini 无可用渠道 (distributor)',
+      },
+    };
+
+    taskQueueService.trackExternalTask(clone(task));
+    taskQueueService.retryTask(task.id);
+    await flushAsyncWork();
+
+    expect(mocks.generateImage).toHaveBeenCalledTimes(1);
+    expect(mocks.generateImage.mock.calls[0]?.[0]).toMatchObject({
+      model: 'gemini',
+      modelRef: {
+        profileId: 'provider-custom',
+        modelId: 'gemini',
+      },
+    });
+    expect(taskQueueService.getTask(task.id)?.invocationRoute).toMatchObject({
+      providerProfileId: 'provider-custom',
+      modelRef: {
+        profileId: 'provider-custom',
+        modelId: 'gemini',
+      },
     });
   });
 
@@ -1721,5 +2252,400 @@ describe('task-queue-service image edit retry persistence', () => {
     ).toBe('happyhorse-profile');
 
     subscription.unsubscribe();
+  });
+
+  it('cancels a PPT explainer locally before invoking optional remote cancel', async () => {
+    const { taskQueueService, mocks } = await setupTaskQueueServiceHarness([
+      TaskStatus.COMPLETED,
+    ]);
+    let statusObservedByRemoteCancel: TaskStatus | undefined;
+    mocks.cancelPptExplainerRemoteTask.mockImplementationOnce(async (task) => {
+      statusObservedByRemoteCancel = task.status;
+    });
+    const task: Task = {
+      id: 'ppt-explainer-cancel',
+      type: TaskType.VIDEO,
+      status: TaskStatus.PROCESSING,
+      remoteId: 'remote-cancel',
+      executionPhase: TaskExecutionPhase.POLLING,
+      params: {
+        prompt: 'PPT explainer cancellation',
+        model: 'video-model',
+        pptExplainer: {
+          schemaVersion: 1,
+          jobId: 'job-cancel',
+          stage: 'polling',
+          remoteId: 'remote-cancel',
+          idempotencyKey: 'idem-cancel',
+          diagnostics: [],
+          originalRoute: { binding: { pptExplainer: {} } },
+        },
+      },
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    taskQueueService.trackExternalTask(clone(task));
+
+    taskQueueService.cancelTask(task.id);
+
+    expect(taskQueueService.getTask(task.id)).toMatchObject({
+      status: TaskStatus.CANCELLED,
+      params: {
+        pptExplainer: {
+          stage: 'cancelled',
+          remoteId: 'remote-cancel',
+          idempotencyKey: 'idem-cancel',
+          diagnostics: ['供应商未声明远端取消，远端任务可能继续执行和计费'],
+        },
+      },
+    });
+    await vi.waitFor(() =>
+      expect(mocks.cancelPptExplainerRemoteTask).toHaveBeenCalledTimes(1)
+    );
+    expect(statusObservedByRemoteCancel).toBe(TaskStatus.CANCELLED);
+
+    taskQueueService.retryTask(task.id);
+    expect(taskQueueService.getTask(task.id)?.status).toBe(
+      TaskStatus.CANCELLED
+    );
+
+    taskQueueService.deleteTask(task.id);
+    await vi.waitFor(() =>
+      expect(mocks.cleanupPptExplainerTask).toHaveBeenCalledTimes(1)
+    );
+    expect(mocks.cancelPptExplainerRemoteTask).toHaveBeenCalledTimes(1);
+  });
+
+  it('persists a safe warning when remote PPT cancellation fails', async () => {
+    const { taskQueueService, storedTasks, mocks } =
+      await setupTaskQueueServiceHarness([TaskStatus.COMPLETED]);
+    mocks.cancelPptExplainerRemoteTask.mockRejectedValueOnce(
+      new Error('HTTP 500 provider response contains secret-token')
+    );
+    const task = createPptExplainerLifecycleTask(
+      'ppt-explainer-cancel-failure',
+      TaskStatus.PROCESSING,
+      { remoteId: 'remote-cancel-failure', cancelBinding: true }
+    );
+    taskQueueService.trackExternalTask(clone(task));
+
+    taskQueueService.cancelTask(task.id);
+
+    await vi.waitFor(() =>
+      expect(mocks.cancelPptExplainerRemoteTask).toHaveBeenCalledTimes(1)
+    );
+    await vi.waitFor(() => {
+      const diagnostics = (
+        taskQueueService.getTask(task.id)?.params.pptExplainer as {
+          diagnostics?: string[];
+        }
+      )?.diagnostics;
+      expect(diagnostics).toEqual([
+        '远端取消失败，远端任务可能继续执行和计费；可再次尝试取消',
+      ]);
+      expect(diagnostics?.join('\n')).not.toContain('secret-token');
+    });
+    expect(taskQueueService.getTask(task.id)?.status).toBe(
+      TaskStatus.CANCELLED
+    );
+    await vi.waitFor(() => {
+      const storedState = storedTasks.get(task.id)?.params?.pptExplainer as
+        | { diagnostics?: string[] }
+        | undefined;
+      expect(storedState?.diagnostics).toEqual([
+        '远端取消失败，远端任务可能继续执行和计费；可再次尝试取消',
+      ]);
+      expect(storedState?.diagnostics?.join('\n')).not.toContain(
+        'secret-token'
+      );
+      expect(storedTasks.get(task.id)?.status).toBe(TaskStatus.CANCELLED);
+    });
+  });
+
+  it('warns about an unknown remote submission when cancelling without remoteId', async () => {
+    const { taskQueueService, mocks } = await setupTaskQueueServiceHarness([
+      TaskStatus.COMPLETED,
+    ]);
+    const task = createPptExplainerLifecycleTask(
+      'ppt-explainer-missing-remote-id',
+      TaskStatus.PROCESSING,
+      { cancelBinding: true }
+    );
+    taskQueueService.trackExternalTask(clone(task));
+
+    taskQueueService.cancelTask(task.id);
+
+    expect(taskQueueService.getTask(task.id)).toMatchObject({
+      status: TaskStatus.CANCELLED,
+      params: {
+        pptExplainer: {
+          diagnostics: [
+            expect.stringContaining('提交结果可能未知'),
+            expect.stringContaining('远端任务可能继续执行和计费'),
+          ],
+        },
+      },
+    });
+    await vi.waitFor(() =>
+      expect(mocks.cancelPptExplainerRemoteTask).toHaveBeenCalledTimes(1)
+    );
+  });
+
+  it('cancels an active PPT explainer before deleting it', async () => {
+    const { taskQueueService, mocks } = await setupTaskQueueServiceHarness([
+      TaskStatus.COMPLETED,
+    ]);
+    const task = createPptExplainerLifecycleTask(
+      'ppt-explainer-active-delete',
+      TaskStatus.PROCESSING,
+      { remoteId: 'remote-delete', cancelBinding: true }
+    );
+    taskQueueService.trackExternalTask(clone(task));
+
+    taskQueueService.deleteTask(task.id);
+
+    expect(taskQueueService.getTask(task.id)).toBeUndefined();
+    await vi.waitFor(() => {
+      expect(mocks.cancelPptExplainerRemoteTask).toHaveBeenCalledWith(
+        expect.objectContaining({ id: task.id })
+      );
+      expect(mocks.deleteTask).toHaveBeenCalledWith(task.id);
+    });
+    expect(mocks.cleanupPptExplainerTask).not.toHaveBeenCalled();
+  });
+
+  it('cleans a terminal PPT explainer when deleting without remote cancel', async () => {
+    const { taskQueueService, mocks } = await setupTaskQueueServiceHarness([
+      TaskStatus.COMPLETED,
+    ]);
+    const task = createPptExplainerLifecycleTask(
+      'ppt-explainer-failed-delete',
+      TaskStatus.FAILED,
+      { remoteId: 'remote-failed' }
+    );
+    taskQueueService.trackExternalTask(clone(task));
+
+    taskQueueService.deleteTask(task.id);
+
+    await vi.waitFor(() =>
+      expect(mocks.cleanupPptExplainerTask).toHaveBeenCalledWith(
+        expect.objectContaining({ id: task.id })
+      )
+    );
+    expect(mocks.cancelPptExplainerRemoteTask).not.toHaveBeenCalled();
+  });
+
+  it('cancels active and cleans terminal PPT explainers before clearing all tasks', async () => {
+    const { taskQueueService, mocks } = await setupTaskQueueServiceHarness([
+      TaskStatus.COMPLETED,
+    ]);
+    const active = createPptExplainerLifecycleTask(
+      'ppt-explainer-clear-active',
+      TaskStatus.PROCESSING,
+      { remoteId: 'remote-clear', cancelBinding: true }
+    );
+    const terminal = createPptExplainerLifecycleTask(
+      'ppt-explainer-clear-failed',
+      TaskStatus.FAILED
+    );
+    const normal: Task = {
+      id: 'normal-clear-active',
+      type: TaskType.VIDEO,
+      status: TaskStatus.PROCESSING,
+      params: { prompt: 'normal video', model: 'video-model' },
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    taskQueueService.trackExternalTask(clone(active));
+    taskQueueService.trackExternalTask(clone(terminal));
+    taskQueueService.trackExternalTask(clone(normal));
+
+    await taskQueueService.clearAllTasks();
+
+    expect(mocks.cancelPptExplainerRemoteTask).toHaveBeenCalledTimes(1);
+    expect(mocks.cancelPptExplainerRemoteTask).toHaveBeenCalledWith(
+      expect.objectContaining({ id: active.id })
+    );
+    expect(mocks.cleanupPptExplainerTask).toHaveBeenCalledTimes(1);
+    expect(mocks.cleanupPptExplainerTask).toHaveBeenCalledWith(
+      expect.objectContaining({ id: terminal.id })
+    );
+    expect(taskQueueService.getAllTasks()).toEqual([]);
+  });
+
+  it('cleans a failed PPT explainer when retention archives it', async () => {
+    const { taskQueueService, mocks } = await setupTaskQueueServiceHarness([
+      TaskStatus.COMPLETED,
+    ]);
+    const archived = createPptExplainerLifecycleTask(
+      'ppt-explainer-retention-archive',
+      TaskStatus.FAILED,
+      { updatedAt: 1 }
+    );
+    const ordinaryTasks: Task[] = Array.from({ length: 100 }, (_, index) => ({
+      id: `ordinary-retention-${index}`,
+      type: TaskType.IMAGE,
+      status: TaskStatus.COMPLETED,
+      params: { prompt: `ordinary ${index}`, model: 'image-model' },
+      createdAt: index + 2,
+      updatedAt: index + 2,
+      completedAt: index + 2,
+    }));
+
+    await taskQueueService.restoreTasks([
+      clone(archived),
+      ...ordinaryTasks.map(clone),
+    ]);
+
+    await vi.waitFor(() => {
+      expect(mocks.archiveTasks).toHaveBeenCalledWith([archived.id]);
+      expect(mocks.cleanupPptExplainerTask).toHaveBeenCalledWith(
+        expect.objectContaining({ id: archived.id })
+      );
+    });
+    expect(mocks.cancelPptExplainerRemoteTask).not.toHaveBeenCalled();
+  });
+
+  it('retries a transient 429 PPT explainer poll failure by preserving remoteId and idempotency', async () => {
+    const { taskQueueService } = await setupTaskQueueServiceHarness([
+      TaskStatus.COMPLETED,
+    ]);
+    const task: Task = {
+      id: 'ppt-explainer-remote-retry',
+      type: TaskType.VIDEO,
+      status: TaskStatus.FAILED,
+      remoteId: 'remote-retry',
+      executionPhase: TaskExecutionPhase.POLLING,
+      params: {
+        prompt: 'PPT explainer remote retry',
+        model: 'video-model',
+        pptExplainer: {
+          schemaVersion: 1,
+          jobId: 'job-retry',
+          stage: 'failed',
+          remoteId: 'remote-retry',
+          idempotencyKey: 'stable-idempotency-key',
+          slides: [],
+        },
+      },
+      createdAt: 1,
+      updatedAt: 1,
+      error: {
+        code: 'http_error',
+        message: 'PPT 讲解视频任务查询失败：HTTP 429 请求过于频繁',
+      },
+    };
+    taskQueueService.trackExternalTask(clone(task));
+
+    taskQueueService.retryTask(task.id);
+
+    expect(taskQueueService.getTask(task.id)).toMatchObject({
+      status: TaskStatus.PROCESSING,
+      remoteId: 'remote-retry',
+      executionPhase: TaskExecutionPhase.POLLING,
+      params: {
+        pptExplainer: {
+          stage: 'polling',
+          remoteId: 'remote-retry',
+          idempotencyKey: 'stable-idempotency-key',
+        },
+      },
+    });
+  });
+
+  it('retries an explicitly failed remote PPT explainer with a fresh submission identity', async () => {
+    const { taskQueueService } = await setupTaskQueueServiceHarness([
+      TaskStatus.COMPLETED,
+    ]);
+    const task: Task = {
+      id: 'ppt-explainer-remote-terminal-retry',
+      type: TaskType.VIDEO,
+      status: TaskStatus.FAILED,
+      remoteId: 'remote-terminal',
+      executionPhase: TaskExecutionPhase.POLLING,
+      params: {
+        prompt: 'PPT explainer remote terminal retry',
+        model: 'video-model',
+        pptExplainer: {
+          schemaVersion: 1,
+          jobId: 'job-remote-terminal',
+          source: 'pptx',
+          stage: 'failed',
+          remoteId: 'remote-terminal',
+          idempotencyKey: 'used-idempotency-key',
+          executionAttempt: 3,
+          slides: [
+            {
+              pageIndex: 1,
+              snapshotUrl: '/slide-1.png',
+              turns: [{ speakerId: 'host', text: '第一页讲解' }],
+            },
+          ],
+        },
+      },
+      createdAt: 1,
+      updatedAt: 1,
+      error: { code: 'remote_failed', message: 'provider rejected job' },
+    };
+    taskQueueService.trackExternalTask(clone(task));
+
+    taskQueueService.retryTask(task.id);
+
+    const retried = taskQueueService.getTask(task.id);
+    expect(retried).toMatchObject({
+      status: TaskStatus.PROCESSING,
+      executionPhase: TaskExecutionPhase.SUBMITTING,
+      params: {
+        pptExplainer: {
+          stage: 'submitting',
+          idempotencyKey: 'job-remote-terminal-retry-4',
+          executionAttempt: 3,
+        },
+      },
+    });
+    expect(retried?.remoteId).toBeUndefined();
+    expect(
+      (retried?.params.pptExplainer as { remoteId?: string }).remoteId
+    ).toBeUndefined();
+  });
+
+  it('retries a failed topic preparation from its recoverable preparing stage', async () => {
+    const { taskQueueService } = await setupTaskQueueServiceHarness([
+      TaskStatus.COMPLETED,
+    ]);
+    const task: Task = {
+      id: 'ppt-explainer-preparing-retry',
+      type: TaskType.VIDEO,
+      status: TaskStatus.FAILED,
+      params: {
+        prompt: 'PPT explainer preparing retry',
+        model: 'video-model',
+        pptExplainer: {
+          schemaVersion: 1,
+          jobId: 'job-preparing',
+          source: 'topic',
+          stage: 'failed',
+          idempotencyKey: 'idem-preparing',
+          slides: [],
+        },
+      },
+      createdAt: 1,
+      updatedAt: 1,
+      error: { code: 'PREPARE_FAILED', message: 'outline interrupted' },
+    };
+    taskQueueService.trackExternalTask(clone(task));
+
+    taskQueueService.retryTask(task.id);
+
+    expect(taskQueueService.getTask(task.id)).toMatchObject({
+      status: TaskStatus.PROCESSING,
+      executionPhase: TaskExecutionPhase.SUBMITTING,
+      params: {
+        pptExplainer: {
+          stage: 'preparing',
+          idempotencyKey: 'idem-preparing',
+        },
+      },
+    });
   });
 });

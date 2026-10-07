@@ -20,6 +20,9 @@ import {
   markTabSyncVersion,
   requestServiceWorkerIdlePrefetch,
   MessagePlugin,
+  hasTuziSystemToken,
+  isTuziEmbeddedMode,
+  syncTuziSessionProvidersOnStartup,
 } from '@drawnix/drawnix/runtime';
 import type {
   PlaitBoard,
@@ -69,6 +72,10 @@ type BoardCloseSnapshot = BoardPersistencePayload & {
 type BootController = {
   markReady: () => void;
   markError: (message?: string) => void;
+  setProgress?: (
+    progress?: number,
+    options?: { tip?: string; source?: 'phase' }
+  ) => void;
 };
 
 function getBootController(): BootController | undefined {
@@ -77,6 +84,46 @@ function getBootController(): BootController | undefined {
   }
   return (window as Window & { __OPENTU_BOOT__?: BootController })
     .__OPENTU_BOOT__;
+}
+
+function updateBootStatus(options: { progress?: number; tip?: string }): void {
+  getBootController()?.setProgress?.(options.progress, {
+    tip: options.tip,
+    source: 'phase',
+  });
+}
+
+let tuziStartupPromise: Promise<boolean> | null = null;
+
+function shouldWaitForTuziStartup(): boolean {
+  return isTuziEmbeddedMode() && hasTuziSystemToken();
+}
+
+function getTuziStartupPromise(): Promise<boolean> | null {
+  if (!shouldWaitForTuziStartup()) {
+    return null;
+  }
+  if (!tuziStartupPromise) {
+    updateBootStatus({
+      progress: 88,
+      tip: '正在加载 Tuzi 供应商和模型，请稍候...',
+    });
+    tuziStartupPromise = syncTuziSessionProvidersOnStartup();
+  }
+  return tuziStartupPromise;
+}
+
+async function waitForTuziStartup(
+  startupPromise: Promise<boolean> | null
+): Promise<void> {
+  if (!startupPromise) return;
+  const synchronized = await startupPromise;
+  updateBootStatus({
+    progress: synchronized ? 96 : 92,
+    tip: synchronized
+      ? 'Tuzi 供应商模型已就绪，正在进入工作台...'
+      : 'Tuzi 数据同步未完成，正在进入工作台...',
+  });
 }
 
 /**
@@ -97,6 +144,7 @@ function updateBoardIdInUrl(
   replace = false
 ): void {
   const url = new URL(window.location.href);
+  if (url.pathname === '/workflow' || url.pathname.startsWith('/workflow/')) return;
   if (boardId) {
     url.searchParams.set(BOARD_URL_PARAM, boardId);
   } else {
@@ -278,13 +326,20 @@ export function App() {
         return;
       }
 
+      const tuziStartup = crashRecoveryService.isSafeMode()
+        ? null
+        : getTuziStartupPromise();
+
       // Prevent duplicate initialization in StrictMode
       if (appInitialized) {
         // 等待 workspaceService 完全初始化
         const workspaceService = WorkspaceService.getInstance();
         // 首屏壳子已可挂载，不再等待工作区数据恢复完成才结束启动遮罩。
-        setIsLoading(false);
+        if (!tuziStartup) {
+          setIsLoading(false);
+        }
         await workspaceService.waitForInitialization();
+        void waitForTuziStartup(tuziStartup);
         // 使用 switchBoard 确保加载完整数据
         const currentBoardId = workspaceService.getState().currentBoardId;
         // 验证画板是否存在，防止旧状态中的 currentBoardId 指向不存在的画板
@@ -319,7 +374,9 @@ export function App() {
       try {
         const workspaceService = WorkspaceService.getInstance();
         // boot loading 只覆盖首屏壳子资源，不阻塞后续工作区初始化与缓存预热。
-        setIsLoading(false);
+        if (!tuziStartup) {
+          setIsLoading(false);
+        }
         await workspaceService.initialize();
 
         // Check and perform migration if needed
@@ -510,6 +567,9 @@ export function App() {
               console.error('[App] Video URL recovery failed:', error);
             });
         }
+
+        // Tuzi 供应商/模型同步在后台进行，不阻塞工作区首屏进入。
+        void waitForTuziStartup(tuziStartup);
       } catch (error) {
         console.error('[App] Initialization failed:', error);
         setInitError(error instanceof Error ? error : new Error(String(error)));
@@ -963,9 +1023,9 @@ export function App() {
 
 const addDebugLog = async (board: PlaitBoard, value: string) => {
   const { PlaitBoard } = await import('@plait/core');
-  const container = PlaitBoard.getBoardContainer(board).closest('.drawnix') as
-    | HTMLElement
-    | null;
+  const container = PlaitBoard.getBoardContainer(board).closest(
+    '.drawnix'
+  ) as HTMLElement | null;
   if (!container) {
     return;
   }

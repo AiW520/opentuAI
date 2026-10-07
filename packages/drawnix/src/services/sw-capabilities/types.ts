@@ -4,6 +4,7 @@
 
 import type { PlaitBoard, Point } from '@plait/core';
 import type { ModelRef } from '../../utils/settings-manager';
+import type { PptExplainerCreateInput } from '../ppt-explainer/types';
 
 /**
  * Delegated operation types
@@ -18,6 +19,7 @@ export type DelegatedOperationType =
   | 'generate_video'
   | 'generate_audio'
   | 'generate_ppt'
+  | 'generate_ppt_explainer_video'
   | 'generate_grid_image'
   | 'generate_inspiration_board'
   | 'split_image'
@@ -151,6 +153,8 @@ export interface LongVideoParams {
   firstFrameImage?: string;
 }
 
+export type PptExplainerVideoParams = PptExplainerCreateInput;
+
 /**
  * AI analyze params
  */
@@ -228,6 +232,7 @@ export interface AudioGenerationParams {
   notifyHook?: string;
   title?: string;
   tags?: string;
+  instrumental?: boolean;
   mv?: string;
   continueClipId?: string;
   continueTaskId?: string;

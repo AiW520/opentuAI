@@ -1,6 +1,6 @@
 {
   "productName": "Opentu",
-  "version": "1.2.10",
+  "version": "1.2.11",
   "identifier": "com.opentu.desktop",
   "build": {
     "frontendDist": "../dist",
@@ -20,7 +20,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' blob:; img-src 'self' data: blob: https: asset: opentu-asset: http://opentu-asset.localhost; media-src 'self' data: blob: https: asset: opentu-asset: http://opentu-asset.localhost; connect-src 'self' blob: https: asset: opentu-asset: http://opentu-asset.localhost; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-src 'self' https:; font-src 'self' data:"
+      "csp": "default-src 'self' blob:; img-src 'self' data: blob: https: asset: opentu-asset: http://opentu-asset.localhost; media-src 'self' data: blob: https: asset: opentu-asset: http://opentu-asset.localhost; connect-src 'self' blob: https: asset: opentu-asset: http://opentu-asset.localhost; style-src 'self' 'unsafe-inline'; script-src 'self'; worker-src 'self' blob:; frame-src 'self' https:; font-src 'self' data:"
     }
   },
   "bundle": {

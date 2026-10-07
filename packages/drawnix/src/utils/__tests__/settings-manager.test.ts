@@ -38,7 +38,7 @@ function mockSettingsManagerDeps() {
 
   vi.doMock('../config-indexeddb-writer', () => ({
     configIndexedDBWriter: {
-      saveConfig: async () => {},
+      saveConfig: async () => undefined,
     },
   }));
 }
@@ -61,7 +61,7 @@ describe('settings-manager', () => {
           href: 'https://example.com/app',
         },
         history: {
-          replaceState: () => {},
+          replaceState: () => undefined,
         },
         dispatchEvent: () => true,
       });
@@ -72,7 +72,7 @@ describe('settings-manager', () => {
           href: 'https://example.com/app',
         },
         history: {
-          replaceState: () => {},
+          replaceState: () => undefined,
         },
         dispatchEvent: () => true,
       });
@@ -737,6 +737,150 @@ describe('settings-manager', () => {
     expect(reloadedTuziBusinessProfile).toMatchObject({
       preferAsyncImageEndpoint: false,
     });
+  });
+
+  it('keeps manual credentials independent of account routes in an embed', async () => {
+    mockSettingsManagerDeps();
+    vi.doMock('../../services/tuzi-embedded-config', () => ({
+      isTuziEmbeddedMode: () => true,
+      tuziEmbeddedConfig: { apiBaseUrl: 'http://localhost:3100' },
+    }));
+    vi.doMock('../../services/tuzi-token-auth', () => ({
+      getTuziSystemUserId: () => '40832',
+      getTuziSystemToken: () => 'system-token',
+    }));
+    vi.doMock('../../services/tuzi-provider-selection', () => ({
+      resolveTuziActiveProviderGroup: () => 'vip',
+    }));
+    localStorage.setItem('opentu.tuzi.systemUserId.v1', '40832');
+    localStorage.setItem(
+      'opentu.tuzi.active-provider-group.v1',
+      JSON.stringify({ '40832': 'vip' })
+    );
+    localStorage.setItem(
+      DRAWNIX_SETTINGS_KEY,
+      JSON.stringify({
+        gemini: {
+          apiKey: 'old-manual-key',
+          baseUrl: 'http://localhost:3100/v1',
+          imageModelName: 'gpt-image-1',
+        },
+        providerProfiles: [
+          {
+            id: 'legacy-default',
+            name: 'default 分组',
+            providerType: 'openai-compatible',
+            baseUrl: 'http://localhost:3100/v1',
+            apiKey: 'old-manual-key',
+            authType: 'bearer',
+            enabled: true,
+            capabilities: {},
+          },
+          {
+            id: 'tuzi-managed-default',
+            name: 'default',
+            providerType: 'openai-compatible',
+            baseUrl: 'http://localhost:3100/v1',
+            apiKey: 'sk-managed',
+            authType: 'bearer',
+            enabled: true,
+            capabilities: {},
+            pricingGroup: 'default',
+          },
+          {
+            id: 'tuzi-managed-vip',
+            name: 'vip',
+            providerType: 'openai-compatible',
+            baseUrl: 'http://localhost:3100/v1',
+            apiKey: 'sk-vip',
+            authType: 'bearer',
+            enabled: true,
+            capabilities: {},
+            pricingGroup: 'vip',
+          },
+        ],
+      })
+    );
+
+    const { settingsManager } = await import('../settings-manager');
+    expect(settingsManager.resolveInvocationRoute('image')).toMatchObject({
+      profileId: 'legacy-default',
+      apiKey: 'old-manual-key',
+    });
+    expect(settingsManager.hasInvocationRouteCredentials('image')).toBe(true);
+    expect(
+      settingsManager.resolveInvocationRoute('image', {
+        profileId: 'legacy-default',
+        modelId: 'gpt-image-1',
+      }).apiKey
+    ).toBe('old-manual-key');
+    const { setTuziProviderVerification, resetTuziProviderVerification } =
+      await import('../../services/tuzi-provider-reuse-state');
+    setTuziProviderVerification(
+      settingsManager
+        .getSetting('providerProfiles')
+        .filter((profile) => profile.id === 'legacy-default'),
+      [
+        {
+          id: 'legacy-default',
+          token_id: 1,
+          token_name: 'Old token',
+          groups: ['default'],
+          usable: true,
+          model_limits_enabled: true,
+          models: ['gpt-image-1'],
+          ip_restricted: false,
+          quota_limited: false,
+          count_limited: false,
+        },
+      ]
+    );
+    expect(
+      settingsManager.resolveInvocationRoute('image', {
+        profileId: 'legacy-default',
+        modelId: 'gpt-image-1',
+      }).apiKey
+    ).toBe('old-manual-key');
+    expect(
+      settingsManager.resolveInvocationRoute('image', {
+        profileId: 'legacy-default',
+        modelId: 'forbidden-model',
+      }).apiKey
+    ).toBe('old-manual-key');
+    resetTuziProviderVerification();
+    await settingsManager.updateSetting('providerProfiles', []);
+    expect(settingsManager.resolveInvocationRoute('image').apiKey).toBe('old-manual-key');
+  });
+
+  it('repairs manual defaults once and preserves keys and switches across embedded reloads', async () => {
+    mockSettingsManagerDeps();
+    vi.doMock('../../services/tuzi-embedded-config', () => ({
+      isTuziEmbeddedMode: () => false,
+      tuziEmbeddedConfig: { enabled: true, apiBaseUrl: 'https://api.tu-zi.com' },
+    }));
+    localStorage.setItem(DRAWNIX_SETTINGS_KEY, JSON.stringify({
+      providerProfiles: [
+        { id: 'tuzi-origin', name: '原价分组', apiKey: '', enabled: false },
+        { id: 'manual-test', name: '我的手动供应商', baseUrl: 'https://api.tu-zi.com/v1', apiKey: 'manual-test-key', enabled: false },
+        { id: 'tuzi-managed-test', name: '账户供应商', apiKey: 'account-test-key', enabled: false },
+      ],
+    }));
+    let module = await import('../settings-manager');
+    await module.settingsManager.waitForInitialization();
+    expect(module.providerProfilesSettings.get().find(p => p.id === 'manual-test')).toMatchObject({ enabled: true, apiKey: 'manual-test-key' });
+    expect(module.providerProfilesSettings.get().find(p => p.id === 'tuzi-managed-test')?.enabled).toBe(false);
+    expect(module.providerProfilesSettings.get().filter(p => !p.id.startsWith('tuzi-managed-')).every(p => p.enabled)).toBe(true);
+    vi.resetModules();
+    mockSettingsManagerDeps();
+    module = await import('../settings-manager');
+    await module.settingsManager.waitForInitialization();
+    expect(module.providerProfilesSettings.get().find(p => p.id === 'manual-test')).toMatchObject({ enabled: true, apiKey: 'manual-test-key' });
+    await module.providerProfilesSettings.update(module.providerProfilesSettings.get().map(p => p.id === 'manual-test' ? { ...p, enabled: false } : p));
+    vi.resetModules();
+    mockSettingsManagerDeps();
+    module = await import('../settings-manager');
+    await module.settingsManager.waitForInitialization();
+    expect(module.providerProfilesSettings.get().find(p => p.id === 'manual-test')).toMatchObject({ enabled: false, apiKey: 'manual-test-key' });
   });
 
   it('preserves provider catalog manual bindings after reload', async () => {

@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react';
 import { nxViteTsPaths } from '@nx/vite/plugins/nx-tsconfig-paths.plugin';
 import path from 'path';
 import fs from 'fs';
+import { workflowAssetsPlugin } from '../web/workflow-assets-plugin';
 
 const workspaceRoot = path.resolve(__dirname, '../..');
 const webSrcPath = path.resolve(workspaceRoot, 'apps/web/src');
@@ -34,6 +35,8 @@ export default defineConfig({
   define: {
     'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV || 'production'),
     __APP_VERSION__: JSON.stringify(appVersion),
+    'import.meta.env.VITE_TUZI_EMBEDDED_MODE': JSON.stringify('false'),
+    'import.meta.env.VITE_OPENTU_DESKTOP': JSON.stringify('true'),
     __VUE_OPTIONS_API__: JSON.stringify(false),
     __VUE_PROD_DEVTOOLS__: JSON.stringify(false),
     __VUE_PROD_HYDRATION_MISMATCH_DETAILS__: JSON.stringify(false),
@@ -48,8 +51,8 @@ export default defineConfig({
   resolve: {
     alias: [
       {
-        find: /^\.\.\/web\/src\/(.+)$/,
-        replacement: path.resolve(webSrcPath, '$1'),
+        find: /^@\/(.+)$/,
+        replacement: path.resolve(workspaceRoot, 'packages/drawnix/src/workflow-mode/web/src/$1'),
       },
       {
         find: '@web',
@@ -76,5 +79,6 @@ export default defineConfig({
     },
   },
 
-  plugins: [react(), nxViteTsPaths()],
+  worker: { format: 'es' },
+  plugins: [react(), nxViteTsPaths(), workflowAssetsPlugin()],
 });

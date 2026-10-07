@@ -72,10 +72,25 @@ describe('video binding utils', () => {
     );
     expect(isPublicHttpMediaUrl('asset://reference-video')).toBe(false);
     expect(isSeedanceAudioReference('audio-material-123')).toBe(true);
+    expect(
+      isSeedanceAudioReference(
+        '/__aitu_generated__/audio/content-reference.mp3'
+      )
+    ).toBe(true);
+    expect(
+      isSeedanceAudioReference('/__aitu_cache__/audio/reference.mp3')
+    ).toBe(true);
+    expect(
+      isSeedanceAudioReference('/__aitu_cache__/image/reference.png')
+    ).toBe(false);
     expect(isSeedanceAudioReference('data:audio/mpeg;base64,ZmFrZQ==')).toBe(
       true
     );
     expect(isSeedanceAudioReference('data:audio/mpeg;base64,%%%')).toBe(false);
+    expect(isSeedanceAudioReference('data:audio/mpeg;base64,Zm=F')).toBe(false);
+    expect(isSeedanceAudioReference('data:audio/mpeg;base64,ZmFrZQ===')).toBe(
+      false
+    );
     expect(isSeedanceAudioReference('data:audio/WAV;base64,ZmFrZQ==')).toBe(
       false
     );
@@ -271,7 +286,6 @@ describe('video binding utils', () => {
     expect(config.defaultDuration).toBe('10');
     expect(config.durationOptions.map((option) => option.value)).toEqual([
       '10',
-      '15',
     ]);
 
     const submission = resolveVideoSubmission('sora-2', undefined, null, {
@@ -363,6 +377,19 @@ describe('video binding utils', () => {
     });
   });
 
+  it('inherits Seedance 1.x capabilities for runtime physical model IDs', () => {
+    const config = getVideoModelConfig(
+      'doubao-seedance-1-5-pro_1080p'
+    );
+
+    expect(config.id).toBe('doubao-seedance-1-5-pro_1080p');
+    expect(config.durationOptions.map((option) => option.value)).toEqual([
+      '5',
+      '10',
+    ]);
+    expect(config.defaultSize).toBe('720p@16:9');
+  });
+
   it('routes Seedance 2.0 with official IDs and confirmed controls', () => {
     const profile = {
       id: 'tuzi-default',
@@ -374,6 +401,7 @@ describe('video binding utils', () => {
     };
     const standardModel = getStaticModelConfig('doubao-seedance-2-0-260128')!;
     const fastModel = getStaticModelConfig('doubao-seedance-2-0-fast-260128')!;
+    const model25 = getStaticModelConfig('doubao-seedance-2-5-260628')!;
     const standardBindings = inferBindingsForProviderModel(
       profile,
       standardModel
@@ -418,6 +446,33 @@ describe('video binding utils', () => {
       getEffectiveVideoModelConfig(fastModel.id).sizeOptions.map(
         (option) => option.value
       )
+    ).toEqual(['1080p', '720p', '480p']);
+
+    const bindings25 = inferBindingsForProviderModel(profile, model25);
+    const binding25 = bindings25.find(
+      (candidate) => candidate.protocol === 'openai.async.video'
+    );
+    expect(binding25).toMatchObject({
+      requestSchema: 'doubao.seedance-2.video.content-json',
+      metadata: {
+        video: {
+          allowedDurations: Array.from({ length: 27 }, (_, index) =>
+            String(index + 4)
+          ),
+        },
+      },
+    });
+    expect(
+      resolveVideoSubmission(model25.id, '30', binding25 || null)
+    ).toMatchObject({ model: model25.id, duration: '30' });
+    expect(() =>
+      resolveVideoSubmission(model25.id, '31', binding25 || null)
+    ).toThrow('视频时长 31s 不受支持');
+    expect(() =>
+      resolveVideoSubmission(model25.id, '3', binding25 || null)
+    ).toThrow('视频时长 3s 不受支持');
+    expect(
+      getEffectiveVideoModelConfig(model25.id, binding25 || null).sizeOptions.map(option => option.value)
     ).toEqual(['1080p', '720p', '480p']);
   });
 

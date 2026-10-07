@@ -7,6 +7,66 @@ describe('ai-generation-preferences-service', () => {
     localStorage.clear();
   });
 
+  it.each(['gpt-image-2.5', 'gpt-image-2.5-vip', 'gpt-image-2.5-sunburst', 'gpt-image-2.5-flare'])(
+    '%s 保留 4K 偏好并修正尺寸，将已移除的计费档恢复为自动',
+    async (modelId) => {
+      const { sanitizeImageToolExtraParams } = await import('../ai-generation-preferences-service');
+      expect(sanitizeImageToolExtraParams(modelId, {
+        size: 'auto', resolution: '4k',
+      })).toMatchObject({ size: 'auto', resolution: '4k' });
+      expect(sanitizeImageToolExtraParams(modelId, {
+        size: 'auto', resolution: '2k',
+      })).toMatchObject({ size: 'auto', resolution: '2k' });
+      expect(sanitizeImageToolExtraParams(modelId, {
+        size: '1536x1024', resolution: '4k',
+      })).toMatchObject({ size: '3x2', resolution: '4k' });
+      expect(sanitizeImageToolExtraParams(modelId, {
+        size: 'auto', resolution: 'auto',
+      })).toMatchObject({ size: 'auto', resolution: 'auto' });
+      expect(sanitizeImageToolExtraParams(modelId, {
+        size: '2x3', resolution: 'billing-1k',
+      })).toMatchObject({ size: '2x3', resolution: 'auto' });
+    }
+  );
+
+  it.each(['gpt-image-2', 'gpt-image-2-vip'])(
+    '%s retains automatic aspect ratio with the selected K tier',
+    async (modelId) => {
+      const { sanitizeImageToolExtraParams } = await import('../ai-generation-preferences-service');
+      for (const resolution of ['1k', '2k', '4k']) {
+        expect(sanitizeImageToolExtraParams(modelId, {
+          size: 'auto', resolution, quality: 'medium',
+        })).toMatchObject({ size: 'auto', resolution, quality: 'medium' });
+      }
+    }
+  );
+
+  it.each(['gpt-image-2', 'gpt-image-2.5-sunburst', 'gpt-image-2.5-flare'])(
+    '%s persists background independently of size and quality', async (modelId) => {
+      const {
+        saveAIImageToolPreferences, loadScopedAIImageToolPreferences,
+        sanitizeImageToolExtraParams,
+      } = await import('../ai-generation-preferences-service');
+      for (const background of ['auto', 'transparent', 'opaque']) {
+        const extraParams = { size: 'auto', resolution: '2k', quality: 'high', background };
+        saveAIImageToolPreferences({
+          currentModel: modelId, currentSelectionKey: `provider::${modelId}`,
+          extraParams, aspectRatio: 'auto',
+        });
+        expect(loadScopedAIImageToolPreferences(modelId, `provider::${modelId}`).extraParams)
+          .toMatchObject({
+            ...extraParams,
+            background: modelId === 'gpt-image-2' && background === 'transparent'
+              ? 'auto' : background,
+          });
+      }
+      expect(sanitizeImageToolExtraParams(modelId, { background: 'invalid' }).background)
+        .toBe('auto');
+      expect(sanitizeImageToolExtraParams('doubao-seedream-4-5-251128', { background: 'transparent' }))
+        .not.toHaveProperty('background');
+    }
+  );
+
   it('兼容旧 text 偏好并恢复为 agent 模式', async () => {
     localStorage.setItem(
       'aitu_ai_input_preferences',
@@ -116,6 +176,58 @@ describe('ai-generation-preferences-service', () => {
       aspectRatio: '16:9',
     });
   });
+
+  it.each([
+    ['auto', 'auto', 'auto'],
+    ['1:1', '1x1', '1:1'],
+    ['2:3', '2x3', '2:3'],
+    ['3:2', '3x2', '3:2'],
+    ['3:4', '3x4', '3:4'],
+    ['4:3', '4x3', '4:3'],
+    ['4:5', '4x5', '4:5'],
+    ['5:4', '5x4', '5:4'],
+    ['9:16', '9x16', '9:16'],
+    ['16:9', '16x9', '16:9'],
+    ['1:4', 'auto', 'auto'],
+    ['21:9', '21x9', 'auto'],
+  ])(
+    'GPT Image 2.5 将图片工具比例 %s 保留为扩展比例 %s',
+    async (aspectRatio, expectedSize, expectedAspectRatio) => {
+      const {
+        loadScopedAIImageToolPreferences,
+        loadScopedAIInputModelParams,
+        saveAIImageToolPreferences,
+      } = await import('../ai-generation-preferences-service');
+
+      saveAIImageToolPreferences({
+        currentModel: 'gpt-image-2.5',
+        currentSelectionKey: 'provider-a::gpt-image-2.5',
+        extraParams: {},
+        aspectRatio,
+      });
+
+      expect(
+        loadScopedAIImageToolPreferences(
+          'gpt-image-2.5',
+          'provider-a::gpt-image-2.5'
+        )
+      ).toMatchObject({
+        extraParams: {
+          size: expectedSize,
+          resolution: 'auto',
+          quality: 'auto',
+        },
+        aspectRatio: expectedAspectRatio,
+      });
+      expect(
+        loadScopedAIInputModelParams(
+          'image',
+          'gpt-image-2.5',
+          'provider-a::gpt-image-2.5'
+        )
+      ).toMatchObject({ size: expectedSize });
+    }
+  );
 
   it('将 GPT Image 的旧 quality 档位偏好迁移到 resolution', async () => {
     localStorage.setItem(
@@ -364,6 +476,32 @@ describe('ai-generation-preferences-service', () => {
       duration: '8',
       size: '480p',
       extraParams: expect.objectContaining({ ratio: '21:9' }),
+    });
+  });
+
+  it('迁移 Seedance 2.5 的旧组合偏好时保留支持的分辨率', async () => {
+    const { loadScopedAIVideoToolPreferences, saveScopedAIInputModelParams } =
+      await import('../ai-generation-preferences-service');
+
+    saveScopedAIInputModelParams(
+      'video',
+      'doubao-seedance-2-5-260628',
+      {
+        duration: '30',
+        size: '1080p@1:1',
+      },
+      'provider-a::doubao-seedance-2-5-260628'
+    );
+
+    expect(
+      loadScopedAIVideoToolPreferences(
+        'doubao-seedance-2-5-260628',
+        'provider-a::doubao-seedance-2-5-260628'
+      )
+    ).toMatchObject({
+      duration: '30',
+      size: '1080p',
+      extraParams: expect.objectContaining({ ratio: '1:1' }),
     });
   });
 

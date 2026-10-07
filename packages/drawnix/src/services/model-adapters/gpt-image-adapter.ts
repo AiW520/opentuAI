@@ -4,6 +4,10 @@ import {
   resolveOfficialGPTImageEditSize,
   resolveOfficialGPTImageSize,
 } from './image-size-quality-resolver';
+import {
+  normalizeTuziGPTImageModelId,
+  shouldRetryTuziGPTImageAlias,
+} from './image-request-schemas';
 import { sendAdapterRequest } from './context';
 import { readProviderResponseJson } from '../provider-routing';
 import { registerModelAdapter } from './registry';
@@ -20,6 +24,24 @@ const GPT_IMAGE_MODERATION_VALUES = new Set(['low', 'auto']);
 const GPT_IMAGE_INPUT_FIDELITY_VALUES = new Set(['high', 'low']);
 const GPT_IMAGE_RESPONSE_FORMAT_VALUES = new Set(['url', 'b64_json']);
 const IMAGE_DIMENSIONS_TIMEOUT_MS = 15_000;
+
+function isTuziProviderBaseUrl(baseUrl?: string | null): boolean {
+  const normalized = (baseUrl || '').trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+
+  try {
+    const url = new URL(
+      /^[a-z][a-z\d+\-.]*:\/\//i.test(normalized)
+        ? normalized
+        : `https://${normalized}`
+    );
+    return url.hostname === 'tu-zi.com' || url.hostname.endsWith('.tu-zi.com');
+  } catch {
+    return false;
+  }
+}
 
 function getStringParam(
   params: Record<string, unknown> | undefined,
@@ -56,7 +78,9 @@ function getNumberFieldOrParam(
 ): number | undefined {
   return typeof fieldValue === 'number' && Number.isFinite(fieldValue)
     ? fieldValue
-    : getNumberParam(params, key);
+    : typeof params?.[key] === 'string' && String(params[key]).trim()
+      ? Number(params[key])
+      : getNumberParam(params, key);
 }
 
 function setAllowedStringParam(
@@ -102,7 +126,7 @@ function applyCommonGPTImageOptions(
     mode === 'edit'
       ? resolveOfficialGPTImageEditSize(request.model, requestedSize, params)
       : resolveOfficialGPTImageSize(request.model, requestedSize, params);
-  const quality = resolveOfficialGPTImageQuality(params);
+  const quality = resolveOfficialGPTImageQuality(params, request.model);
   const n = getNumberParam(params, 'n') ?? getNumberParam(params, 'count');
   const outputCompression = getNumberFieldOrParam(
     request.outputCompression,
@@ -120,6 +144,9 @@ function applyCommonGPTImageOptions(
     params,
     'background'
   );
+  if (background === 'transparent' && outputFormat === 'jpeg') {
+    throw new Error('透明背景需要 PNG 或 WebP 输出');
+  }
 
   if (size) {
     body.size = size;
@@ -129,6 +156,8 @@ function applyCommonGPTImageOptions(
   }
   if (
     outputCompression !== undefined &&
+    (outputFormat === 'jpeg' || outputFormat === 'webp') &&
+    Number.isInteger(outputCompression) &&
     outputCompression >= 0 &&
     outputCompression <= 100
   ) {
@@ -497,44 +526,68 @@ export const gptImageAdapter: ImageModelAdapter = {
   ],
   defaultModel: 'gpt-image-2',
   async generateImage(context, request) {
+    const requestModel =
+      context.binding?.modelId || request.modelRef?.modelId || request.model;
+    const isTuziRequest = isTuziProviderBaseUrl(
+      context.provider?.baseUrl || context.baseUrl
+    );
     console.debug('[gpt-image-adapter] generateImage called', {
       bindingProtocol: context.binding?.protocol,
       bindingRequestSchema: context.binding?.requestSchema,
       bindingSubmitPath: context.binding?.submitPath,
       generationMode: request.generationMode,
-      hasReferenceImages: !!(request.referenceImages && request.referenceImages.length > 0),
+      hasReferenceImages: !!(
+        request.referenceImages && request.referenceImages.length > 0
+      ),
       referenceImagesCount: request.referenceImages?.length ?? 0,
       hasMaskImage: !!request.maskImage,
     });
     const isEditRequest = isGPTImageEditRequest(
-      request,
+      { ...request, model: requestModel },
       context.binding?.requestSchema
     );
     console.debug('[gpt-image-adapter] isEditRequest:', isEditRequest);
-    const editFormData = isEditRequest
-      ? await buildGPTImageEditFormData(request, context.fetcher)
-      : null;
-    const generationBody = isEditRequest
-      ? null
-      : buildGPTImageGenerationBody(request);
-    const outputFormat = editFormData
-      ? (editFormData.get('output_format') as string | null) || undefined
-      : typeof generationBody?.output_format === 'string'
-      ? generationBody.output_format
-      : undefined;
-    const response = await sendAdapterRequest(context, {
-      path: resolveGPTImagePath(context, isEditRequest),
-      method: 'POST',
-      headers: isEditRequest
-        ? undefined
-        : {
-            'Content-Type': 'application/json',
-          },
-      body: editFormData || JSON.stringify(generationBody),
-    });
+    const buildRequestBody = async (model: string | undefined) => {
+      const normalizedRequest = { ...request, model };
+      return isEditRequest
+        ? await buildGPTImageEditFormData(normalizedRequest, context.fetcher)
+        : JSON.stringify(buildGPTImageGenerationBody(normalizedRequest));
+    };
+    let requestBody = await buildRequestBody(requestModel);
+    const outputFormat = isEditRequest
+      ? (requestBody as FormData).get('output_format')?.toString()
+      : (() => {
+          const body = JSON.parse(requestBody as string) as Record<
+            string,
+            unknown
+          >;
+          return typeof body.output_format === 'string'
+            ? body.output_format
+            : undefined;
+        })();
+    const sendRequest = (body: BodyInit) =>
+      sendAdapterRequest(context, {
+        path: resolveGPTImagePath(context, isEditRequest),
+        method: 'POST',
+        headers: isEditRequest
+          ? undefined
+          : { 'Content-Type': 'application/json' },
+        body,
+      });
+    let response = await sendRequest(requestBody);
+
+    if (
+      isTuziRequest &&
+      (await shouldRetryTuziGPTImageAlias(response, requestModel))
+    ) {
+      requestBody = await buildRequestBody(
+        normalizeTuziGPTImageModelId(requestModel)
+      );
+      response = await sendRequest(requestBody);
+    }
 
     if (!response.ok) {
-      throw new Error(await readErrorMessage(response));
+      throw Object.assign(new Error(await readErrorMessage(response)), { httpStatus: response.status });
     }
 
     const result = await readProviderResponseJson(response);

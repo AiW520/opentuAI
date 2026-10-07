@@ -20,6 +20,8 @@ import {
   AI_GENERATED_AUDIO_URL_PREFIX,
   isVirtualMediaUrl,
 } from '../../utils/virtual-media-url';
+import type { TaskResultVisibility } from '../../types/task.types';
+import type { CacheWarning } from '../../types/cache-warning.types';
 import {
   convertLocalFilePathToAssetUrl,
   isDesktopAssetUrl,
@@ -28,7 +30,9 @@ import {
 import {
   downloadVideoContentToLocalUrl,
   extractInlineVideoUrl,
-  resolveVideoPollPath,
+  isMiniMaxH3Model,
+  normalizeMiniMaxH3VideoResponse,
+  resolveVideoPollPathForModel,
   shouldDownloadVideoContent,
 } from '../video-binding-utils';
 
@@ -101,6 +105,45 @@ export async function ensureBase64ForAI(
   return value;
 }
 
+interface MaterializeReferenceImagesOptions {
+  signal?: AbortSignal;
+  isCurrentAttempt?: () => boolean;
+  preserveUrl?: (url: string) => boolean;
+}
+
+function assertReferenceMaterializationActive(
+  options?: MaterializeReferenceImagesOptions
+): void {
+  options?.signal?.throwIfAborted();
+  if (options?.isCurrentAttempt?.() === false) {
+    const error = new Error('任务执行已被取消或替代');
+    error.name = 'AbortError';
+    throw error;
+  }
+}
+
+/** 串行物化参考图，避免多个 Blob 与 Base64 同时驻留内存。 */
+export async function materializeReferenceImagesSequentially(
+  referenceImages: readonly string[],
+  options?: MaterializeReferenceImagesOptions
+): Promise<string[]> {
+  const materialized: string[] = [];
+  for (const url of referenceImages) {
+    assertReferenceMaterializationActive(options);
+    if (options?.preserveUrl?.(url)) {
+      materialized.push(url);
+      continue;
+    }
+
+    const imageData = await unifiedCacheService.getImageForAI(url);
+    assertReferenceMaterializationActive(options);
+    const base64 = await ensureBase64ForAI(imageData, options?.signal);
+    assertReferenceMaterializationActive(options);
+    materialized.push(base64);
+  }
+  return materialized;
+}
+
 // 从共享模块重新导出
 export {
   isAsyncImageModel,
@@ -133,6 +176,7 @@ export async function pollVideoStatus(
   const interval = 5000; // 5 秒轮询间隔
   const maxConsecutiveErrors = 3; // 连续 HTTP 错误超过此数才放弃
   let consecutiveErrors = 0;
+  const isMiniMaxH3 = isMiniMaxH3Model(config.model);
   const assertPollingActive = () => {
     signal?.throwIfAborted();
     if (!isCurrentAttempt()) {
@@ -146,8 +190,9 @@ export async function pollVideoStatus(
     assertPollingActive();
     let data: any;
     try {
-      const statusPath = resolveVideoPollPath(
+      const statusPath = resolveVideoPollPathForModel(
         videoId,
+        config.model,
         config.binding,
         config.params
       );
@@ -163,7 +208,9 @@ export async function pollVideoStatus(
         },
         {
           path: statusPath,
-          baseUrlStrategy: config.binding?.baseUrlStrategy,
+          baseUrlStrategy: isMiniMaxH3
+            ? 'trim-v1'
+            : config.binding?.baseUrlStrategy,
           method: 'GET',
           signal,
         }
@@ -185,7 +232,10 @@ export async function pollVideoStatus(
         continue;
       }
 
-      data = await response.json();
+      const rawData = await response.json();
+      data = isMiniMaxH3
+        ? normalizeMiniMaxH3VideoResponse(rawData, videoId)
+        : rawData;
       assertPollingActive();
     } catch (error: any) {
       // 网络错误（fetch 本身失败）也计入连续错误
@@ -274,8 +324,174 @@ interface AsyncImageOptions {
   onProgress: (progress: number) => void;
   onSubmissionAttempt?: () => void | Promise<void>;
   onSubmitted?: (remoteId: string) => void;
-  signal?: AbortSignal;
   requestId?: string;
+  signal?: AbortSignal;
+}
+
+function notifyCacheWarning(
+  options: Parameters<typeof cacheRemoteUrl>[5] | undefined,
+  error: unknown,
+  reasonCode?: CacheWarning['reasonCode'],
+  message?: string
+): void {
+  if (!options?.onCacheWarning) return;
+  const text = error instanceof Error ? error.message : String(error || '');
+  const normalized = text.toLowerCase();
+  const resolvedReason =
+    reasonCode ||
+    (normalized.includes('opaque') || normalized.includes('cors')
+      ? 'cors_opaque'
+      : normalized.includes('quota') || normalized.includes('storage')
+      ? 'storage_error'
+      : normalized.includes('http') || normalized.includes('failed to fetch')
+      ? 'http_error'
+      : normalized.includes('media signature') ||
+        normalized.includes('content-type')
+      ? 'response_unreadable'
+      : normalized.includes('missing') || normalized.includes('not found')
+      ? 'cache_missing'
+      : normalized.includes('body') || normalized.includes('blob')
+      ? 'response_unreadable'
+      : normalized.includes('fetch') || normalized.includes('network')
+      ? 'network_error'
+      : 'unknown');
+  try {
+    options.onCacheWarning({
+      status: 'failed',
+      reasonCode: resolvedReason,
+      message:
+        message ||
+        '该资源未能缓存到浏览器，原始链接可能会过期，请尽快下载保存。',
+      detectedAt: Date.now(),
+      expiresHint: '原始链接可能带有效期',
+    });
+  } catch (callbackError) {
+    console.warn(
+      '[cacheRemoteUrl] Failed to report cache warning:',
+      callbackError
+    );
+  }
+}
+
+const MEDIA_SIGNATURE_BYTES = 64;
+
+function hasAsciiPrefix(bytes: Uint8Array, value: string, offset = 0): boolean {
+  if (bytes.length < offset + value.length) return false;
+  for (let index = 0; index < value.length; index += 1) {
+    if (bytes[offset + index] !== value.charCodeAt(index)) return false;
+  }
+  return true;
+}
+
+function hasBytesAt(
+  bytes: Uint8Array,
+  expected: readonly number[],
+  offset = 0
+): boolean {
+  if (bytes.length < offset + expected.length) return false;
+  return expected.every((value, index) => bytes[offset + index] === value);
+}
+
+function hasImageSignature(bytes: Uint8Array): boolean {
+  return (
+    hasBytesAt(bytes, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) ||
+    hasBytesAt(bytes, [0xff, 0xd8, 0xff]) ||
+    hasAsciiPrefix(bytes, 'GIF87a') ||
+    hasAsciiPrefix(bytes, 'GIF89a') ||
+    (hasAsciiPrefix(bytes, 'RIFF') && hasAsciiPrefix(bytes, 'WEBP', 8)) ||
+    hasAsciiPrefix(bytes, 'BM') ||
+    hasBytesAt(bytes, [0x49, 0x49, 0x2a, 0x00]) ||
+    hasBytesAt(bytes, [0x4d, 0x4d, 0x00, 0x2a]) ||
+    (hasAsciiPrefix(bytes, 'ftyp', 4) &&
+      /^(avif|avis|heic|heix|hevc|hevx|mif1|msf1)$/.test(
+        String.fromCharCode(...bytes.slice(8, 12))
+      )) ||
+    hasAsciiPrefix(bytes, '<svg') ||
+    (hasAsciiPrefix(bytes, '<?xml') &&
+      new TextDecoder().decode(bytes).includes('<svg'))
+  );
+}
+
+function hasVideoSignature(bytes: Uint8Array): boolean {
+  const ftypBrand = String.fromCharCode(...bytes.slice(8, 12));
+  return (
+    (hasAsciiPrefix(bytes, 'ftyp', 4) &&
+      /^(avc1|av01|dash|hvc1|hev1|isom|iso2|iso5|iso6|mmp4|mp41|mp42|msnv|qt  |3gp4|3g2a)$/.test(
+        ftypBrand
+      )) ||
+    hasBytesAt(bytes, [0x1a, 0x45, 0xdf, 0xa3]) ||
+    (hasAsciiPrefix(bytes, 'RIFF') && hasAsciiPrefix(bytes, 'AVI ', 8)) ||
+    hasAsciiPrefix(bytes, 'OggS') ||
+    hasBytesAt(bytes, [0x00, 0x00, 0x01, 0xba])
+  );
+}
+
+async function readBlobAsArrayBuffer(blob: Blob): Promise<ArrayBuffer> {
+  if (typeof blob.arrayBuffer === 'function') {
+    return blob.arrayBuffer();
+  }
+
+  if (typeof FileReader !== 'undefined') {
+    return new Promise<ArrayBuffer>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () =>
+        reject(reader.error || new Error('failed to read media blob'));
+      reader.onload = () => {
+        if (reader.result instanceof ArrayBuffer) {
+          resolve(reader.result);
+          return;
+        }
+        reject(new Error('media blob did not produce an ArrayBuffer'));
+      };
+      reader.readAsArrayBuffer(blob);
+    });
+  }
+
+  return new Response(blob).arrayBuffer();
+}
+
+/**
+ * Validate only a bounded prefix so a bad HTTP 200 body cannot be persisted as media.
+ * The complete Blob is already produced by the Fetch API, but no additional full-size
+ * copy is made here.
+ */
+async function assertCacheableMediaBlob(
+  blob: Blob,
+  mediaType: 'image' | 'video' | 'audio'
+): Promise<void> {
+  if (!blob || blob.size === 0) {
+    throw new Error(`empty ${mediaType} blob response`);
+  }
+
+  const declaredType = blob.type.split(';', 1)[0].trim().toLowerCase();
+  const isGenericType =
+    !declaredType ||
+    declaredType === 'application/octet-stream' ||
+    declaredType === 'binary/octet-stream';
+  const expectedCategory = `${mediaType}/`;
+  if (!isGenericType && !declaredType.startsWith(expectedCategory)) {
+    throw new Error(
+      `invalid ${mediaType} blob content-type: ${declaredType || 'missing'}`
+    );
+  }
+
+  // Audio caching remains intentionally permissive: this helper is primarily
+  // guarding image/video render failures, and audio codecs do not share a
+  // small reliable signature set across browser implementations.
+  if (mediaType === 'audio') return;
+
+  const prefixBlob = blob.slice(0, MEDIA_SIGNATURE_BYTES);
+  const prefixBuffer = await readBlobAsArrayBuffer(prefixBlob);
+  const prefix = new Uint8Array(prefixBuffer);
+  const validSignature =
+    mediaType === 'image'
+      ? hasImageSignature(prefix)
+      : hasVideoSignature(prefix);
+  if (!validSignature) {
+    throw new Error(
+      `invalid ${mediaType} blob content: media signature missing`
+    );
+  }
 }
 
 /**
@@ -391,17 +607,57 @@ export async function cacheRemoteUrl(
     forceRemoteCache?: boolean;
     returnLocalCacheUrl?: boolean;
     cacheKey?: string;
+    materializeContentUrl?: boolean;
     extraMetadata?: Record<string, unknown>;
+    resultVisibility?: TaskResultVisibility;
     signal?: AbortSignal;
+    onCacheWarning?: (warning: CacheWarning) => void;
   }
 ): Promise<string> {
   options?.signal?.throwIfAborted();
   const normalizedUrl =
     mediaType === 'image' ? normalizeImageDataUrl(remoteUrl) : remoteUrl;
 
-  // 已经是本地路径，无需缓存
-  if (isVirtualMediaUrl(normalizedUrl)) {
+  // 已经是本地路径且不要求固化时，无需缓存。
+  if (isVirtualMediaUrl(normalizedUrl) && !options?.materializeContentUrl) {
     return normalizedUrl;
+  }
+
+  if (
+    options?.materializeContentUrl &&
+    (isVirtualMediaUrl(normalizedUrl) || normalizedUrl.startsWith('blob:'))
+  ) {
+    try {
+      const blob =
+        mediaType === 'image'
+          ? await unifiedCacheService.getCachedImageBlobWithThumbnailFallback(
+              normalizedUrl
+            )
+          : await unifiedCacheService.getCachedBlob(normalizedUrl);
+      if (blob && blob.size > 0) {
+        await assertCacheableMediaBlob(blob, mediaType);
+        const cached = await unifiedCacheService.cacheLocalMediaByContent(
+          blob,
+          mediaType,
+          {
+            taskId,
+            source: options.source || 'AI_GENERATED',
+            ...options.extraMetadata,
+          }
+        );
+        return cached.url;
+      }
+      throw new Error('图片原图和缩略图缓存均不可用');
+    } catch (error) {
+      // 固化只是增强项，不能阻断原始 URL 的画布插入。远程/Blob/虚拟地址
+      // 仍交给图片加载链路处理；只有加载本身失败时才报告真正的插入错误。
+      console.warn(
+        '[cacheRemoteUrl] Failed to materialize media content, using original URL:',
+        error
+      );
+      notifyCacheWarning(options, error);
+      return normalizedUrl;
+    }
   }
 
   if (
@@ -439,7 +695,22 @@ export async function cacheRemoteUrl(
         : normalizedUrl;
 
       if (await unifiedCacheService.isCached(cacheTargetUrl)) {
-        return cacheTargetUrl;
+        const existingBlob = await unifiedCacheService.getCachedBlob(
+          cacheTargetUrl,
+          { allowNetwork: false }
+        );
+        options?.signal?.throwIfAborted();
+        if (existingBlob) {
+          try {
+            await assertCacheableMediaBlob(existingBlob, mediaType);
+            return cacheTargetUrl;
+          } catch (error) {
+            console.warn(
+              '[cacheRemoteUrl] Existing media cache is invalid, refreshing from source:',
+              error
+            );
+          }
+        }
       }
       options?.signal?.throwIfAborted();
 
@@ -452,19 +723,44 @@ export async function cacheRemoteUrl(
         );
         options?.signal?.throwIfAborted();
         if (cachedBlob && cachedBlob.size > 0) {
-          const migratedUrl = await unifiedCacheService.cacheMediaFromBlob(
-            cacheTargetUrl,
-            cachedBlob,
-            mediaType,
-            {
-              taskId,
-              source: cacheSource,
-              ...options?.extraMetadata,
+          let validCachedBlob = true;
+          try {
+            await assertCacheableMediaBlob(cachedBlob, mediaType);
+          } catch (error) {
+            validCachedBlob = false;
+            console.warn(
+              '[cacheRemoteUrl] Existing source media cache is invalid, fetching source again:',
+              error
+            );
+          }
+          if (validCachedBlob) {
+            const migratedUrl = await unifiedCacheService.cacheMediaFromBlob(
+              cacheTargetUrl,
+              cachedBlob,
+              mediaType,
+              {
+                taskId,
+                source: cacheSource,
+                ...options?.extraMetadata,
+                ...(options?.resultVisibility
+                  ? { resultVisibility: options.resultVisibility }
+                  : {}),
+              }
+            );
+            options?.signal?.throwIfAborted();
+            if (
+              migratedUrl &&
+              (await unifiedCacheService.isCached(cacheTargetUrl))
+            ) {
+              return migratedUrl;
             }
-          );
-          options?.signal?.throwIfAborted();
-          if (migratedUrl) {
-            return migratedUrl;
+            notifyCacheWarning(
+              options,
+              new Error('cache missing'),
+              'cache_missing',
+              '资源未能写入浏览器缓存，原始链接可能会过期，请尽快下载保存。'
+            );
+            return normalizedUrl;
           }
         }
       }
@@ -477,14 +773,27 @@ export async function cacheRemoteUrl(
       });
       options?.signal?.throwIfAborted();
       if (!response.ok) {
+        notifyCacheWarning(
+          options,
+          new Error(`HTTP ${response.status}`),
+          'http_error',
+          `资源缓存请求失败（HTTP ${response.status}），原始链接可能会过期，请尽快下载保存。`
+        );
         return normalizedUrl;
       }
 
       const blob = await response.blob();
       options?.signal?.throwIfAborted();
       if (blob.size === 0) {
+        notifyCacheWarning(
+          options,
+          new Error('empty response body'),
+          'response_unreadable',
+          '资源缓存响应为空，原始链接可能会过期，请尽快下载保存。'
+        );
         return normalizedUrl;
       }
+      await assertCacheableMediaBlob(blob, mediaType);
 
       const cacheUrl = await unifiedCacheService.cacheMediaFromBlob(
         cacheTargetUrl,
@@ -494,18 +803,32 @@ export async function cacheRemoteUrl(
           taskId,
           source: cacheSource,
           ...options?.extraMetadata,
+          ...(options?.resultVisibility
+            ? { resultVisibility: options.resultVisibility }
+            : {}),
         }
       );
       options?.signal?.throwIfAborted();
-      return options?.returnLocalCacheUrl && cacheUrl
-        ? cacheUrl
-        : normalizedUrl;
+      if (!options?.returnLocalCacheUrl) {
+        return normalizedUrl;
+      }
+      if (cacheUrl && (await unifiedCacheService.isCached(cacheTargetUrl))) {
+        return cacheUrl;
+      }
+      notifyCacheWarning(
+        options,
+        new Error('cache missing'),
+        'cache_missing',
+        '资源未能写入浏览器缓存，原始链接可能会过期，请尽快下载保存。'
+      );
+      return normalizedUrl;
     } catch (error) {
       options?.signal?.throwIfAborted();
       console.warn(
         '[cacheRemoteUrl] Remote media cache failed, using original URL:',
         error
       );
+      notifyCacheWarning(options, error);
       return normalizedUrl;
     }
   }
@@ -531,8 +854,15 @@ export async function cacheRemoteUrl(
         console.warn(
           '[cacheRemoteUrl] Empty data URL blob, using original URL'
         );
+        notifyCacheWarning(
+          options,
+          new Error('empty data URL response body'),
+          'response_unreadable',
+          '资源缓存响应为空，请尽快下载保存。'
+        );
         return normalizedUrl;
       }
+      await assertCacheableMediaBlob(blob, mediaType);
       const contentHash = await calculateBlobChecksum(blob);
       options?.signal?.throwIfAborted();
       const hashedFormat = getFileExtension('', blob.type);
@@ -564,6 +894,9 @@ export async function cacheRemoteUrl(
           taskId,
           ...(mediaType === 'audio' ? { source: 'AI_GENERATED' } : {}),
           ...options?.extraMetadata,
+          ...(options?.resultVisibility
+            ? { resultVisibility: options.resultVisibility }
+            : {}),
         }
       );
       options?.signal?.throwIfAborted();
@@ -574,15 +907,23 @@ export async function cacheRemoteUrl(
       if (desktopUrl) {
         return desktopUrl;
       }
-      return (await unifiedCacheService.isCached(contentAddressedUrl))
-        ? contentAddressedUrl
-        : normalizedUrl;
+      if (await unifiedCacheService.isCached(contentAddressedUrl)) {
+        return contentAddressedUrl;
+      }
+      notifyCacheWarning(
+        options,
+        new Error('cache missing'),
+        'cache_missing',
+        '资源未能写入浏览器缓存，请尽快下载保存。'
+      );
+      return normalizedUrl;
     }
 
     return normalizedUrl;
   } catch (error) {
     options?.signal?.throwIfAborted();
     console.warn('[cacheRemoteUrl] Cache failed, using original URL:', error);
+    notifyCacheWarning(options, error);
     return normalizedUrl;
   }
 }

@@ -28,6 +28,7 @@ import React, {
   lazy,
   Suspense,
 } from 'react';
+import { useTuziAccountOnboarding } from './hooks/useTuziAccountOnboarding';
 import { withGroup } from '@plait/common';
 import { withDraw, BasicShapes, DrawTransforms } from '@plait/draw';
 import { MindThemeColors, withMind } from '@plait/mind';
@@ -104,6 +105,7 @@ import { withGradientFill } from './plugins/with-gradient-fill';
 import { withFrameResize } from './plugins/with-frame-resize';
 import { withLassoSelection } from './plugins/with-lasso-selection';
 import { withLockedElement } from './plugins/with-locked-element';
+import { withCanvasAssociation } from './plugins/canvas-association';
 import {
   API_AUTH_ERROR_EVENT,
   ApiAuthErrorDetail,
@@ -115,10 +117,7 @@ import { isCardElement } from './types/card.types';
 import { isFrameElement } from './types/frame.types';
 import { openCardInKnowledgeBase } from './utils/card-actions';
 import { useI18n } from './i18n';
-import {
-  hasPersistedRecoverableTasks,
-  safeReload,
-} from './utils/active-tasks';
+import { hasPersistedRecoverableTasks, safeReload } from './utils/active-tasks';
 import { useTabSync } from './hooks/useTabSync';
 import { canvasAudioPlaybackService } from './services/canvas-audio-playback-service';
 import { useCanvasAudioPlaybackSelector } from './hooks/useCanvasAudioPlayback';
@@ -135,6 +134,9 @@ import {
 import { syncEditedPPTSlideImage } from './utils/frame-insertion-utils';
 import type { MediaLibraryModalProps } from './types/asset.types';
 import { SelectionMode } from './types/asset.types';
+import { WorkflowModeHost } from './workflow-mode/host/WorkflowModeHost';
+import { queueProviderSettingsNavigation } from './components/settings-dialog/provider-settings-navigation';
+import { useWorkflowRoute } from './workflow-mode/host/use-workflow-route';
 const PopupToolbar = lazy(() =>
   import('./components/toolbar/popup-toolbar/popup-toolbar').then((module) => ({
     default: module.PopupToolbar,
@@ -298,10 +300,11 @@ function detectMobileViewport(): boolean {
     return false;
   }
 
-  const coarsePointer = window.matchMedia?.('(pointer: coarse)').matches ?? false;
-  const compactViewport = window.matchMedia?.('(max-width: 768px)').matches ?? false;
-  const touchCapable =
-    navigator.maxTouchPoints > 0 || 'ontouchstart' in window;
+  const coarsePointer =
+    window.matchMedia?.('(pointer: coarse)').matches ?? false;
+  const compactViewport =
+    window.matchMedia?.('(max-width: 768px)').matches ?? false;
+  const touchCapable = navigator.maxTouchPoints > 0 || 'ontouchstart' in window;
 
   return compactViewport || (coarsePointer && touchCapable);
 }
@@ -321,6 +324,7 @@ export const Drawnix: React.FC<DrawnixProps> = ({
   isDataReady = false,
   currentBoardId,
 }) => {
+  const workflowRoute = useWorkflowRoute(currentBoardId);
   const options: PlaitBoardOptions = {
     readonly: false,
     hideScrollbar: false,
@@ -363,6 +367,25 @@ export const Drawnix: React.FC<DrawnixProps> = ({
 
   // 使用 ref 来保存 board 的最新引用,避免 useCallback 依赖问题
   const boardRef = useRef<DrawnixBoard | null>(null);
+  const resumeCanvas = useRef<{ boardId?: string | null; source: string; value: PlaitElement[]; viewport: Viewport; theme: PlaitTheme } | null>(null);
+  const enterWorkflowRoute = workflowRoute.enter;
+  const enterWorkflow = useCallback(() => {
+    const current = boardRef.current;
+    if (current) {
+      resumeCanvas.current = {
+        boardId: currentBoardId,
+        source: JSON.stringify(value),
+        value: current.children,
+        viewport: current.viewport,
+        theme: current.theme,
+      };
+    }
+    enterWorkflowRoute();
+  }, [currentBoardId, value, enterWorkflowRoute]);
+  const resume = useMemo(() => {
+    const snapshot = resumeCanvas.current;
+    return snapshot?.boardId === currentBoardId && snapshot?.source === JSON.stringify(value) ? snapshot : null;
+  }, [currentBoardId, value, workflowRoute.open]);
 
   // 关闭所有抄屉
   const closeAllDrawers = useCallback(() => {
@@ -741,6 +764,8 @@ export const Drawnix: React.FC<DrawnixProps> = ({
     };
   }, []);
 
+  useTuziAccountOnboarding(setAppState);
+
   // 监听 API 认证错误事件，自动打开设置对话框
   useEffect(() => {
     const handleApiAuthError = (event: Event) => {
@@ -799,6 +824,7 @@ export const Drawnix: React.FC<DrawnixProps> = ({
     withDefaultFill, // 默认填充 - 让新创建的图形有白色填充，方便双击编辑
     withGradientFill, // 渐变填充 - 支持渐变和图片填充渲染
     withLassoSelection, // 套索选择 - 自由路径框选元素
+    withCanvasAssociation, // 画布联想 - 持久关联线的端点同步与失效清理
     withLockedElement, // 锁定元素 - 阻止选中和移动被锁定的元素
     withTracking,
     withUnknownElementFallback, // 必须最后 — 捕获未知元素类型避免崩溃
@@ -904,10 +930,19 @@ export const Drawnix: React.FC<DrawnixProps> = ({
               <CacheQuotaProvider onOpenMediaLibrary={handleOpenMediaLibrary}>
                 <ChatDrawerProvider>
                   <DrawnixContext.Provider value={contextValue}>
-                    <DrawnixContent
-                      value={value}
-                      viewport={viewport}
-                      theme={theme}
+                    {workflowRoute.open ? (
+                      <>
+                        <WorkflowModeHost open={!appState.openSettings} onExit={workflowRoute.exit} onOpenProviderSettings={(profileId) => {
+                          queueProviderSettingsNavigation(profileId === undefined ? { action: 'create' } : { action: 'select', profileId: profileId || 'legacy-default' });
+                          setAppState(prev => ({ ...prev, openSettings: true }));
+                        }} />
+                        {appState.openSettings && <div className="drawnix"><Suspense fallback={null}><SettingsDialog container={null} /></Suspense></div>}
+                      </>
+                    ) : <DrawnixContent
+                      value={resume?.value ?? value}
+                      viewport={resume?.viewport ?? viewport}
+                      theme={resume?.theme ?? theme}
+                      onOpenWorkflowMode={enterWorkflow}
                       options={options}
                       plugins={plugins}
                       containerRef={containerRef}
@@ -925,7 +960,10 @@ export const Drawnix: React.FC<DrawnixProps> = ({
                       onViewportChange={onViewportChange}
                       onThemeChange={onThemeChange}
                       onValueChange={onValueChange}
-                      afterInit={afterInit}
+                      afterInit={(initializedBoard) => {
+                        resumeCanvas.current = null;
+                        afterInit?.(initializedBoard);
+                      }}
                       onBoardSwitch={onBoardSwitch}
                       onTabSyncNeeded={onTabSyncNeeded}
                       handleProjectDrawerToggle={handleProjectDrawerToggle}
@@ -956,7 +994,7 @@ export const Drawnix: React.FC<DrawnixProps> = ({
                       minimizedToolsBarEnabled={minimizedToolsBarEnabled}
                       enableToolWindows={enableToolWindows}
                       enableGenerationRuntime={enableGenerationRuntime}
-                    />
+                    />}
                   </DrawnixContext.Provider>
                 </ChatDrawerProvider>
               </CacheQuotaProvider>
@@ -970,6 +1008,7 @@ export const Drawnix: React.FC<DrawnixProps> = ({
 
 // Internal component that uses ChatDrawer context
 interface DrawnixContentProps {
+  onOpenWorkflowMode: () => void;
   value: PlaitElement[];
   viewport?: Viewport;
   theme?: PlaitTheme;
@@ -1022,6 +1061,7 @@ interface DrawnixContentProps {
 }
 
 const DrawnixContent: React.FC<DrawnixContentProps> = ({
+  onOpenWorkflowMode,
   value,
   viewport,
   theme,
@@ -1439,7 +1479,11 @@ const DrawnixContent: React.FC<DrawnixContentProps> = ({
         );
       } catch (error) {
         console.error('Failed to insert image:', error);
-        MessagePlugin.error('插入失败');
+        const message =
+          error instanceof Error && error.message.trim()
+            ? error.message
+            : '无法读取图片内容，请重新生成或下载后上传';
+        MessagePlugin.error(`插入失败: ${message}`);
       }
     },
     [board]
@@ -1755,6 +1799,7 @@ const DrawnixContent: React.FC<DrawnixContentProps> = ({
             onTaskPanelToggle={handleTaskPanelToggle}
             onOpenBackupRestore={handleOpenBackupRestore}
             onOpenCloudSync={handleOpenCloudSync}
+            onOpenWorkflowMode={onOpenWorkflowMode}
             onKnowledgeBaseToggle={handleKnowledgeBaseToggle}
             onOpenMediaLibrary={handleOpenMediaLibrary}
             deferredFeaturesEnabled={toolWindowManagerEnabled}
@@ -1766,6 +1811,7 @@ const DrawnixContent: React.FC<DrawnixContentProps> = ({
               <CanvasAudioPlayer />
             </Suspense>
           )}
+
 
           <Suspense fallback={null}>
             <PopupToolbar></PopupToolbar>

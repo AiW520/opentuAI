@@ -23,6 +23,7 @@ vi.hoisted(() => {
 
 vi.mock('../../services/kv-storage-service', () => ({
   kvStorageService: {
+    isAvailable: () => false,
     get: getMock,
     set: setMock,
   },

@@ -139,6 +139,14 @@ test.describe('响应式布局测试', () => {
       // 验证组件可见且不遮挡
       await expect(page.locator('.unified-toolbar')).toBeVisible();
       await expect(page.getByTestId('ai-input-bar')).toBeVisible();
+
+      const input = page.getByTestId('ai-input-textarea');
+      await expect(input).toBeInViewport();
+      await input.fill('A minimal botanical poster');
+      await expect(input).toHaveValue('A minimal botanical poster');
+      await expect(page.getByTestId('ai-send-btn')).toBeInViewport();
+      await input.fill('');
+      await input.blur();
       
       await expect(page).toHaveScreenshot(`responsive-${VIEWPORTS.mobileLandscape.name}.png`, {
         fullPage: false,

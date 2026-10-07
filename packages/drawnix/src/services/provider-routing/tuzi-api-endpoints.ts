@@ -1,3 +1,6 @@
+import { tuziEmbeddedConfig } from '../tuzi-embedded-config';
+import { isTauriEnvironment } from '../../utils/tauri-env';
+
 export interface TuziApiEndpointSource {
   name?: string;
   url: string;
@@ -79,8 +82,7 @@ export function normalizeTuziApiEndpointUrl(url?: string | null): string {
 
 const TRUSTED_TUZI_API_ORIGINS = new Set(
   [...TUZI_API_FALLBACK_ENDPOINTS, ...TUZI_API_REQUEST_ID_CORS_ENDPOINTS].map(
-    (endpoint) =>
-      normalizeTuziApiEndpointUrl(endpoint.url)
+    (endpoint) => normalizeTuziApiEndpointUrl(endpoint.url)
   )
 );
 
@@ -92,6 +94,24 @@ const TUZI_REQUEST_ID_CORS_ORIGINS = new Set(
 
 export function isTrustedTuziApiBaseUrl(url?: string | null): boolean {
   return TRUSTED_TUZI_API_ORIGINS.has(normalizeTuziApiEndpointUrl(url));
+}
+
+/**
+ * 本地联调地址只作为当前部署配置的直连 Tuzi 节点使用，不加入公网故障切换集合。
+ */
+export function isConfiguredTuziApiBaseUrl(url?: string | null): boolean {
+  const configuredOrigin = normalizeTuziApiEndpointUrl(
+    tuziEmbeddedConfig.apiBaseUrl
+  );
+  return Boolean(
+    tuziEmbeddedConfig.enabled &&
+      configuredOrigin &&
+      normalizeTuziApiEndpointUrl(url) === configuredOrigin
+  );
+}
+
+export function isTuziRequestRecoveryBaseUrl(url?: string | null): boolean {
+  return isTrustedTuziApiBaseUrl(url) || isConfiguredTuziApiBaseUrl(url);
 }
 
 export function isTuziRequestIdCorsBaseUrl(url?: string | null): boolean {
@@ -187,9 +207,17 @@ export async function loadTuziApiEndpointSources(): Promise<
     return tuziApiEndpointSourceCache;
   }
 
-  const response = await fetch(TUZI_API_STATUS_URL, {
-    cache: 'no-store',
-  });
+  const response = await fetch(
+    !isTauriEnvironment() && typeof window !== 'undefined' &&
+      /^http:\/\/(localhost|127\.0\.0\.1|192\.168\.)/.test(
+        window.location.origin
+      )
+      ? '/__opentu_tuzi_proxy__/api/api/status'
+      : TUZI_API_STATUS_URL,
+    {
+      cache: 'no-store',
+    }
+  );
   if (!response.ok) {
     throw new Error(`Failed to load tuzi-api endpoints: ${response.status}`);
   }

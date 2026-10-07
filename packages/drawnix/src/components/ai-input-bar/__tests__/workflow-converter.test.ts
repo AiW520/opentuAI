@@ -13,6 +13,7 @@ import {
   WorkflowStep,
 } from '../workflow-converter';
 import type { ParsedGenerationParams } from '../../../utils/ai-input-parser';
+import type { CanvasAssociationRef } from '../../../types/task.types';
 import { initializeMCP } from '../../../mcp';
 
 vi.hoisted(() => {
@@ -111,6 +112,23 @@ const knowledgeContextRefs = [
   },
 ];
 
+const canvasAssociations: CanvasAssociationRef[] = [
+  {
+    referenceId: 'ref-image-1',
+    boardId: 'board-1',
+    elementId: 'image-1',
+    kind: 'image',
+    label: '产品主图',
+  },
+  {
+    referenceId: 'ref-text-1',
+    boardId: 'board-1',
+    elementId: 'text-1',
+    kind: 'text',
+    label: '卖点文案',
+  },
+];
+
 describe('workflow-converter', () => {
   beforeAll(() => {
     initializeMCP();
@@ -182,6 +200,34 @@ describe('workflow-converter', () => {
         expect(workflow.steps[0].args.referenceImages).toEqual(referenceImages);
       });
 
+      it.each(['auto', 'transparent', 'opaque'])(
+        'passes %s background from the input bar to image task params', (background) => {
+          for (const referenceImages of [[], ['https://example.com/reference.png']]) {
+            const workflow = convertDirectGenerationToWorkflow(createMockParams({
+              generationType: 'image', modelId: 'gpt-image-2.5-sunburst',
+              extraParams: { background, resolution: '2k', quality: 'high' },
+            }), referenceImages);
+            expect(workflow.steps[0].args.params).toMatchObject({
+              background, resolution: '2k', quality: 'high',
+            });
+            expect(workflow.steps[0].args.prompt).toBe(
+              background === 'transparent' ? 'test prompt\n透明图' : 'test prompt'
+            );
+          }
+        }
+      );
+
+      it('appends the transparent suffix even when already present across batch steps', () => {
+        const params = createMockParams({
+          prompt: '一朵荷花\n透明图', count: 3,
+          extraParams: { background: 'transparent' },
+        });
+        for (const step of convertDirectGenerationToWorkflow(params).steps) {
+          expect(step.args.prompt).toBe('一朵荷花\n透明图\n透明图');
+        }
+        expect(params.prompt).toBe('一朵荷花\n透明图');
+      });
+
       it('应该把目标图片绑定字段放在任务参数顶层', () => {
         const params = createMockParams({
           generationType: 'image',
@@ -193,6 +239,7 @@ describe('workflow-converter', () => {
             anchorId: 'anchor-1',
             sourceTaskId: 'task-old',
             sourcePrompt: '白天城市街景',
+            boundTargetFollowControlled: true,
             quality: 'high',
           },
         });
@@ -209,8 +256,48 @@ describe('workflow-converter', () => {
           anchorId: 'anchor-1',
           sourceTaskId: 'task-old',
           sourcePrompt: '白天城市街景',
+          boundTargetFollowControlled: true,
           params: { quality: 'high' },
         });
+      });
+
+      it('语义替换只把干净背景和编辑蒙版传给图片模型', () => {
+        const params = createMockParams({
+          generationType: 'image',
+          prompt: '把猫替换成兔子',
+          extraParams: {
+            generationMode: 'image_edit',
+            referenceImages: ['/clean-background.png'],
+            maskImage: '/semantic-mask.png',
+            replaceElementId: 'cat-layer',
+            targetElementId: 'cat-layer',
+            semanticReplacement: true,
+            semanticReplacementOldName: '猫',
+            semanticReplacementOldDescription: '灰色宠物猫',
+            semanticReplacementBackgroundUrl: '/clean-background.png',
+            semanticReplacementBackgroundElementId: 'background-layer',
+            semanticReplacementForegroundUrl: '/old-cat.png',
+          },
+        });
+
+        const workflow = convertDirectGenerationToWorkflow(params, [
+          '/old-cat.png',
+        ]);
+
+        expect(workflow.steps[0].args).toMatchObject({
+          generationMode: 'image_edit',
+          referenceImages: ['/clean-background.png'],
+          maskImage: '/semantic-mask.png',
+          replaceElementId: 'cat-layer',
+          semanticReplacement: true,
+          semanticReplacementOldName: '猫',
+          semanticReplacementBackgroundUrl: '/clean-background.png',
+          semanticReplacementBackgroundElementId: 'background-layer',
+          semanticReplacementForegroundUrl: '/old-cat.png',
+        });
+        expect(workflow.steps[0].args.referenceImages).not.toContain(
+          '/old-cat.png'
+        );
       });
 
       it('单张图片带蒙版时应该创建 image_edit 请求参数', () => {
@@ -251,6 +338,28 @@ describe('workflow-converter', () => {
         );
         expect(workflow.metadata.knowledgeContextRefs).toEqual(
           knowledgeContextRefs
+        );
+      });
+
+      it('应该快照画布联想并传递到直接生成步骤和元数据', () => {
+        const mutableAssociations = canvasAssociations.map((reference) => ({
+          ...reference,
+        }));
+        const params = createMockParams({
+          generationType: 'image',
+          prompt: '基于画布内容生成海报',
+          canvasAssociations: mutableAssociations,
+        });
+
+        const workflow = convertDirectGenerationToWorkflow(params);
+        mutableAssociations[0].label = '提交后修改';
+        mutableAssociations.pop();
+
+        expect(workflow.steps[0].args.canvasAssociations).toEqual(
+          canvasAssociations
+        );
+        expect(workflow.metadata.canvasAssociations).toEqual(
+          canvasAssociations
         );
       });
 
@@ -328,6 +437,53 @@ describe('workflow-converter', () => {
         expect(workflow.steps[0].args.seconds).toBe('15');
       });
 
+      it('MiniMax-H3 别名应透传选中的本地参考视频', () => {
+        const params = createMockParams({
+          generationType: 'video',
+          modelId: 'minimax-h3',
+          selection: {
+            texts: [],
+            images: [],
+            videos: ['/asset-library/content-local.mp4'],
+            graphics: [],
+          },
+        });
+
+        const workflow = convertDirectGenerationToWorkflow(params);
+
+        expect(workflow.steps[0].args.params).toMatchObject({
+          input_videos: ['/asset-library/content-local.mp4'],
+        });
+      });
+
+      it('Seedance 2.0 应透传多视频和多音频选择', () => {
+        const virtualAudioUrl =
+          '/__aitu_generated__/audio/content-reference.mp3';
+        const params = createMockParams({
+          generationType: 'video',
+          modelId: 'doubao-seedance-2-0-pro',
+          selection: {
+            texts: [],
+            images: [],
+            videos: ['https://example.com/a.mp4', 'https://example.com/b.mp4'],
+            audios: [virtualAudioUrl],
+            graphics: [],
+          },
+        });
+
+        const workflow = convertDirectGenerationToWorkflow(params);
+
+        expect(workflow.steps[0].args.params).toMatchObject({
+          input_videos: [
+            'https://example.com/a.mp4',
+            'https://example.com/b.mp4',
+          ],
+          input_audios: [virtualAudioUrl],
+        });
+        expect(workflow.metadata.selection?.audios).toEqual([virtualAudioUrl]);
+        expect(JSON.stringify(workflow)).not.toContain('data:audio/');
+      });
+
       it('Seedance 2.0 应该透传选中的参考视频', () => {
         const params = createMockParams({
           generationType: 'video',
@@ -360,6 +516,27 @@ describe('workflow-converter', () => {
         expect(workflow.steps[0].args.size).toBe('1080p');
         expect(workflow.steps[0].args.params).toMatchObject({
           ratio: 'adaptive',
+        });
+      });
+
+      it('应该把视频目标绑定字段放在任务参数顶层', () => {
+        const params = createMockParams({
+          generationType: 'video',
+          extraParams: {
+            replaceElementId: 'video-1',
+            sourcePrompt: '原视频提示词',
+            boundTargetFollowControlled: true,
+            ratio: '16:9',
+          },
+        });
+
+        const workflow = convertDirectGenerationToWorkflow(params);
+
+        expect(workflow.steps[0].args).toMatchObject({
+          replaceElementId: 'video-1',
+          sourcePrompt: '原视频提示词',
+          boundTargetFollowControlled: true,
+          params: { ratio: '16:9' },
         });
       });
 
@@ -403,6 +580,25 @@ describe('workflow-converter', () => {
           globalIndex: 1,
         });
       });
+
+      it('应该把音频目标绑定字段放在任务参数顶层', () => {
+        const params = createMockParams({
+          generationType: 'audio',
+          extraParams: {
+            replaceElementId: 'audio-1',
+            sourcePrompt: '原音频提示词',
+            sunoAction: 'music',
+          },
+        });
+
+        const workflow = convertDirectGenerationToWorkflow(params);
+
+        expect(workflow.steps[0].args).toMatchObject({
+          replaceElementId: 'audio-1',
+          sourcePrompt: '原音频提示词',
+          params: { sunoAction: 'music' },
+        });
+      });
     });
 
     describe('文本生成场景', () => {
@@ -428,6 +624,27 @@ describe('workflow-converter', () => {
           batchIndex: 1,
           batchTotal: 1,
           globalIndex: 1,
+        });
+      });
+
+      it('应该把文本目标绑定字段放在任务参数顶层', () => {
+        const params = createMockParams({
+          generationType: 'text',
+          extraParams: {
+            replaceElementId: 'text-1',
+            sourcePrompt: '原文本提示词',
+            boundTargetFollowControlled: true,
+            temperature: '0.7',
+          },
+        });
+
+        const workflow = convertDirectGenerationToWorkflow(params);
+
+        expect(workflow.steps[0].args).toMatchObject({
+          replaceElementId: 'text-1',
+          sourcePrompt: '原文本提示词',
+          boundTargetFollowControlled: true,
+          params: { temperature: '0.7' },
         });
       });
     });
@@ -552,6 +769,24 @@ describe('workflow-converter', () => {
         knowledgeContextRefs
       );
     });
+
+    it('应该把画布联想传递到 Agent 分析步骤和执行上下文', () => {
+      const params = createMockParams({
+        scenario: 'agent_flow',
+        prompt: '结合画布内容生成一组图',
+        canvasAssociations,
+      });
+
+      const workflow = convertAgentFlowToWorkflow(params);
+
+      expect(workflow.steps[0].args.canvasAssociations).toEqual(
+        canvasAssociations
+      );
+      expect(
+        (workflow.steps[0].args.context as any).canvasAssociations
+      ).toEqual(canvasAssociations);
+      expect(workflow.metadata.canvasAssociations).toEqual(canvasAssociations);
+    });
   });
 
   describe('convertToWorkflow', () => {
@@ -631,6 +866,78 @@ describe('workflow-converter', () => {
       expect(workflow.metadata.knowledgeContextRefs).toEqual(
         knowledgeContextRefs
       );
+    });
+
+    it('DSL 媒体步骤应继承画布联想引用', async () => {
+      const params = createMockParams({
+        scenario: 'agent_flow',
+        generationType: 'agent',
+        modelId: 'deepseek-v3.2',
+        prompt: '生成关联图片',
+        canvasAssociations,
+      });
+
+      const workflow = await convertSkillFlowToWorkflow(params, {
+        id: 'image-skill',
+        name: '图片生成',
+        type: 'system',
+        mcpTool: 'generate_image',
+        outputType: 'image',
+        description: '调用 generate_image\n- prompt: {{input}}',
+      });
+
+      expect(workflow.steps[0].args.canvasAssociations).toEqual(
+        canvasAssociations
+      );
+      expect(workflow.metadata.canvasAssociations).toEqual(canvasAssociations);
+    });
+
+    it('DSL 媒体步骤不能覆盖可信画布联想快照', async () => {
+      const params = createMockParams({
+        scenario: 'agent_flow',
+        generationType: 'agent',
+        modelId: 'deepseek-v3.2',
+        prompt: '生成关联图片',
+        canvasAssociations,
+      });
+
+      const workflow = await convertSkillFlowToWorkflow(params, {
+        id: 'image-skill',
+        name: '图片生成',
+        type: 'system',
+        mcpTool: 'generate_image',
+        outputType: 'image',
+        description:
+          '调用 generate_image\n- prompt: {{input}}\n- canvasAssociations: []',
+      });
+
+      expect(workflow.steps[0].args.canvasAssociations).toEqual(
+        canvasAssociations
+      );
+      expect(workflow.steps[0].args.canvasAssociations).not.toBe(
+        canvasAssociations
+      );
+    });
+
+    it('无可信快照时应剥离 DSL 媒体步骤伪造的画布联想', async () => {
+      const params = createMockParams({
+        scenario: 'agent_flow',
+        generationType: 'agent',
+        modelId: 'deepseek-v3.2',
+        prompt: '生成图片',
+      });
+
+      const workflow = await convertSkillFlowToWorkflow(params, {
+        id: 'image-skill',
+        name: '图片生成',
+        type: 'system',
+        mcpTool: 'generate_image',
+        outputType: 'image',
+        description:
+          '调用 generate_image\n- prompt: {{input}}\n- canvasAssociations: forged',
+      });
+
+      expect(workflow.steps[0].args.canvasAssociations).toBeUndefined();
     });
 
     it('PPT Skill 只将文本模型和参考图片透传给 generate_ppt', async () => {

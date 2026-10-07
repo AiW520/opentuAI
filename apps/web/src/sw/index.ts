@@ -43,6 +43,10 @@ import {
   shouldUseAppShellStrategy,
 } from './app-shell-routing';
 import { isUsableImageFetchResponse } from './image-fetch-response';
+import {
+  fetchOriginalVideoRequest,
+  fetchVideoForCache,
+} from './video-fetch-response';
 
 // fix: self redeclaration error and type casting
 const sw = self as unknown as ServiceWorkerGlobalScope;
@@ -437,7 +441,7 @@ const CACHE_FAILURE_NOTIFICATION_TTL = 5 * 60 * 1000;
 const MAX_CACHE_FAILURE_NOTIFICATION_CACHE_SIZE = 500;
 
 interface VideoRequestEntry {
-  promise: Promise<Blob | null | symbol>; // symbol = VIDEO_LOAD_ERROR 表示下载失败
+  promise: Promise<Blob | null | symbol>; // null = 原始请求直连；symbol = 下载失败
   timestamp: number;
   count: number;
   requestId: string;
@@ -4256,9 +4260,9 @@ sw.addEventListener('fetch', (event: FetchEvent) => {
   // 而是在 handleImageRequest 中跳过缓存检查直接 fetch，但仍会缓存响应
   // 这样可以确保绕过请求的响应也能被缓存，供后续正常请求使用
 
-  // 放行监控服务域名（PostHog），让浏览器直接处理
+  // 放行监控服务域名（Umami），让浏览器直接处理
   // 这些服务的请求失败不应该影响应用，也不需要记录到调试日志
-  if (url.hostname.endsWith('.posthog.com')) {
+  if (url.hostname === 'umami.tu-zi.com') {
     return; // 静默放行，不记录日志
   }
 
@@ -5299,13 +5303,7 @@ async function handleVideoRequest(request: Request): Promise<Response> {
       }
       // 服务器支持 Range，重新 fetch
       if (videoBlob === null) {
-        const fetchOptions = {
-          method: 'GET',
-          headers: new Headers(request.headers),
-          mode: 'cors' as RequestMode,
-          credentials: 'omit' as RequestCredentials,
-        };
-        return await fetch(url, fetchOptions);
+        return await fetchOriginalVideoRequest(request);
       }
 
       // 使用缓存的blob响应Range请求
@@ -5354,27 +5352,20 @@ async function handleVideoRequest(request: Request): Promise<Response> {
 
     const downloadPromise = (async () => {
       try {
-        // 构建请求选项
-        const fetchOptions = {
-          method: 'GET',
-          mode: 'cors' as RequestMode,
-          credentials: 'omit' as RequestCredentials,
-          cache: 'default' as RequestCache, // 使用浏览器默认缓存策略
-        };
-
         // 获取视频响应（不带Range header，获取完整视频）
-        const fetchUrl = new URL(dedupeUrl);
-        const response = await fetch(fetchUrl, fetchOptions);
-
-        if (!response.ok) {
+        // 规范化 URL 只用于去重和缓存键，实际请求必须保留签名参数。
+        const fetchResult = await fetchVideoForCache(url);
+        if (fetchResult.kind === 'http-error') {
           return VIDEO_LOAD_ERROR;
         }
-
-        // 如果服务器返回206，说明服务器原生支持Range，直接返回不缓存
-        if (response.status === 206) {
-          // console.log(`Service Worker [Video-${requestId}]: 服务器原生支持Range请求，直接返回`);
-          return null; // 返回null表示不缓存，直接使用服务器响应
+        if (fetchResult.kind === 'direct') {
+          if (fetchResult.corsFailed) {
+            markCorsFailedDomain(url.hostname);
+          }
+          return null;
         }
+
+        const response = fetchResult.response;
 
         // 下载完整视频
         // console.log(`Service Worker [Video-${requestId}]: 开始下载完整视频...`);
@@ -5459,15 +5450,9 @@ async function handleVideoRequest(request: Request): Promise<Response> {
       });
     }
 
-    // 如果返回null，说明服务器支持Range，重新发送原始请求
+    // Range 或 CORS 不可读时，保留原始模式、Range 和签名参数直接请求。
     if (videoBlob === null) {
-      const fetchOptions = {
-        method: 'GET',
-        headers: new Headers(request.headers),
-        mode: 'cors' as RequestMode,
-        credentials: 'omit' as RequestCredentials,
-      };
-      return await fetch(url, fetchOptions);
+      return await fetchOriginalVideoRequest(request);
     }
 
     // 使用下载的blob响应Range请求

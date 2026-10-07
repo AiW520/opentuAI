@@ -28,6 +28,8 @@ export interface AdapterContext {
   provider?: ResolvedProviderContext | null;
   binding?: ProviderModelBinding | null;
   fetcher?: typeof fetch;
+  /** Observe the final provider response before adapters consume the body. */
+  onResponse?: (response: Response) => void | Promise<void>;
 }
 
 export interface AdapterMetadata {
@@ -99,6 +101,7 @@ export interface AudioGenerationRequest {
   modelRef?: ModelRef | null;
   title?: string;
   tags?: string;
+  instrumental?: boolean;
   mv?: string;
   sunoAction?: string;
   notifyHook?: string;

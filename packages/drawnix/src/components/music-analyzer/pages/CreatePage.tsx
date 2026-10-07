@@ -46,7 +46,7 @@ import {
   normalizeMusicAnalysisData,
 } from '../../../services/music-analysis-service';
 import { getDefaultAudioModel } from '../../../constants/model-config';
-import { analytics } from '../../../utils/posthog-analytics';
+import { analytics } from '../../../utils/umami-analytics';
 
 const DEFAULT_ANALYSIS_MODEL = 'gemini-2.5-pro';
 const STORAGE_KEY_MODEL = 'music-analyzer:model';
@@ -615,7 +615,16 @@ export const CreatePage: React.FC<CreatePageProps> = ({
 
   const handleInsertAnalysis = useCallback(async () => {
     if (!normalizedAnalysis) return;
-    await quickInsert('text', formatMusicAnalysisMarkdown(normalizedAnalysis));
+    const sourcePrompt =
+      (existingRecord?.creationPrompt || creationPrompt || existingRecord?.sourceLabel || '')
+        .trim();
+    await quickInsert(
+      'text',
+      formatMusicAnalysisMarkdown(normalizedAnalysis),
+      undefined,
+      undefined,
+      sourcePrompt ? { prompt: sourcePrompt } : undefined
+    );
     analytics.trackUIInteraction({
       area: 'popular_music_tool',
       action: 'analysis_inserted_to_canvas',
@@ -626,7 +635,7 @@ export const CreatePage: React.FC<CreatePageProps> = ({
         tagsCount: normalizedAnalysis.sunoStyleTags.length,
       },
     });
-  }, [normalizedAnalysis]);
+  }, [creationPrompt, existingRecord, normalizedAnalysis]);
 
   return (
     <div className="ma-create-page">

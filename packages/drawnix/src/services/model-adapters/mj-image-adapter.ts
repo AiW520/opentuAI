@@ -1,3 +1,4 @@
+import { notifyTaskSubmitted } from '../submission-persistence';
 import type {
   AdapterContext,
   ImageGenerationRequest,
@@ -7,6 +8,7 @@ import { registerModelAdapter } from './registry';
 import { sendAdapterRequest } from './context';
 import { IMAGE_GENERATION_TIMEOUT_MS } from '../../constants/TASK_CONSTANTS';
 import { ModelVendor } from '../../constants/model-config';
+import { buildMJPrompt } from '../../utils/mj-params';
 import {
   readProviderResponseJson,
   readProviderResponseText,
@@ -54,6 +56,16 @@ const isFailureStatus = (status?: string): boolean => {
   if (!status) return false;
   const normalized = status.toLowerCase();
   return ['fail', 'failed', 'failure', 'error'].includes(normalized);
+};
+
+/** MJ can return separate images without a composite imageUrl. */
+export const getMJImageUrls = (response: { imageUrl?: unknown; imageUrls?: unknown }): string[] => {
+  const isImageUrl = (url: unknown): url is string =>
+    typeof url === 'string' && /^(https?:|data:)/i.test(url);
+  const urls = Array.isArray(response.imageUrls)
+    ? response.imageUrls.map(item => item?.url).filter(isImageUrl)
+    : [];
+  return urls.length ? urls : isImageUrl(response.imageUrl) ? [response.imageUrl] : [];
 };
 
 const submitMJImagine = async (
@@ -122,7 +134,7 @@ export const mjImageAdapter: ImageModelAdapter = {
 
     const submitResponse = await submitMJImagine(context, {
       botType: 'MID_JOURNEY',
-      prompt: request.prompt,
+      prompt: buildMJPrompt(request.prompt, request.params),
       base64Array,
     });
 
@@ -131,19 +143,20 @@ export const mjImageAdapter: ImageModelAdapter = {
       throw new Error('MJ submit missing task id');
     }
 
+    await notifyTaskSubmitted(taskId, request.params?.onSubmitted as ((id: string) => void | Promise<void>) | undefined);
+
     for (let attempt = 0; attempt < DEFAULT_POLL_MAX_ATTEMPTS; attempt += 1) {
       await new Promise((resolve) =>
         setTimeout(resolve, DEFAULT_POLL_INTERVAL_MS)
       );
       const statusResponse = await queryMJTask(context, taskId);
 
-      if (isSuccessStatus(statusResponse.status) && statusResponse.imageUrl) {
-        const urls = statusResponse.imageUrls
-          ?.map(item => item.url)
-          .filter(Boolean);
+      if (isSuccessStatus(statusResponse.status)) {
+        const urls = getMJImageUrls(statusResponse);
+        if (!urls.length) throw new Error('MJ task succeeded without valid image results');
         return {
-          url: statusResponse.imageUrl,
-          urls: urls?.length ? urls : undefined,
+          url: getMJImageUrls({ imageUrl: statusResponse.imageUrl })[0] || urls[0],
+          urls,
           format: 'jpg',
           raw: statusResponse,
         };

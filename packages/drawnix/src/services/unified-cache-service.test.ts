@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { IDBFactory } from 'fake-indexeddb';
+import { IDBFactory, IDBObjectStore } from 'fake-indexeddb';
 import {
   afterAll,
   afterEach,
@@ -29,6 +29,7 @@ vi.mock('./sw-channel/client', () => ({
 import {
   UNIFIED_BLOB_STORE_NAME,
   UNIFIED_DB_NAME,
+  UNIFIED_STORE_NAME,
   unifiedCacheService,
 } from './unified-cache-service';
 
@@ -78,6 +79,41 @@ function readBlobAsText(blob: Blob | null): Promise<string | null> {
   });
 }
 
+function createMemoryCache() {
+  const entries = new Map<string, Response>();
+  const getKey = (input: unknown) =>
+    typeof input === 'string' ? input : (input as Request).url;
+  const cache = {
+    match: vi.fn(async (input: unknown) => entries.get(getKey(input))?.clone()),
+    put: vi.fn(async (input: unknown, response: Response) => {
+      entries.set(getKey(input), response.clone());
+    }),
+    delete: vi.fn(async (input: unknown) => entries.delete(getKey(input))),
+  };
+  return { cache, entries };
+}
+
+function failMetadataPutOnCall(callNumber: number): void {
+  const originalPut = IDBObjectStore.prototype.put;
+  let metadataPutCount = 0;
+
+  vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(function (
+    this: IDBObjectStore,
+    value: unknown,
+    key?: IDBValidKey
+  ) {
+    if (this.name === UNIFIED_STORE_NAME) {
+      metadataPutCount += 1;
+      if (metadataPutCount === callNumber) {
+        throw new Error('metadata write failed');
+      }
+    }
+    return key === undefined
+      ? originalPut.call(this, value)
+      : originalPut.call(this, value, key);
+  });
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
   swChannelMocks.isInitialized.mockReset().mockReturnValue(true);
@@ -90,6 +126,63 @@ afterAll(() => {
 });
 
 describe('UnifiedCacheService insecure LAN fallback', () => {
+  it.each([
+    'opentu-asset://localhost/%2Fnative%2Fmedia%2Fimage.png',
+    'http://opentu-asset.localhost/C%3A%5Cmedia%5Cimage.png',
+  ])(
+    'reads native image URLs even when network reads are disabled: %s',
+    async (url) => {
+      const invoke = vi.fn();
+      (window as any).__TAURI_INTERNALS__ = { invoke };
+      const fetchMock = vi.fn().mockResolvedValue(
+        new Response('native-image', {
+          headers: { 'content-type': 'image/png' },
+        })
+      );
+      vi.stubGlobal('fetch', fetchMock);
+      try {
+        const restored = await unifiedCacheService.getCachedBlob(url, {
+          allowNetwork: false,
+        });
+        expect(await readBlobAsText(restored)).toBe('native-image');
+        expect(fetchMock).toHaveBeenCalledWith(url, {
+          referrerPolicy: 'no-referrer',
+        });
+        expect(invoke).not.toHaveBeenCalled();
+      } finally {
+        delete (window as any).__TAURI_INTERNALS__;
+      }
+    }
+  );
+
+  it('uses the authorized native file reader when custom-scheme fetch fails', async () => {
+    const filePath = '/native/media/images/a b.png';
+    const url = `opentu-asset://localhost/${encodeURIComponent(filePath)}`;
+    const invoke = vi.fn().mockResolvedValue(btoa('native-fallback'));
+    (window as any).__TAURI_INTERNALS__ = { invoke };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockRejectedValue(new TypeError('Load failed'))
+    );
+    try {
+      const restored = await unifiedCacheService.getCachedBlob(url, {
+        allowNetwork: false,
+      });
+      expect(restored?.type).toBe('image/png');
+      expect(await readBlobAsText(restored)).toBe('native-fallback');
+      expect(invoke).toHaveBeenCalledWith('read_local_file', {
+        base64_path: filePath,
+      });
+      const reference = await unifiedCacheService.getImageForAI(url);
+      expect(reference).toEqual({
+        type: 'base64',
+        value: `data:image/png;base64,${btoa('native-fallback')}`,
+      });
+    } finally {
+      delete (window as any).__TAURI_INTERNALS__;
+    }
+  });
+
   it('recovers a missing browser cache entry from native desktop media', async () => {
     vi.stubGlobal('caches', undefined);
     const invoke = vi.fn(async (command: string) => {
@@ -204,6 +297,29 @@ describe('UnifiedCacheService insecure LAN fallback', () => {
     });
   });
 
+  it('promotes explicit and legacy nested result visibility into cache metadata', async () => {
+    const explicitUrl = '/__aitu_cache__/image/explicit-visibility.png';
+    const nestedUrl = '/__aitu_cache__/image/nested-visibility.png';
+
+    await unifiedCacheService.registerImageMetadata(explicitUrl, {
+      taskId: 'explicit-visibility-task',
+      resultVisibility: 'user',
+      params: { resultVisibility: 'internal' },
+    });
+    await unifiedCacheService.registerImageMetadata(nestedUrl, {
+      taskId: 'nested-visibility-task',
+      params: { resultVisibility: 'internal' },
+    });
+
+    const cachedMedia = await unifiedCacheService.getAllCachedMedia();
+    expect(
+      cachedMedia.find((item) => item.url === explicitUrl)?.metadata
+    ).toEqual(expect.objectContaining({ resultVisibility: 'user' }));
+    expect(
+      cachedMedia.find((item) => item.url === nestedUrl)?.metadata
+    ).toEqual(expect.objectContaining({ resultVisibility: 'internal' }));
+  });
+
   it('checks IndexedDB when Cache Storage is available but misses the media', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     vi.stubGlobal('caches', {
@@ -251,6 +367,92 @@ describe('UnifiedCacheService insecure LAN fallback', () => {
     expect(repaired.url).toBe(first.url);
     expect(repaired.reused).toBe(false);
     expect(await readBlobAsText(restored)).toBe('repair-local-image');
+  });
+});
+
+describe('UnifiedCacheService atomic media writes', () => {
+  it('rolls back a new Cache Storage response when metadata commit fails', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { cache, entries } = createMemoryCache();
+    vi.stubGlobal('caches', { open: vi.fn(async () => cache) });
+    failMetadataPutOnCall(1);
+    const cacheUrl = '/__aitu_cache__/image/metadata-failure.png';
+
+    await expect(
+      unifiedCacheService.cacheMediaFromBlob(
+        cacheUrl,
+        new Blob(['new-image'], { type: 'image/png' }),
+        'image',
+        { contentHash: 'metadata-failure' }
+      )
+    ).rejects.toThrow('metadata write failed');
+
+    expect(cache.delete).toHaveBeenCalledWith(cacheUrl);
+    expect(entries.has(cacheUrl)).toBe(false);
+    await expect(
+      unifiedCacheService.getCachedBlob(cacheUrl)
+    ).resolves.toBeNull();
+    expect(
+      (await unifiedCacheService.getAllCachedMedia()).some(
+        (item) => item.url === cacheUrl
+      )
+    ).toBe(false);
+  });
+
+  it('rolls back the IndexedDB Blob when metadata commit fails', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.stubGlobal('caches', undefined);
+    failMetadataPutOnCall(1);
+    const cacheUrl = '/__aitu_cache__/image/idb-metadata-failure.png';
+
+    await expect(
+      unifiedCacheService.cacheMediaFromBlob(
+        cacheUrl,
+        new Blob(['idb-image'], { type: 'image/png' }),
+        'image',
+        { contentHash: 'idb-metadata-failure' }
+      )
+    ).rejects.toThrow('metadata write failed');
+
+    await expect(
+      unifiedCacheService.getCachedBlob(cacheUrl)
+    ).resolves.toBeNull();
+    expect(
+      (await unifiedCacheService.getAllCachedMedia()).some(
+        (item) => item.url === cacheUrl
+      )
+    ).toBe(false);
+  });
+
+  it('preserves a concurrent valid response when a later metadata commit fails', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { cache, entries } = createMemoryCache();
+    vi.stubGlobal('caches', { open: vi.fn(async () => cache) });
+    failMetadataPutOnCall(2);
+    const cacheUrl = '/__aitu_cache__/image/concurrent-metadata-failure.png';
+    const firstBlob = new Blob(['first'], { type: 'image/png' });
+    const secondBlob = new Blob(['second-image'], { type: 'image/png' });
+
+    const [first, second] = await Promise.allSettled([
+      unifiedCacheService.cacheMediaFromBlob(cacheUrl, firstBlob, 'image', {
+        contentHash: 'first-content',
+      }),
+      unifiedCacheService.cacheMediaFromBlob(cacheUrl, secondBlob, 'image', {
+        contentHash: 'second-content',
+      }),
+    ]);
+
+    expect(first.status).toBe('fulfilled');
+    expect(second.status).toBe('rejected');
+    expect(entries.get(cacheUrl)?.headers.get('Content-Length')).toBe(
+      firstBlob.size.toString()
+    );
+    expect(cache.delete).not.toHaveBeenCalled();
+    expect(
+      (await unifiedCacheService.getAllCachedMedia()).find(
+        (item) => item.url === cacheUrl
+      )?.contentHash
+    ).toBe('first-content');
   });
 });
 

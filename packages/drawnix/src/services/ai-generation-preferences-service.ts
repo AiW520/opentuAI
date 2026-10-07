@@ -22,7 +22,11 @@ import {
 import type { VideoModel } from '../types/video.types';
 import type { GenerationType } from '../utils/ai-input-parser';
 import { applyForcedSunoParams } from '../utils/suno-model-aliases';
+import { isSeedance2ModelId } from '../utils/seedance-model';
+import { matchFrameSizeForModel } from '../utils/frame-size-matcher';
+import { sizeToAspectRatio } from './media-api/utils';
 import { getEffectiveVideoCompatibleParams } from './video-binding-utils';
+import { normalizeGPTImage25ResolutionParams } from './model-adapters/image-size-quality-resolver';
 
 type PersistedParams = Record<string, string>;
 
@@ -158,7 +162,7 @@ function migrateLegacyGPTImageQualityParam(
   const hasGPTResolutionOptions =
     resolutionOptions.has('1k') &&
     resolutionOptions.has('2k') &&
-    resolutionOptions.has('4k');
+    (resolutionOptions.has('4k') || resolutionOptions.has('auto'));
   const hasOfficialGPTQualityOptions =
     qualityOptions.has('auto') &&
     qualityOptions.has('low') &&
@@ -175,7 +179,7 @@ function migrateLegacyGPTImageQualityParam(
 
   if (
     persistedQuality &&
-    resolutionOptions.has(persistedQuality) &&
+    ['1k', '2k', '4k'].includes(persistedQuality) &&
     !resolutionOptions.has(persistedResolution)
   ) {
     nextParams.resolution = persistedQuality;
@@ -183,6 +187,11 @@ function migrateLegacyGPTImageQualityParam(
 
   if (persistedQuality && !qualityOptions.has(persistedQuality)) {
     delete nextParams.quality;
+  }
+
+  // The removed top tier restores to the highest selectable billing tier.
+  if (nextParams.resolution === '4k' && !resolutionOptions.has('4k')) {
+    nextParams.resolution = '2k';
   }
 
   return nextParams;
@@ -195,9 +204,9 @@ function sanitizeSelectedParams(
 ): PersistedParams {
   const compatibleParams = getCompatibleParams(modelId);
   const excludeParamIds = new Set(options?.excludeParamIds || []);
-  const persistedParams = migrateLegacyGPTImageQualityParam(
-    compatibleParams,
-    asRecord(rawParams)
+  const persistedParams = normalizeGPTImage25ResolutionParams(
+    modelId,
+    migrateLegacyGPTImageQualityParam(compatibleParams, asRecord(rawParams))
   );
   const nextParams: PersistedParams = {};
 
@@ -310,10 +319,7 @@ function sanitizeVideoToolParams(
   rawParams: unknown
 ): PersistedParams {
   const persistedParams = asRecord(rawParams);
-  if (
-    modelId.startsWith('doubao-seedance-2-0-') &&
-    persistedParams.size?.includes('@')
-  ) {
+  if (isSeedance2ModelId(modelId) && persistedParams.size?.includes('@')) {
     const [resolution, ratio] = persistedParams.size.split('@');
     persistedParams.size = resolution;
     if (ratio && !persistedParams.ratio) {
@@ -455,20 +461,16 @@ function getSupportedAspectRatios(modelId: string): Set<string> {
   }
 
   const supported = new Set<string>();
-  const knownAspectRatios = new Map(
-    ASPECT_RATIO_OPTIONS.map((option) => [
-      option.value.replace(':', 'x'),
-      option.value,
-    ])
-  );
-
   sizeOptions.forEach((option) => {
     if (option.value === 'auto') {
       supported.add('auto');
       return;
     }
-    const aspectRatio = knownAspectRatios.get(option.value);
-    if (aspectRatio) {
+    const aspectRatio = sizeToAspectRatio(option.value.toLowerCase());
+    if (
+      aspectRatio &&
+      ASPECT_RATIO_OPTIONS.some((item) => item.value === aspectRatio)
+    ) {
       supported.add(aspectRatio);
     }
   });
@@ -504,9 +506,9 @@ function sizeParamToAspectRatio(size: unknown): string | undefined {
     return DEFAULT_ASPECT_RATIO;
   }
 
-  const normalized = size.trim().replace(/[xX]/g, ':');
-  return ASPECT_RATIO_OPTIONS.some((option) => option.value === normalized)
-    ? normalized
+  const aspectRatio = sizeToAspectRatio(size.trim().toLowerCase());
+  return ASPECT_RATIO_OPTIONS.some((option) => option.value === aspectRatio)
+    ? aspectRatio
     : undefined;
 }
 
@@ -514,15 +516,25 @@ function getSupportedImageToolSizeFromAspectRatio(
   modelId: string,
   aspectRatio: unknown
 ): string | undefined {
-  const sanitizedAspectRatio = sanitizeAspectRatio(modelId, aspectRatio);
-  const size = convertAspectRatioToSize(sanitizedAspectRatio);
-  if (!size) {
+  const normalizedAspectRatio =
+    typeof aspectRatio === 'string' &&
+    ASPECT_RATIO_OPTIONS.some((option) => option.value === aspectRatio)
+      ? aspectRatio
+      : sanitizeAspectRatio(modelId, aspectRatio);
+  if (normalizedAspectRatio === DEFAULT_ASPECT_RATIO) {
     return undefined;
   }
 
-  return getSizeOptionsForModel(modelId).some((option) => option.value === size)
-    ? size
-    : undefined;
+  const size = convertAspectRatioToSize(normalizedAspectRatio);
+  if (
+    size &&
+    getSizeOptionsForModel(modelId).some((option) => option.value === size)
+  ) {
+    return size;
+  }
+
+  const [width, height] = normalizedAspectRatio.split(':').map(Number);
+  return matchFrameSizeForModel(width, height, modelId);
 }
 
 function mergeImageToolAspectRatioParams(

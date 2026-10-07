@@ -3,7 +3,9 @@
  * 工作区重命名验证测试
  */
 
+import 'fake-indexeddb/auto';
 import { workspaceService } from '../workspace-service';
+import { workspaceStorageService } from '../workspace-storage-service';
 import {
   ValidationError,
   WORKSPACE_DEFAULTS,
@@ -13,6 +15,8 @@ describe('Workspace Rename Validation', () => {
   beforeEach(async () => {
     // 初始化工作区
     await workspaceService.initialize();
+    await workspaceStorageService.clearAll();
+    await workspaceService.reload();
   });
 
   describe('Board Rename Validation', () => {

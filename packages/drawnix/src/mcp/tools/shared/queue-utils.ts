@@ -28,6 +28,7 @@ export interface BaseGenerationParams {
   batchTotal?: number;
   globalIndex?: number;
   referenceImages?: string[];
+  canvasAssociations?: GenerationParams['canvasAssociations'];
   params?: Record<string, unknown>;
   autoInsertToCanvas?: boolean;
   targetFrameId?: string;
@@ -36,6 +37,7 @@ export interface BaseGenerationParams {
   pptSlidePrompt?: string;
   pptReplaceElementId?: string;
   promptMeta?: PromptLineageMeta;
+  workflowGenerationTarget?: unknown;
 }
 
 /** 队列任务创建配置 */
@@ -107,7 +109,8 @@ export function createQueueTask(
   config: QueueTaskConfig
 ): MCPTaskResult {
   const promptError = validatePrompt(params.prompt);
-  if (promptError) return { ...promptError, taskId: undefined, task: undefined };
+  if (promptError)
+    return { ...promptError, taskId: undefined, task: undefined };
 
   const {
     count = 1,
@@ -121,8 +124,11 @@ export function createQueueTask(
   try {
     const maxCount = config.maxCount ?? 10;
     const actualCount = Math.min(Math.max(1, count), maxCount);
-    const batchId = paramsBatchId || (actualCount > 1 ? `batch_${Date.now()}` : options.batchId);
-    const batchTotal = paramsBatchTotal || (actualCount > 1 ? actualCount : undefined);
+    const batchId =
+      paramsBatchId ||
+      (actualCount > 1 ? `batch_${Date.now()}` : options.batchId);
+    const batchTotal =
+      paramsBatchTotal || (actualCount > 1 ? actualCount : undefined);
     const globalIndex = paramsGlobalIndex || options.globalIndex;
 
     const createdTasks: any[] = [];
@@ -148,6 +154,9 @@ export function createQueueTask(
           batchTotal,
           globalIndex,
           autoInsertToCanvas: params.autoInsertToCanvas ?? true,
+          ...(params.workflowGenerationTarget !== undefined
+            ? { workflowGenerationTarget: params.workflowGenerationTarget }
+            : {}),
         },
         config.taskType
       );
@@ -165,6 +174,9 @@ export function createQueueTask(
             batchTotal: actualCount,
             globalIndex: globalIndex ? globalIndex + i : i + 1,
             autoInsertToCanvas: params.autoInsertToCanvas ?? true,
+            ...(params.workflowGenerationTarget !== undefined
+              ? { workflowGenerationTarget: params.workflowGenerationTarget }
+              : {}),
           },
           config.taskType
         );

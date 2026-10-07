@@ -256,10 +256,12 @@ export async function exportWorkflowAssetsZip(
   );
   const loadBlob = async (url: string): Promise<Blob> => {
     const blob = await unifiedCacheService.getCachedBlob(url);
-    if (!blob) {
-      throw new Error('未找到可用缓存，且网络下载失败');
+    if (blob) return blob;
+    if (/^https?:\/\//i.test(url)) {
+      const response = await fetch(url, { referrerPolicy: 'no-referrer' });
+      if (response.ok) return response.blob();
     }
-    return blob;
+    throw new Error('未找到可用缓存，且网络下载失败');
   };
   const zip = new JSZip();
   const manifest: WorkflowExportManifest = {

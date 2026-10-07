@@ -247,7 +247,7 @@ $green-health: #10b981;
   // 下拉菜单
   &__menu {
     position: absolute;
-    min-width: 520px;
+    min-width: 600px;
     max-height: 450px;
     background: #fff;
     border: 1px solid #e5e7eb;
@@ -332,6 +332,29 @@ $green-health: #10b981;
     min-width: 0;
     display: flex;
     flex-direction: column;
+    position: relative;
+    overflow: hidden;
+  }
+
+  &__loading-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    color: var(--td-text-color-secondary, #4b5563);
+    background: rgba(255, 255, 255, 0.72);
+    backdrop-filter: blur(1px);
+    font-size: 12px;
+    pointer-events: auto;
+  }
+
+  &__loading-icon {
+    flex-shrink: 0;
+    color: $orange-primary;
+    animation: model-dropdown-spin 0.9s linear infinite;
   }
 
   &__section-header {
@@ -361,6 +384,21 @@ $green-health: #10b981;
     text-align: center;
     color: $gray-medium;
     font-size: 13px;
+  }
+
+  &__empty-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    margin-top: 12px;
+    padding: 6px 10px;
+    border: 1px solid currentColor;
+    border-radius: 6px;
+    background: transparent;
+    color: $orange-primary;
+    font: inherit;
+    cursor: pointer;
   }
 
   // 模型项
@@ -492,13 +530,18 @@ $green-health: #10b981;
     color: $orange-dark;
     cursor: pointer;
     transition: all 0.15s ease;
+    gap: 6px;
+    padding: 0 8px;
+    font-size: 12px;
+    font-weight: 650;
+    letter-spacing: 0;
+    white-space: nowrap;
 
     &:hover {
       background: rgba($orange-primary, 0.12);
       border-color: rgba($orange-primary, 0.8);
     }
   }
-
 }
 
 @keyframes model-dropdown-fade-in {
@@ -509,6 +552,12 @@ $green-health: #10b981;
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+@keyframes model-dropdown-spin {
+  to {
+    transform: rotate(360deg);
   }
 }
 
@@ -568,6 +617,11 @@ $green-health: #10b981;
       background: var(--color-surface-high, #2a2a2a);
       border-bottom-color: var(--color-border, #444);
       color: var(--color-gray-50, #999);
+    }
+
+    &__loading-overlay {
+      color: var(--color-gray-20, #ccc);
+      background: rgba(42, 42, 42, 0.72);
     }
 
     &__search {
@@ -654,6 +708,5 @@ $green-health: #10b981;
       border-color: rgba($orange-primary, 0.45);
       color: #fbbf24;
     }
-
   }
 }

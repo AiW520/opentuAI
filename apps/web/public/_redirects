@@ -1,4 +1,5 @@
 # 旧 SEO 入口跳到意图更匹配的专题手册页
+/download    /download.html    200
 /ai-image-generator.html    /user-manual/ai-generation-image-generation.html   301
 /flowchart-maker.html       /user-manual/drawing-flowchart.html                301
 /mindmap-maker.html         /user-manual/drawing-mindmap.html                  301

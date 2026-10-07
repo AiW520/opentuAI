@@ -5,7 +5,12 @@
  */
 
 import type { ModelRef } from '../utils/settings-manager';
-import type { KnowledgeContextRef, Task } from './task.types';
+import type { GenerationType } from '../utils/ai-input-parser';
+import type {
+  CanvasAssociationRef,
+  KnowledgeContextRef,
+  Task,
+} from './task.types';
 
 // ============================================================================
 // Enums
@@ -117,7 +122,11 @@ export interface WorkflowRetryContext {
 }
 
 /** 后处理状态（图片拆分、插入画布等） */
-export type PostProcessingStatus = 'pending' | 'processing' | 'completed' | 'failed';
+export type PostProcessingStatus =
+  | 'pending'
+  | 'processing'
+  | 'completed'
+  | 'failed';
 
 /** 工作流数据接口（用于消息中嵌入工作流） */
 export interface WorkflowMessageData {
@@ -167,6 +176,15 @@ export interface ChatMessage {
   aiContext?: AIInputContext;
 }
 
+/** 会话级生成栏状态 */
+export interface ChatSessionGenerationState {
+  generationType: GenerationType;
+  selectedModel: string;
+  selectedModelRef?: ModelRef | null;
+  selectedParams: Record<string, string>;
+  selectedCount: number;
+}
+
 /** 对话会话接口 */
 export interface ChatSession {
   id: string;
@@ -174,6 +192,16 @@ export interface ChatSession {
   createdAt: number;
   updatedAt: number;
   messageCount: number;
+  /** 当前话题顶部对话模型 */
+  sessionModel?: string;
+  /** 当前话题顶部对话模型来源 */
+  sessionModelRef?: ModelRef | null;
+  /** 当前话题输入栏生成配置 */
+  generationState?: ChatSessionGenerationState;
+  /** 当前话题未发送草稿 */
+  draftInput?: string;
+  /** 当前话题未发送附件，仅保存轻量引用 */
+  draftUploadedContent?: SelectedContentItem[];
 }
 
 /** 抽屉状态接口 */
@@ -214,7 +242,7 @@ export interface ChatDrawerProps {
 /** 选中的内容项 */
 export interface SelectedContentItem {
   /** 内容类型 */
-  type: 'image' | 'video' | 'graphics' | 'text';
+  type: 'image' | 'video' | 'audio' | 'graphics' | 'text';
   /** 媒体 URL（图片/视频/图形） */
   url?: string;
   /** 局部编辑蒙版 URL */
@@ -282,6 +310,8 @@ export interface AIInputContext {
     images: string[];
     /** 选中的视频 URL */
     videos: string[];
+    /** 选中的音频 URL 或素材引用 */
+    audios?: string[];
     /** 选中的图形转换为的图片 URL */
     graphics: string[];
     /** 单张普通图片自动识别出的局部编辑蒙版 URL */
@@ -292,6 +322,8 @@ export interface AIInputContext {
   finalPrompt: string;
   /** 本次生成使用的知识库笔记轻量引用 */
   knowledgeContextRefs?: KnowledgeContextRef[];
+  /** 本次生成显式提及的画布元素轻量引用 */
+  canvasAssociations?: CanvasAssociationRef[];
 }
 
 /** 工作流消息参数 */
@@ -306,6 +338,8 @@ export interface WorkflowMessageParams {
   autoOpen?: boolean;
   /** 是否追加到当前会话，默认保持创建新会话 */
   appendToCurrentSession?: boolean;
+  /** 明确追加到指定会话，优先于 appendToCurrentSession */
+  appendToSessionId?: string | null;
 }
 
 /** ChatDrawer Ref API - 用于外部控制 ChatDrawer */
@@ -330,10 +364,14 @@ export interface ChatDrawerRef {
   updateThinkingContent: (content: string) => void;
   /** 获取当前打开状态 */
   isOpen: () => boolean;
+  /** 获取当前会话 ID */
+  getActiveSessionId: () => string | null;
   /** 从指定步骤重试工作流 */
-  retryWorkflowFromStep: (workflow: WorkflowMessageData, stepIndex: number) => Promise<void>;
+  retryWorkflowFromStep: (
+    workflow: WorkflowMessageData,
+    stepIndex: number
+  ) => Promise<void>;
 }
-
 
 /** SessionList 组件 Props */
 export interface SessionListProps {

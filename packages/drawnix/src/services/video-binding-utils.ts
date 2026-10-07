@@ -6,7 +6,6 @@ import {
 import { getVideoModelConfig } from '../constants/video-model-config';
 import type { VideoModelConfig } from '../types/video.types';
 import type { ModelRef } from '../utils/settings-manager';
-import { isPublicHttpMediaUrl } from '../utils/virtual-media-url';
 import { providerTransport } from './provider-routing/provider-transport';
 import { resolveInvocationPlanFromRoute } from './provider-routing/settings-repository';
 import type {
@@ -15,55 +14,30 @@ import type {
   ResolvedProviderContext,
 } from './provider-routing/types';
 
-const SEEDANCE_AUDIO_DATA_URL_MAX_LENGTH = 16 * 1024 * 1024;
-
-export { isPublicHttpMediaUrl } from '../utils/virtual-media-url';
-
-export function isSeedanceAudioReference(value: string): boolean {
-  const normalized = value.trim();
-  if (!normalized) return false;
-  if (isPublicHttpMediaUrl(normalized)) return true;
-  if (normalized.toLowerCase().startsWith('asset://')) {
-    return /^asset:\/\/[a-z0-9][a-z0-9._/-]*$/i.test(normalized);
-  }
-  if (normalized.startsWith('data:audio/')) {
-    if (normalized.length > SEEDANCE_AUDIO_DATA_URL_MAX_LENGTH) return false;
-    const separatorIndex = normalized.indexOf(',');
-    if (separatorIndex < 0) return false;
-    const header = normalized.slice(0, separatorIndex);
-    const payload = normalized.slice(separatorIndex + 1);
-    if (!/^data:audio\/[a-z0-9.+-]+;base64$/.test(header)) return false;
-    if (!payload || payload.length % 4 !== 0) return false;
-
-    const paddingIndex = payload.indexOf('=');
-    const dataEnd = paddingIndex < 0 ? payload.length : paddingIndex;
-    if (payload.length - dataEnd > 2) return false;
-    for (let index = 0; index < dataEnd; index += 1) {
-      const code = payload.charCodeAt(index);
-      const valid =
-        (code >= 48 && code <= 57) ||
-        (code >= 65 && code <= 90) ||
-        (code >= 97 && code <= 122) ||
-        code === 43 ||
-        code === 47;
-      if (!valid) return false;
-    }
-    for (let index = dataEnd; index < payload.length; index += 1) {
-      if (payload.charCodeAt(index) !== 61) return false;
-    }
-    return true;
-  }
-
-  return (
-    normalized.length <= 512 &&
-    /^[a-z0-9][a-z0-9._/-]*$/i.test(normalized) &&
-    !normalized.toLowerCase().startsWith('blob:')
-  );
-}
+export {
+  areSeedanceAudioDataUrlsWithinLimit,
+  isPublicHttpMediaUrl,
+  isSeedanceAudioReference,
+} from '../utils/virtual-media-url';
 
 const FIXED_SORA_DURATION_MODEL_PATTERN = /^sora-2-(\d+)s$/i;
 const DEFAULT_VIDEO_POLL_PATH = '/videos/{taskId}';
 const DEFAULT_VIDEO_DOWNLOAD_PATH = '/videos/{taskId}/content';
+export const MINIMAX_H3_VIDEO_SUBMIT_PATH = '/v2/video_generation';
+export const MINIMAX_H3_V1_VIDEO_SUBMIT_PATH = '/v1/videos';
+const MINIMAX_H3_VIDEO_POLL_PATH = '/v2/query/video_generation/{taskId}';
+export const MINIMAX_H3_V1_VIDEO_POLL_PATH = '/v1/videos/{taskId}';
+export const MINIMAX_H3_API_VERSION_PARAM_ID = 'api_version';
+const MINIMAX_H3_RESOLUTIONS = new Set(['768P', '2K']);
+const MINIMAX_H3_RATIOS = new Set([
+  '21:9',
+  '16:9',
+  '4:3',
+  '1:1',
+  '3:4',
+  '9:16',
+  'adaptive',
+]);
 const SORA_API_ALLOWED_DURATIONS = ['4', '8', '12'] as const;
 const SORA_MODE_VALUES = new Set(['api', 'web']);
 const KLING_ACTION_VALUES = new Set(['text2video', 'image2video']);
@@ -310,6 +284,184 @@ export interface ResolvedVideoSubmission {
   bindingMetadata: ProviderVideoBindingMetadata | null;
 }
 
+export function isMiniMaxH3Model(modelId?: string | null): boolean {
+  return modelId?.trim().toLowerCase() === 'minimax-h3';
+}
+
+export type MiniMaxH3ApiVersion = 'v1' | 'v2';
+
+export function resolveMiniMaxH3ApiVersion(
+  params?: Record<string, unknown> | null
+): MiniMaxH3ApiVersion {
+  return String(params?.[MINIMAX_H3_API_VERSION_PARAM_ID] || '')
+    .trim()
+    .toLowerCase() === 'v2'
+    ? 'v2'
+    : 'v1';
+}
+
+export function resolveMiniMaxH3VideoSubmitPath(
+  _params?: Record<string, unknown> | null
+): string {
+  return MINIMAX_H3_VIDEO_SUBMIT_PATH;
+}
+
+export function buildMiniMaxH3VideoRequest(params: {
+  prompt: string;
+  duration?: string | number | null;
+  size?: string | null;
+  ratio?: unknown;
+  referenceImages?: string[];
+  referenceVideos?: string[];
+}): Record<string, unknown> {
+  const parsedDuration = Number(params.duration);
+  const duration =
+    Number.isInteger(parsedDuration) &&
+    parsedDuration >= 4 &&
+    parsedDuration <= 15
+      ? parsedDuration
+      : 5;
+  const requestedResolution = String(params.size || '')
+    .trim()
+    .toUpperCase();
+  const resolution = MINIMAX_H3_RESOLUTIONS.has(requestedResolution)
+    ? requestedResolution
+    : '768P';
+  const requestedRatio = String(params.ratio || '').trim();
+  const referenceImages = (params.referenceImages || [])
+    .map((url) => url?.trim())
+    .filter((url): url is string => Boolean(url));
+  const referenceVideos = (params.referenceVideos || [])
+    .map((url) => url?.trim())
+    .filter((url): url is string => Boolean(url));
+  if (referenceVideos.length > 3) {
+    throw new Error('MiniMax-H3 参考视频最多支持 3 个');
+  }
+  if (referenceVideos.length > 0 && referenceImages.length > 9) {
+    throw new Error('MiniMax-H3 参考图片最多支持 9 张');
+  }
+  if (referenceVideos.length === 0 && referenceImages.length > 2) {
+    throw new Error('MiniMax-H3 首帧/尾帧图片最多支持 2 张');
+  }
+  const hasReferenceImages = referenceImages.length > 0;
+  const ratio =
+    MINIMAX_H3_RATIOS.has(requestedRatio) &&
+    (requestedRatio !== 'adaptive' || hasReferenceImages || referenceVideos.length > 0)
+      ? requestedRatio
+      : hasReferenceImages || referenceVideos.length > 0
+      ? 'adaptive'
+      : '16:9';
+  const content: Array<Record<string, unknown>> = [
+    { type: 'text', text: params.prompt },
+  ];
+
+  if (referenceVideos.length > 0) {
+    for (const url of referenceImages) {
+      content.push({ type: 'image_url', role: 'reference_image', image_url: { url } });
+    }
+    for (const referenceVideo of referenceVideos) {
+      content.push({
+        type: 'video_url',
+        role: 'reference_video',
+        video_url: { url: referenceVideo },
+      });
+    }
+  } else if (referenceImages.length > 0) {
+    content.push({
+      type: 'image_url',
+      role: 'first_frame',
+      image_url: { url: referenceImages[0] },
+    });
+    if (referenceImages.length === 2) {
+      content.push({
+        type: 'image_url',
+        role: 'last_frame',
+        image_url: { url: referenceImages[1] },
+      });
+    }
+  }
+
+  return {
+    model: 'MiniMax-H3',
+    content,
+    duration,
+    resolution,
+    ratio,
+  };
+}
+
+export function normalizeMiniMaxH3VideoResponse(
+  payload: Record<string, any>,
+  fallbackId?: string
+): Record<string, any> {
+  const task =
+    payload?.task && typeof payload.task === 'object' ? payload.task : payload;
+  const rawStatus = String(
+    task?.status || payload?.status || 'queued'
+  ).toLowerCase();
+  const status =
+    rawStatus === 'running'
+      ? 'in_progress'
+      : rawStatus === 'succeeded'
+      ? 'completed'
+      : rawStatus === 'cancelled' || rawStatus === 'canceled'
+      ? 'failed'
+      : rawStatus;
+  const id = payload?.task_id || task?.id || fallbackId;
+  const videoUrl = task?.content?.url || task?.video_url || task?.url;
+  const duration = task?.duration;
+  const businessCode = payload?.base_resp?.status_code;
+  const businessMessage = String(
+    payload?.base_resp?.status_msg || payload?.message || ''
+  ).trim();
+
+  // Tuzi may return provider/business errors in a successful HTTP response.
+  // Convert them to a terminal failure so the shared poller cannot spin on a
+  // response without a task status.
+  if (businessCode !== undefined && String(businessCode) !== '0') {
+    return {
+      ...task,
+      id,
+      model: task?.model || 'MiniMax-H3',
+      status: 'failed',
+      error: {
+        code: String(businessCode),
+        message: businessMessage || `MiniMax-H3 请求失败（${businessCode}）`,
+      },
+    };
+  }
+
+  return {
+    ...task,
+    id,
+    model: task?.model || 'MiniMax-H3',
+    status,
+    ...(videoUrl ? { url: videoUrl, video_url: videoUrl } : {}),
+    ...(duration !== undefined ? { seconds: String(duration) } : {}),
+  };
+}
+
+export function appendVideoOutputParams(
+  formData: FormData,
+  model: string,
+  size?: string,
+  params?: Record<string, unknown>
+): void {
+  const isMiniMaxH3 = isMiniMaxH3Model(model);
+
+  if (size) {
+    const normalizedSize = isMiniMaxH3 ? size.trim().toUpperCase() : size;
+    formData.append(isMiniMaxH3 ? 'resolution' : 'size', normalizedSize);
+  }
+
+  if (isMiniMaxH3) {
+    const ratio = params?.ratio;
+    if (ratio !== undefined && ratio !== null && String(ratio).trim()) {
+      formData.append('ratio', String(ratio).trim());
+    }
+  }
+}
+
 export function getResolvedVideoBindingMetadata(
   modelId?: string | null,
   binding?: ProviderModelBinding | null,
@@ -384,26 +536,27 @@ export function getEffectiveVideoDefaultParams(
 export function getEffectiveVideoCompatibleParams(
   modelId: string,
   modelRef?: ModelRef | string | null,
-  params?: Record<string, unknown> | null
+  params?: Record<string, unknown> | null,
+  localBinding?: ProviderModelBinding | null
 ): ParamConfig[] {
   const compatibleParams = getCompatibleParams(modelId);
-  const plan = resolveInvocationPlanFromRoute('video', modelRef || modelId);
+  const binding = localBinding !== undefined ? localBinding : resolveInvocationPlanFromRoute('video', modelRef || modelId)?.binding || null;
   const metadata = getResolvedVideoBindingMetadata(
     modelId,
-    plan?.binding || null,
+    binding,
     params
   );
   const selectedKlingAction = resolveSelectedKlingAction(params);
-  const effectiveConfig = getEffectiveVideoModelConfigForSelection(
+  const effectiveConfig = getEffectiveVideoModelConfig(
     modelId,
-    modelRef,
+    binding,
     params
   );
 
   return compatibleParams
     .filter((param) => {
       if (
-        plan?.binding?.protocol === 'kling.video' &&
+        binding?.protocol === 'kling.video' &&
         selectedKlingAction === 'image2video' &&
         KLING_CAMERA_PARAM_IDS.has(param.id)
       ) {
@@ -414,7 +567,7 @@ export function getEffectiveVideoCompatibleParams(
     })
     .map((param) => {
       if (
-        plan?.binding?.protocol === 'kling.video' &&
+        binding?.protocol === 'kling.video' &&
         metadata?.versionField === param.id &&
         param.valueType === 'enum'
       ) {
@@ -565,6 +718,18 @@ export function resolveVideoPollPath(
   return resolveTemplatePath(template, videoId, params);
 }
 
+export function resolveVideoPollPathForModel(
+  videoId: string,
+  modelId?: string | null,
+  binding?: ProviderModelBinding | null,
+  params?: Record<string, unknown> | null
+): string {
+  if (isMiniMaxH3Model(modelId)) {
+    return resolveTemplatePath(MINIMAX_H3_VIDEO_POLL_PATH, videoId);
+  }
+  return resolveVideoPollPath(videoId, binding, params);
+}
+
 export function shouldDownloadVideoContent(
   modelId?: string | null,
   binding?: ProviderModelBinding | null,
@@ -599,12 +764,23 @@ export function resolveVideoDownloadPath(
   return resolveTemplatePath(template, videoId);
 }
 
+export class VideoContentHttpError extends Error {
+  constructor(public readonly status: number, detail: string) {
+    super(`视频内容下载失败: ${status}${detail ? ` - ${detail}` : ''}`);
+    this.name = 'VideoContentHttpError';
+  }
+}
+
 export async function downloadVideoContentToLocalUrl(params: {
   videoId: string;
   provider: ResolvedProviderContext;
   binding?: ProviderModelBinding | null;
   modelId?: string | null;
   cacheKey?: string;
+  resultVisibility?: 'user' | 'internal';
+  signal?: AbortSignal;
+  fetcher?: typeof fetch;
+  fallbackToObjectUrl?: boolean;
 }): Promise<string> {
   const response = await providerTransport.send(params.provider, {
     path: resolveVideoDownloadPath(
@@ -617,15 +793,13 @@ export async function downloadVideoContentToLocalUrl(params: {
     headers: {
       Accept: 'video/*,application/octet-stream',
     },
+    signal: params.signal,
+    fetcher: params.fetcher,
   });
 
   if (!response.ok) {
     const errorText = await response.text().catch(() => '');
-    throw new Error(
-      `视频内容下载失败: ${response.status}${
-        errorText ? ` - ${errorText}` : ''
-      }`
-    );
+    throw new VideoContentHttpError(response.status, errorText);
   }
 
   const blob = await response.blob();
@@ -642,9 +816,15 @@ export async function downloadVideoContentToLocalUrl(params: {
     await unifiedCacheService.cacheMediaFromBlob(localUrl, blob, 'video', {
       taskId: cacheKey,
       model: params.modelId || undefined,
+      ...(params.resultVisibility
+        ? { resultVisibility: params.resultVisibility }
+        : {}),
     });
     return localUrl;
-  } catch {
+  } catch (error) {
+    if (params.fallbackToObjectUrl === false) {
+      throw error;
+    }
     return URL.createObjectURL(blob);
   }
 }

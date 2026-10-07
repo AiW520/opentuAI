@@ -1,6 +1,30 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 describe('tuzi-api-endpoints', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it.each([false, true])('routes status discovery for native=%s', async (native) => {
+    vi.resetModules();
+    vi.stubGlobal('window', {
+      ...(native ? { __TAURI_INTERNALS__: {} } : {}),
+      location: { origin: 'http://localhost:7201' },
+    });
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ data: { api_address_list: [] } }),
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const { loadTuziApiEndpointSources } = await import(
+      '../provider-routing/tuzi-api-endpoints'
+    );
+    await loadTuziApiEndpointSources();
+    expect(fetchMock).toHaveBeenCalledWith(
+      native
+        ? 'https://api.tu-zi.com/api/status'
+        : '/__opentu_tuzi_proxy__/api/api/status',
+      { cache: 'no-store' }
+    );
+  });
   it('只把内置 tuzi-api 上游 origin 视为可信', async () => {
     vi.resetModules();
 
@@ -76,5 +100,39 @@ describe('tuzi-api-endpoints', () => {
         endpoint.url.replace(/\/+$/, '')
       )
     );
+  });
+
+  it('只把显式配置的本地 API 作为直连恢复节点', async () => {
+    vi.resetModules();
+    vi.doMock('../tuzi-embedded-config', () => ({
+      tuziEmbeddedConfig: {
+        enabled: true,
+        apiBaseUrl: 'http://192.168.50.225:18180',
+        parentOrigin: null,
+      },
+    }));
+
+    try {
+      const {
+        isConfiguredTuziApiBaseUrl,
+        isTrustedTuziApiBaseUrl,
+        isTuziRequestRecoveryBaseUrl,
+      } = await import('../provider-routing/tuzi-api-endpoints');
+
+      expect(isConfiguredTuziApiBaseUrl('http://192.168.50.225:18180/v1')).toBe(
+        true
+      );
+      expect(
+        isTuziRequestRecoveryBaseUrl('http://192.168.50.225:18180/v1')
+      ).toBe(true);
+      expect(isTrustedTuziApiBaseUrl('http://192.168.50.225:18180/v1')).toBe(
+        false
+      );
+      expect(
+        isTuziRequestRecoveryBaseUrl('http://192.168.50.226:18180/v1')
+      ).toBe(false);
+    } finally {
+      vi.doUnmock('../tuzi-embedded-config');
+    }
   });
 });

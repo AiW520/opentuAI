@@ -1,0 +1,61 @@
+name: Publish desktop preview release
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Desktop Verification Build run ID to publish'
+        required: true
+        type: string
+      tag:
+        description: 'Preview release tag'
+        required: true
+        default: 'v1.2.11-preview.1'
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      RUN_ID: ${{ inputs.run_id }}
+      RELEASE_TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download verification artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p build-artifacts release-assets
+          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --dir build-artifacts
+          find build-artifacts -type f -print
+          find build-artifacts -type f \( \
+            -name '*.dmg' -o -name '*.exe' -o -name '*.msi' -o \
+            -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' -o \
+            -name '*.sha256' -o -name 'manifest-*.json' -o -name 'BUILD-NOTES.txt' \
+          \) -exec cp {} release-assets/ \;
+          test "$(find release-assets -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.msi' -o -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' \) | wc -l)" -ge 4
+      - name: Create preview release and upload installers
+        run: |
+          set -euo pipefail
+          notes_file="$RUNNER_TEMP/release-notes.md"
+          cat > "$notes_file" <<'EOF'
+          ## OpenTu Desktop v1.2.11 preview
+
+          This is an unsigned verification build from the desktop verification workflow.
+          macOS and Windows may show security warnings because signing and notarization are not configured.
+          Download the installer for your platform and verify the matching `.sha256` file when available.
+          EOF
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" release-assets/* --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$RELEASE_TAG" release-assets/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --target main \
+              --prerelease \
+              --title "OpenTu Desktop v1.2.11 Preview" \
+              --notes-file "$notes_file"
+          fi

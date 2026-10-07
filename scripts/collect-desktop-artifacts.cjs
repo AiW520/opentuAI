@@ -5,11 +5,12 @@ const crypto = require('node:crypto');
 const root = path.resolve(__dirname, '..');
 const target = process.env.BUILD_TARGET;
 const platform = process.env.BUILD_PLATFORM;
-if (!target || !platform || !/^[a-z0-9-]+$/.test(target + platform)) {
+if (!target || !platform || !/^[a-z0-9_-]+$/.test(target + platform)) {
   throw new Error('BUILD_TARGET and BUILD_PLATFORM must identify the built target');
 }
 const version = JSON.parse(fs.readFileSync(path.join(root, 'apps/desktop/package.json'), 'utf8')).version;
-const bundle = path.join(root, 'apps/desktop/src-tauri/target', target, 'release/bundle');
+const bundleArgument = process.argv.find((value) => value.startsWith('--bundle-dir='))?.slice(13);
+const bundle = bundleArgument ? path.resolve(bundleArgument) : path.join(root, 'apps/desktop/src-tauri/target', target, 'release/bundle');
 const output = path.join(root, 'outputs/desktop-build');
 fs.mkdirSync(output, { recursive: true });
 const files = [];
@@ -18,7 +19,7 @@ function collect(directory) {
     const file = path.join(directory, entry.name);
     if (entry.isDirectory()) {
       if (!entry.name.endsWith('.app')) collect(file);
-    } else if (/\.(dmg|exe|msi|AppImage|deb)$/.test(entry.name)) {
+    } else if (entry.name.includes(version) && /\.(dmg|exe|msi|AppImage|deb)$/.test(entry.name)) {
       files.push(file);
     }
   }

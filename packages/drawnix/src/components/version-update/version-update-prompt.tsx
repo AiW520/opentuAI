@@ -3,30 +3,26 @@ import React, { useState, useEffect } from 'react';
 import { Button, Dialog } from 'tdesign-react';
 import { useTaskQueue } from '../../hooks/useTaskQueue';
 import { RefreshIcon } from 'tdesign-icons-react';
-import { useI18n } from '../../i18n';
+import type { DesktopUpdateState } from '../../utils/desktop-update-state';
 import './version-update-prompt.scss';
 
-declare global {
-  interface Window {
-    __OPENTU_DESKTOP_UPDATE_EVENT__?: {
-      version: string;
-      desktop: true;
-    };
-  }
-}
-
 export const VersionUpdatePrompt: React.FC = () => {
-  const [updateAvailable, setUpdateAvailable] = useState<{ version: string; changelog?: string[] } | null>(null);
-  const [updateError, setUpdateError] = useState(false);
+  const [updateAvailable, setUpdateAvailable] = useState<{
+    version: string;
+    changelog?: string[];
+  } | DesktopUpdateState | null>(null);
   const [showChangelog, setShowChangelog] = useState(false);
   const { activeTasks } = useTaskQueue();
-  // const { t } = useI18n(); // Assuming i18n is available, if not fallback to strings
 
   useEffect(() => {
     const handleUpdateAvailable = async (event: Event) => {
       const customEvent = event as CustomEvent;
       const newVersion = customEvent.detail?.version;
       const isDesktopUpdate = customEvent.detail?.desktop === true;
+      if (isDesktopUpdate && newVersion) {
+        setUpdateAvailable(customEvent.detail);
+        return;
+      }
       
       // 获取当前运行的版本（从 HTML meta 标签）
       const currentVersionMeta = document.querySelector('meta[name="app-version"]');
@@ -38,19 +34,14 @@ export const VersionUpdatePrompt: React.FC = () => {
         if (res.ok) {
           const data = await res.json();
           
-          // Tauri updater has already verified the signed update. Its version is
-          // authoritative; web version.json can belong to a different channel.
-          if (!isDesktopUpdate && currentVersion && data.version === currentVersion) {
+          if (currentVersion && data.version === currentVersion) {
             // console.log('[VersionUpdatePrompt] Already on latest version, skipping prompt');
             return;
           }
           
           // Use fetched data if versions match or if event didn't specify version
-          if (isDesktopUpdate || !newVersion || data.version === newVersion) {
-            setUpdateAvailable(
-              isDesktopUpdate ? { ...data, version: newVersion } : data
-            );
-            setUpdateError(false);
+          if (!newVersion || data.version === newVersion) {
+            setUpdateAvailable(data);
             return;
           }
         }
@@ -66,18 +57,13 @@ export const VersionUpdatePrompt: React.FC = () => {
       // Fallback to event detail
       if (newVersion) {
         setUpdateAvailable(customEvent.detail);
-        setUpdateError(false);
       }
     };
 
-    const handleUpdateError = () => setUpdateError(true);
-
     window.addEventListener('sw-update-available', handleUpdateAvailable);
-    window.addEventListener('desktop-update-error', handleUpdateError);
 
     const queuedUpdate = window.__OPENTU_DESKTOP_UPDATE_EVENT__;
     if (queuedUpdate) {
-      delete window.__OPENTU_DESKTOP_UPDATE_EVENT__;
       void handleUpdateAvailable(
         new CustomEvent('sw-update-available', { detail: queuedUpdate })
       );
@@ -96,11 +82,15 @@ export const VersionUpdatePrompt: React.FC = () => {
 
     return () => {
       window.removeEventListener('sw-update-available', handleUpdateAvailable);
-      window.removeEventListener('desktop-update-error', handleUpdateError);
     };
   }, []);
 
+  const desktopUpdate = updateAvailable && 'desktop' in updateAvailable
+    ? updateAvailable as DesktopUpdateState
+    : null;
+  const busy = Boolean(desktopUpdate && ['downloading', 'installing', 'restarting'].includes(desktopUpdate.status));
   const handleUpdate = () => {
+    if (busy || activeTasks.length > 0) return;
     // Keep the prompt visible until the new SW actually takes over.
     // Otherwise a failed COMMIT_UPGRADE looks like a successful update.
     setShowChangelog(false);
@@ -108,28 +98,8 @@ export const VersionUpdatePrompt: React.FC = () => {
     window.dispatchEvent(new CustomEvent('user-confirmed-upgrade'));
   };
 
-  const retryUpdate = () => {
-    setUpdateError(false);
-    window.dispatchEvent(new CustomEvent('user-confirmed-upgrade'));
-  };
-
-  if (updateError && updateAvailable) {
-    return (
-      <div className="version-update-prompt version-update-prompt--error">
-        <div className="version-update-prompt__content">
-          <span className="version-update-prompt__text">
-            更新 v{updateAvailable.version} 失败，请重试
-          </span>
-          <Button theme="primary" size="small" onClick={retryUpdate}>
-            重试
-          </Button>
-        </div>
-      </div>
-    );
-  }
-
   // Only show if update is available AND no active tasks
-  if (!updateAvailable || activeTasks.length > 0) {
+  if (!updateAvailable || (activeTasks.length > 0 && !busy)) {
     return null;
   }
 
@@ -138,7 +108,15 @@ export const VersionUpdatePrompt: React.FC = () => {
       <div className="version-update-prompt">
         <div className="version-update-prompt__content">
           <span className="version-update-prompt__text">
-            新版本 v{updateAvailable.version} 已就绪
+            {desktopUpdate?.status === 'downloading'
+              ? `正在下载 v${updateAvailable.version}${desktopUpdate.progress !== undefined ? ` · ${desktopUpdate.progress}%` : ''}`
+              : desktopUpdate?.status === 'installing'
+              ? '正在验证并安装更新'
+              : desktopUpdate?.status === 'restarting'
+              ? '更新已安装，正在重启'
+              : desktopUpdate?.status === 'error'
+              ? desktopUpdate.restartOnly ? '更新已安装，重启失败' : '更新失败，请检查网络后重试'
+              : `发现新版本 v${updateAvailable.version}`}
           </span>
           {updateAvailable.changelog && updateAvailable.changelog.length > 0 && (
             <Button
@@ -154,9 +132,11 @@ export const VersionUpdatePrompt: React.FC = () => {
             theme="primary" 
             size="small" 
             onClick={handleUpdate}
+            disabled={busy}
+            loading={busy}
             icon={<RefreshIcon />}
           >
-            立即更新
+            {desktopUpdate?.status === 'error' ? desktopUpdate.restartOnly ? '重启应用' : '重试更新' : '立即更新'}
           </Button>
         </div>
       </div>
@@ -165,9 +145,9 @@ export const VersionUpdatePrompt: React.FC = () => {
         header={`新版本 v${updateAvailable.version} 更新内容`}
         visible={showChangelog}
         onClose={() => setShowChangelog(false)}
-        width={600}
+        width="min(600px, calc(100vw - 32px))"
         footer={
-          <Button theme="primary" onClick={handleUpdate}>
+          <Button theme="primary" onClick={handleUpdate} disabled={busy || activeTasks.length > 0} loading={busy}>
             立即更新
           </Button>
         }

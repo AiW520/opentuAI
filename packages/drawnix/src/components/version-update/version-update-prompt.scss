@@ -11,17 +11,20 @@
   border-radius: var(--td-radius-medium);
   box-shadow: var(--td-shadow-2);
   padding: 8px 12px;
+  max-width: calc(100vw - var(--aitu-toolbar-right-edge, #{$toolbar-width}) - 24px);
   animation: slideIn 0.3s ease-out;
 
   &__content {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 12px;
   }
 
   &__text {
     font-size: 14px;
     color: var(--td-text-color-primary);
+    overflow-wrap: anywhere;
   }
 
   @keyframes slideIn {

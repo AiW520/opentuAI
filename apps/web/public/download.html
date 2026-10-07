@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#f5f5f7" />
     <meta name="description" content="下载 OpenTu 开图桌面版，获得更完整的 AI 画布创作体验。" />
-    <link rel="icon" href="/icons/favicon-32x32.png" />
+    <link rel="icon" href="./icons/favicon-32x32.png" />
     <title>下载 OpenTu 开图桌面版</title>
     <style>
       :root {
@@ -59,9 +59,9 @@
       .button-secondary { color: var(--ink); background: rgba(255,255,255,.66); border-color: var(--line); }
       .button-secondary:hover { background: var(--surface-strong); border-color: #aaaab0; }
       .note { margin-top: 16px !important; font-size: 13px !important; color: var(--muted); }
-      .hero-art { width: min(680px, 100%); margin: 28px auto 0; }
+      .hero-art { width: min(600px, 100%); margin: 24px auto 0; }
       .hero-art img { display: block; width: 100%; aspect-ratio: 14 / 9; object-fit: contain; border-radius: 16px; }
-      .section { padding: 32px 0 86px; }
+      .section { padding: 18px 0 64px; }
       .section-heading { display: flex; align-items: end; justify-content: space-between; gap: 24px; margin-bottom: 22px; }
       h2 { margin: 0; font-size: 30px; letter-spacing: 0; }
       .section-heading p { margin: 0; color: var(--muted); font-size: 14px; }
@@ -107,9 +107,9 @@
   </head>
   <body>
     <header class="shell nav">
-      <a class="brand" href="/home.html"><img src="/icons/favicon-32x32.png" alt="" />OpenTu 开图</a>
+      <a class="brand" href="https://opentu.ai/home.html"><img src="./icons/favicon-32x32.png" alt="" />OpenTu 开图</a>
       <nav class="nav-links" aria-label="主导航">
-        <a href="/home.html">产品</a>
+        <a href="https://opentu.ai/home.html">产品</a>
         <a href="https://github.com/tuziapi/opentu">GitHub</a>
         <a href="#downloads">下载</a>
       </nav>
@@ -128,7 +128,7 @@
           <p class="note">macOS、Windows、Linux · 安装包版本以已发布列表为准</p>
         </div>
         <figure class="hero-art">
-          <img src="/desktop-preview.png" alt="OpenTu 桌面画布工作区截图" />
+          <img src="./desktop-preview.png" alt="OpenTu 桌面画布工作区截图" />
         </figure>
       </section>
 
@@ -140,9 +140,9 @@
         <div class="download-card">
           <div class="release-bar"><div class="release-title"><span id="release-channel">已发布</span><strong id="release-version">加载中</strong></div><div class="release-meta" id="release-date">—</div></div>
           <div class="platform-grid" id="platform-grid" aria-live="polite">
-            <article class="platform"><div class="platform-mark"><img src="/download-assets/laptop.svg" alt="" /></div><h3>macOS</h3><p>Apple 芯片与 Intel Mac</p><span class="asset-info">正在读取安装包…</span></article>
-            <article class="platform"><div class="platform-mark"><img src="/download-assets/monitor.svg" alt="" /></div><h3>Windows</h3><p>适用于 64 位 Windows</p><span class="asset-info">正在读取安装包…</span></article>
-            <article class="platform"><div class="platform-mark"><img src="/download-assets/terminal.svg" alt="" /></div><h3>Linux</h3><p>AppImage、Deb 与 RPM</p><span class="asset-info">正在读取安装包…</span></article>
+            <article class="platform"><div class="platform-mark"><img src="./download-assets/laptop.svg" alt="" /></div><h3>macOS</h3><p>Apple 芯片与 Intel Mac</p><span class="asset-info">正在读取安装包…</span></article>
+            <article class="platform"><div class="platform-mark"><img src="./download-assets/monitor.svg" alt="" /></div><h3>Windows</h3><p>适用于 64 位 Windows</p><span class="asset-info">正在读取安装包…</span></article>
+            <article class="platform"><div class="platform-mark"><img src="./download-assets/terminal.svg" alt="" /></div><h3>Linux</h3><p>AppImage、Deb 与 RPM</p><span class="asset-info">正在读取安装包…</span></article>
           </div>
         </div>
         <div class="details">
@@ -153,7 +153,7 @@
       </section>
     </main>
 
-    <footer class="shell footer"><span>© OpenTu 开图 · Open source creative workspace</span><span><a href="https://github.com/tuziapi/opentu/releases">Release notes</a> · <a href="/home.html">返回产品页</a></span></footer>
+    <footer class="shell footer"><span>© OpenTu 开图 · Open source creative workspace</span><span><a href="https://github.com/tuziapi/opentu/releases">Release notes</a> · <a href="https://opentu.ai/home.html">返回产品页</a></span></footer>
 
     <script>
       const repository = 'tuziapi/opentu';
@@ -174,7 +174,7 @@
         const matches = platform.names.map((name) => assets.find((item) => item.name === name)).filter(Boolean);
         const article = document.createElement('article');
         article.className = 'platform';
-        article.innerHTML = `<div class="platform-mark"><img src="/download-assets/${platform.icon}.svg" alt="" /></div><h3>${platform.title}</h3><p>${platform.description}</p>`;
+        article.innerHTML = `<div class="platform-mark"><img src="./download-assets/${platform.icon}.svg" alt="" /></div><h3>${platform.title}</h3><p>${platform.description}</p>`;
         if (matches.length) {
           const choice = document.createElement('div');
           choice.className = 'asset-choice';
@@ -190,7 +190,7 @@
           }
           const download = document.createElement('a');
           download.className = 'button button-primary';
-          download.innerHTML = '<img src="/download-assets/download.svg" alt="" />下载安装包';
+          download.innerHTML = '<img src="./download-assets/download.svg" alt="" />下载安装包';
           const info = document.createElement('span');
           info.className = 'asset-info';
           function updateChoice() {
@@ -230,7 +230,7 @@
           return;
         } catch (error) {
           try {
-            const fallback = await fetch('/download-release.json', { cache: 'no-store' });
+            const fallback = await fetch('./download-release.json', { cache: 'no-store' });
             if (!fallback.ok) throw new Error(`fallback ${fallback.status}`);
             const release = await fallback.json();
             applyRelease(release);

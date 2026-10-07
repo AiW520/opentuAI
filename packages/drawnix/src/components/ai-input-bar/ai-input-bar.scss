@@ -2552,6 +2552,12 @@ $ai-input-small-expanded-max-height: $ai-input-small-line-height * 6 +
   }
 }
 
+@media (max-width: 768px) and (max-height: 480px) {
+  .ai-input-bar .inspiration-board {
+    display: none;
+  }
+}
+
 @media (max-width: 360px) {
   .ai-input-bar {
     .aitu-toolbar-dock-left &__container--expanded {

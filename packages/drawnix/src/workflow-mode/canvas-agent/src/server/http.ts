@@ -61,11 +61,12 @@ export function startHttpServer() {
     const prepareDraftThread = (clientId: string, permission: AgentPermissionMode) => {
         if (draftThreadStart) return draftThreadStart;
         const workspace = ensureSiteWorkspace(config);
-        const prepared: ReturnType<typeof startCodexThread> = (async () => {
+        const preparation: { promise?: ReturnType<typeof startCodexThread> } = {};
+        const prepared = (async () => {
             emit("agent_bootstrap", { type: "codex.preparing", sourceClientId: clientId });
             try {
                 const thread = await startCodexThread(emit, workspace.workspacePath, permission, true);
-                if (draftThreadStart !== prepared) return thread;
+                if (draftThreadStart !== preparation.promise) return thread;
                 const threadId = String((thread as Record<string, unknown>).id || "");
                 if (threadId && !ensureSiteWorkspace(config).activeThreadId) {
                     session.completeConversationPreparation(threadId);
@@ -73,16 +74,17 @@ export function startHttpServer() {
                 }
                 return thread;
             } catch (error) {
-                if (draftThreadStart === prepared) {
+                if (draftThreadStart === preparation.promise) {
                     const text = error instanceof Error ? error.message : String(error);
                     session.failConversationPreparation(text);
                     emit("agent_bootstrap", { type: "codex.prepare_failed", sourceClientId: clientId, error: text });
                 }
                 throw error;
             } finally {
-                if (draftThreadStart === prepared) draftThreadStart = null;
+                if (draftThreadStart === preparation.promise) draftThreadStart = null;
             }
         })();
+        preparation.promise = prepared;
         draftThreadStart = prepared;
         return prepared;
     };

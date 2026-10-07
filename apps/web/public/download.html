@@ -169,13 +169,16 @@
         { title: 'Linux', mark: '◒', description: 'AppImage、Deb 与 RPM', names: ['Opentu-linux-x86_64.AppImage', 'Opentu-linux-aarch64.AppImage', 'Opentu-linux-x86_64.deb', 'Opentu-linux-x86_64.rpm'] },
       ];
       function renderPlatform(platform, assets) {
-        const asset = platform.names.map((name) => assets.find((item) => item.name === name)).find(Boolean);
-        const checksum = asset && assets.find((item) => item.name === `${asset.name}.sha256`);
+        const matches = platform.names.map((name) => assets.find((item) => item.name === name)).filter(Boolean);
         const article = document.createElement('article');
         article.className = 'platform';
         article.innerHTML = `<div class="platform-mark">${platform.mark}</div><h3>${platform.title}</h3><p>${platform.description}</p>`;
-        if (asset) {
-          article.innerHTML += `<a class="asset-link" href="${asset.browser_download_url}" target="_blank" rel="noreferrer">下载 ${asset.name.split('-').pop()} <span aria-hidden="true">↓</span></a><span class="asset-info">${formatSize(asset.size)}${checksum ? ` · <a href="${checksum.browser_download_url}" target="_blank" rel="noreferrer">SHA-256</a>` : ''}</span>`;
+        if (matches.length) {
+          for (const asset of matches) {
+            const checksum = assets.find((item) => item.name === `${asset.name}.sha256`);
+            const label = asset.name.includes('aarch64') ? 'Apple 芯片' : asset.name.includes('x86_64') ? 'Intel / x64' : asset.name.endsWith('.msi') ? 'MSI 安装包' : asset.name.endsWith('.deb') ? 'Deb' : asset.name.endsWith('.rpm') ? 'RPM' : '安装包';
+            article.innerHTML += `<a class="asset-link" href="${asset.browser_download_url}" target="_blank" rel="noreferrer">${label} <span aria-hidden="true">↓</span></a><span class="asset-info">${formatSize(asset.size)}${checksum ? ` · <a href="${checksum.browser_download_url}" target="_blank" rel="noreferrer">SHA-256</a>` : ''}</span>`;
+          }
         } else {
           article.innerHTML += '<span class="asset-link" aria-disabled="true">暂未发布安装包</span><span class="asset-info">请先浏览 Release 页面</span>';
         }

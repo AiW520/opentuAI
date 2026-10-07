@@ -181,21 +181,31 @@
         }
         return article;
       }
+      function applyRelease(release) {
+        const assets = release.assets || [];
+        version.textContent = release.tag_name || '未命名版本';
+        date.textContent = formatDate(release.published_at || release.created_at);
+        channel.textContent = release.prerelease ? '预览版' : '最新版本';
+        state.textContent = release.prerelease ? '这是一个预览版本，安装前请阅读说明。' : '从 GitHub Release 获取真实安装包与校验文件。';
+        grid.replaceChildren(...platforms.map((platform) => renderPlatform(platform, assets)));
+      }
       async function loadRelease() {
         try {
           const response = await fetch(api, { headers: { Accept: 'application/vnd.github+json' } });
           if (!response.ok) throw new Error(`GitHub API ${response.status}`);
-          const release = await response.json();
-          const assets = release.assets || [];
-          version.textContent = release.tag_name || '未命名版本';
-          date.textContent = formatDate(release.published_at || release.created_at);
-          channel.textContent = release.prerelease ? '预览版' : '最新版本';
-          state.textContent = release.prerelease ? '这是一个预览版本，安装前请阅读说明。' : '从 GitHub Release 获取真实安装包与校验文件。';
-          grid.replaceChildren(...platforms.map((platform) => renderPlatform(platform, assets)));
+          applyRelease(await response.json());
+          return;
         } catch (error) {
-          version.textContent = '暂时无法获取';
-          state.textContent = 'Release 信息加载失败，请直接打开 GitHub Release 页面。';
-          grid.replaceChildren(...platforms.map((platform) => renderPlatform(platform, [])));
+          try {
+            const fallback = await fetch('/download-release.json', { cache: 'no-store' });
+            if (!fallback.ok) throw new Error(`fallback ${fallback.status}`);
+            applyRelease(await fallback.json());
+            state.textContent = '当前显示最近一次已核实 Release；请打开 GitHub 查看是否有更新。';
+          } catch (fallbackError) {
+            version.textContent = '暂时无法获取';
+            state.textContent = 'Release 信息加载失败，请直接打开 GitHub Release 页面。';
+            grid.replaceChildren(...platforms.map((platform) => renderPlatform(platform, [])));
+          }
         }
       }
       loadRelease();

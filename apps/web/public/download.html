@@ -166,12 +166,12 @@
       const formatSize = (bytes) => bytes ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : '大小未知';
       const formatDate = (value) => value ? new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' }).format(new Date(value)) : '日期未知';
       const platforms = [
-        { title: 'macOS', icon: 'laptop', description: 'Apple 芯片与 Intel Mac', names: ['Opentu-macos-aarch64.dmg', 'Opentu-macos-x86_64.dmg'] },
-        { title: 'Windows', icon: 'monitor', description: '适用于 64 位 Windows', names: ['Opentu-windows-x86_64-setup.exe', 'Opentu-windows-x86_64.msi'] },
-        { title: 'Linux', icon: 'terminal', description: 'AppImage、Deb 与 RPM', names: ['Opentu-linux-x86_64.AppImage', 'Opentu-linux-aarch64.AppImage', 'Opentu-linux-x86_64.deb', 'Opentu-linux-x86_64.rpm'] },
+        { title: 'macOS', icon: 'laptop', description: 'Apple 芯片与 Intel Mac', patterns: [/macos-aarch64\.dmg$/, /macos-x86_64\.dmg$/] },
+        { title: 'Windows', icon: 'monitor', description: '适用于 64 位 Windows', patterns: [/windows-x86_64-setup\.exe$/, /windows-x86_64\.msi$/] },
+        { title: 'Linux', icon: 'terminal', description: 'AppImage、Deb 与 RPM', patterns: [/linux-(?:x86_64|aarch64)\.AppImage$/, /linux-x86_64\.(?:deb|rpm)$/] },
       ];
       function renderPlatform(platform, assets) {
-        const matches = platform.names.map((name) => assets.find((item) => item.name === name)).filter(Boolean);
+        const matches = assets.filter((item) => platform.patterns.some((pattern) => pattern.test(item.name)));
         const article = document.createElement('article');
         article.className = 'platform';
         article.innerHTML = `<div class="platform-mark"><img src="./download-assets/${platform.icon}.svg" alt="" /></div><h3>${platform.title}</h3><p>${platform.description}</p>`;

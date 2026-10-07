@@ -1,0 +1,105 @@
+name: Desktop Verification Build
+run-name: 'Desktop artifacts · ${{ github.ref_name }}'
+
+on:
+  push:
+    branches: [main, codex/sync-web-1.1.23-desktop]
+    paths:
+      - 'apps/desktop/**'
+      - 'apps/web/**'
+      - 'packages/**'
+      - 'scripts/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'tsconfig.base.json'
+      - 'postcss.config.js'
+      - '.github/workflows/desktop-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-verification-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            target: aarch64-apple-darwin
+            platform: macos-aarch64
+            bundles: app,dmg
+          - runner: macos-14
+            target: x86_64-apple-darwin
+            platform: macos-x86_64
+            bundles: app,dmg
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            platform: windows-x86_64
+            bundles: nsis,msi
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            platform: linux-x86_64
+            bundles: appimage,deb
+    runs-on: ${{ matrix.runner }}
+    env:
+      NODE_OPTIONS: '--max-old-space-size=8192'
+      CARGO_NET_RETRY: '5'
+      CARGO_HTTP_TIMEOUT: '300'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: 'apps/desktop/src-tauri -> target'
+          key: verification-${{ matrix.target }}
+      - run: pnpm install --frozen-lockfile
+      - name: Verify desktop TypeScript
+        run: pnpm exec tsc -p apps/desktop/tsconfig.app.json --noEmit
+      - name: Test native core
+        working-directory: apps/desktop/src-tauri
+        run: cargo test --lib --locked
+      - name: Build unsigned verification installers
+        working-directory: apps/desktop
+        run: pnpm exec tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+      - name: Collect installers and checksums
+        shell: bash
+        env:
+          BUILD_PLATFORM: ${{ matrix.platform }}
+          BUILD_TARGET: ${{ matrix.target }}
+        run: node scripts/collect-desktop-artifacts.cjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Opentu-${{ matrix.platform }}-${{ github.sha }}-unsigned
+          path: outputs/desktop-build/*
+          if-no-files-found: error
+          retention-days: 30
+
+  download-page:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Package download page
+        run: node scripts/package-download-page.cjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Opentu-download-page-${{ github.sha }}
+          path: outputs/download-site/
+          if-no-files-found: error
+          retention-days: 30

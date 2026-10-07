@@ -25,6 +25,7 @@ export function jsx(type: unknown, props: Record<string, unknown> | null, key?: 
 export const jsxs = jsx;
 
 // 让 `jsxImportSource` 指向本包的编译器能从这里取到 JSX 内建标签类型(复用 @types/react)。
+// eslint-disable-next-line @typescript-eslint/no-namespace -- TypeScript requires the JSX namespace for jsxImportSource.
 export namespace JSX {
     export type Element = React.JSX.Element;
     export type ElementType = React.JSX.ElementType;

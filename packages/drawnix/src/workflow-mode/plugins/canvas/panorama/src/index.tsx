@@ -36,7 +36,7 @@ function PanoramaViewer({ src, ctx }: { src: string; ctx: CanvasNodeContext }) {
         let material: any = null;
         let texture: any = null;
         let resizeObserver: ResizeObserver | null = null;
-        let cleanupEvents = () => {};
+        let cleanupEvents = () => { /* Events are registered after Three.js loads. */ };
 
         setStatus("loading");
 

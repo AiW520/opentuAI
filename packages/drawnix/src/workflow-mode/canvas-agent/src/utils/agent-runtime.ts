@@ -4,7 +4,7 @@ import stripAnsi from "strip-ansi";
 export function redactAgentLog(text: string): string {
     return text
         .replace(/(authorization\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\r\n,;]+)/gi, "$1[REDACTED]")
-        .replace(/(Bearer\s+)[A-Za-z0-9._~+\/-]+=*/gi, "$1[REDACTED]")
+        .replace(/(Bearer\s+)[A-Za-z0-9._~+/-]+=*/gi, "$1[REDACTED]")
         .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, "[REDACTED]")
         .replace(/((?:api[ _-]*key|token)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, "$1[REDACTED]");
 }

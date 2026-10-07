@@ -61,8 +61,7 @@ export function startHttpServer() {
     const prepareDraftThread = (clientId: string, permission: AgentPermissionMode) => {
         if (draftThreadStart) return draftThreadStart;
         const workspace = ensureSiteWorkspace(config);
-        let prepared!: ReturnType<typeof startCodexThread>;
-        prepared = (async () => {
+        const prepared: ReturnType<typeof startCodexThread> = (async () => {
             emit("agent_bootstrap", { type: "codex.preparing", sourceClientId: clientId });
             try {
                 const thread = await startCodexThread(emit, workspace.workspacePath, permission, true);

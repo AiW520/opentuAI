@@ -684,13 +684,19 @@ export class CodexAppClient {
     /** 完成指定 JSON-RPC 请求。 */
     private resolve(id: number, result: unknown) {
         const pending = this.pending.get(id);
-        if (pending) (this.pending.delete(id), pending.resolve(result));
+        if (pending) {
+            this.pending.delete(id);
+            pending.resolve(result);
+        }
     }
 
     /** 拒绝指定 JSON-RPC 请求。 */
     private reject(id: number, message: string) {
         const pending = this.pending.get(id);
-        if (pending) (this.pending.delete(id), pending.reject(new Error(message)));
+        if (pending) {
+            this.pending.delete(id);
+            pending.reject(new Error(message));
+        }
     }
 
     /** 拒绝进程退出时仍未完成的请求与 turn。 */

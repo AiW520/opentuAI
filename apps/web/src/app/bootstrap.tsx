@@ -19,10 +19,10 @@ import {
 } from '@drawnix/drawnix/runtime';
 // eslint-disable-next-line @nx/enforce-module-boundaries -- 同上，仅放行 Drawnix 正式入口。
 import {
+  analytics,
   getAnalyticsReleaseContext,
 } from '@drawnix/drawnix';
 import { generateVideoThumbnailFromBlob } from '@aitu/utils';
-import { analytics } from '@drawnix/drawnix';
 import { initSWConsoleCapture } from '../utils/sw-console-capture';
 
 function isLocalDevelopmentHost(hostname: string): boolean {

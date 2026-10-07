@@ -309,7 +309,10 @@ export function canvasSkillSource(snapshot: CanvasSnapshot): JsonRecord {
         const summary = { ref: `node-${index + 1}`, type: node.type, ...(nodeTitle ? { title: nodeTitle } : {}) };
         const candidate = { ...summary, ...(cleanMetadata && Object.keys(cleanMetadata as JsonRecord).length ? { metadata: cleanMetadata } : {}) };
         if (canvasSourceFits({ ...source, nodes: [...source.nodes, candidate] }, MAX_CANVAS_SKILL_NODE_CHARS)) source.nodes.push(candidate);
-        else if (canvasSourceFits({ ...source, nodes: [...source.nodes, summary] }, MAX_CANVAS_SKILL_NODE_CHARS)) (source.nodes.push(summary), truncated = true);
+        else if (canvasSourceFits({ ...source, nodes: [...source.nodes, summary] }, MAX_CANVAS_SKILL_NODE_CHARS)) {
+            source.nodes.push(summary);
+            truncated = true;
+        }
         else truncated = true;
     });
     const includedRefs = new Set(source.nodes.map((node) => String(node.ref || "")));
@@ -336,11 +339,11 @@ const directLocalPath = /^(?:file:(?:\/\/)?|[a-z]:[\\/]|\\\\|\/(?!\/)(?=[^\s`'"�
 const fileUrl = /\bfile:(?:\/\/)?[^\s`'"“”<>]+/gi;
 const inlineLocalPath = /(?<![A-Za-z0-9/:])(?:[a-z]:[\\/]|\\\\)[^\s`'"“”<>]+|(?<![\p{L}\p{N}/:])\/(?!\/)(?=[^\s`'"“”<>]+\/)[^\s`'"“”<>]+/giu;
 const credentialAssignment = /(?:api[_ -]?key|access[_ -]?(?:key|token)|connect[_ -]?token|token|secret|password|authorization|credential)\s*(?:[:=：]|为|是)\s*(?:bearer\s+)?[`'"“]?[A-Za-z0-9_./+\-=]{8,}/gi;
-const bearerToken = /\bbearer\s+[A-Za-z0-9._~+/=\-]{8,}/gi;
+const bearerToken = /\bbearer\s+[A-Za-z0-9._~+/=-]{8,}/gi;
 const jwtToken = /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g;
 const knownApiToken = /\b(?:sk-[A-Za-z0-9_-]{12,}|(?:gh[pousr]|github_pat)_[A-Za-z0-9_]{20,}|AKIA[A-Z0-9]{16})\b/g;
 const transientIdentifier = /\b(?:task|job|request|generation|node)[_-](?:\d{4,}|[A-Fa-f0-9]{8,}|(?=[A-Za-z0-9_-]{12,}\b)(?=[A-Za-z0-9_-]*\d)[A-Za-z0-9_-]+)\b/gi;
-const webUrl = /\bhttps?:\/\/[^\s<>{}\[\]`'"“”]+/gi;
+const webUrl = /\bhttps?:\/\/[^\s<>{}[\]`'"“”]+/gi;
 
 function sanitizeCanvasValue(value: unknown, nodeRefs: Map<string, string>, depth = 0): unknown {
     if (value === null || typeof value === "boolean" || typeof value === "number") return value;
@@ -419,7 +422,7 @@ function mentionsSkill(prompt: string, name: string) {
 
 export function assertDraftHasNoSensitiveValues(draft: AgentSkillDraft, privateValues: string[]) {
     const text = Object.values(draft).join("\n");
-    const localPath = /(?:^|[\s`'"“”（(\[{,:;：])(?:file:(?:\/\/)?|[a-z]:[\\/]|\\\\|\/(?!\/))/im;
+    const localPath = /(?:^|[\s`'"“”（([{,:;：])(?:file:(?:\/\/)?|[a-z]:[\\/]|\\\\|\/(?!\/))/im;
     const externalUrl = (text.match(webUrl) || []).length > 0;
     const hasPrivateValue = privateValues.some((value) => text.includes(value));
     if (localPath.test(text) || /\b(?:data:|blob:)/i.test(text) || patternMatches(credentialAssignment, text) || patternMatches(bearerToken, text) || patternMatches(jwtToken, text) || patternMatches(knownApiToken, text) || patternMatches(transientIdentifier, text) || externalUrl || hasPrivateValue) {

@@ -197,7 +197,7 @@ function mergeHistoryItems(items: unknown[], supplementalItems: CodexSupplementa
         return supplementalEntry ? mergeHistoryItem(item, supplementalEntry.item) : item;
     });
     const sequenced = supplemental.filter((entry) => entry.sequence !== undefined);
-    let merged = sequenced.length ? mergeSequencedItems(mergedStandard, sequenced) : mergedStandard;
+    const merged = sequenced.length ? mergeSequencedItems(mergedStandard, sequenced) : mergedStandard;
     supplemental.forEach((entry, index) => {
         if (standardIds.has(entry.itemId) || entry.sequence !== undefined) return;
         const nextStandardId = supplemental.slice(index + 1).find((candidate) => standardIds.has(candidate.itemId))?.itemId;

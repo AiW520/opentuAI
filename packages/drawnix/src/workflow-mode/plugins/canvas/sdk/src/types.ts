@@ -18,7 +18,7 @@ export type ViewportTransform = { x: number; y: number; k: number };
 
 // 内置节点类型;插件节点建议用 "<pluginId>:<name>"。放开为字符串以便扩展。
 export type CanvasBuiltinNodeType = "image" | "text" | "config" | "video" | "audio" | "group";
-export type CanvasNodeTypeId = CanvasBuiltinNodeType | (string & {});
+export type CanvasNodeTypeId = CanvasBuiltinNodeType | (string & Record<never, never>);
 
 export type CanvasNodeStatus = "idle" | "success" | "loading" | "error";
 export type CanvasGenerationMode = "text" | "image" | "video" | "audio";

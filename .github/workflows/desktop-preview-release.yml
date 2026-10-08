@@ -10,7 +10,7 @@ on:
       tag:
         description: 'Preview release tag'
         required: true
-        default: 'v1.2.11-preview.1'
+        default: 'v1.2.12-preview.1'
         type: string
 
 permissions:
@@ -26,6 +26,12 @@ jobs:
       RELEASE_TAG: ${{ inputs.tag }}
     steps:
       - uses: actions/checkout@v4
+      - name: Validate verification run
+        run: |
+          set -euo pipefail
+          gh run view "$RUN_ID" --repo "$GITHUB_REPOSITORY" --json conclusion,workflowName,headSha > "$RUNNER_TEMP/verification-run.json"
+          jq -e '.conclusion == "success" and .workflowName == "Desktop Verification Build"' "$RUNNER_TEMP/verification-run.json"
+          echo "BUILD_COMMIT=$(jq -r '.headSha' "$RUNNER_TEMP/verification-run.json")" >> "$GITHUB_ENV"
       - name: Download verification artifacts
         run: |
           set -euo pipefail
@@ -42,8 +48,8 @@ jobs:
         run: |
           set -euo pipefail
           notes_file="$RUNNER_TEMP/release-notes.md"
-          cat > "$notes_file" <<'EOF'
-          ## OpenTu Desktop v1.2.11 preview
+          cat > "$notes_file" <<EOF
+          ## OpenTu Desktop $RELEASE_TAG
 
           This is an unsigned verification build from the desktop verification workflow.
           macOS and Windows may show security warnings because signing and notarization are not configured.
@@ -54,8 +60,8 @@ jobs:
           else
             gh release create "$RELEASE_TAG" release-assets/* \
               --repo "$GITHUB_REPOSITORY" \
-              --target main \
+              --target "$BUILD_COMMIT" \
               --prerelease \
-              --title "OpenTu Desktop v1.2.11 Preview" \
+              --title "OpenTu Desktop $RELEASE_TAG" \
               --notes-file "$notes_file"
           fi

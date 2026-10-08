@@ -110,7 +110,7 @@
       <a class="brand" href="https://opentu.ai/home.html"><img src="./icons/favicon-32x32.png" alt="" />OpenTu 开图</a>
       <nav class="nav-links" aria-label="主导航">
         <a href="https://opentu.ai/home.html">产品</a>
-        <a href="https://github.com/tuziapi/opentu">GitHub</a>
+        <a href="https://github.com/AiW520/opentuAI">GitHub</a>
         <a href="#downloads">下载</a>
       </nav>
     </header>
@@ -123,7 +123,7 @@
           <p>把灵感，放到一块画布上。<br />生成图片、整理素材、绘制流程，让创作在桌面上自然展开。</p>
           <div class="hero-actions">
             <a class="button button-primary" href="#downloads">查看桌面版下载 <span aria-hidden="true">→</span></a>
-            <a class="button button-secondary" href="https://github.com/tuziapi/opentu">查看源代码</a>
+            <a class="button button-secondary" href="https://github.com/AiW520/opentuAI">查看源代码</a>
           </div>
           <p class="note">macOS、Windows、Linux · 安装包版本以已发布列表为准</p>
         </div>
@@ -135,7 +135,7 @@
       <section id="downloads" class="section" aria-labelledby="download-title">
         <div class="section-heading">
           <div><h2 id="download-title">下载桌面版</h2><p id="release-state">正在读取最新 Release…</p></div>
-          <a class="asset-link" href="https://github.com/tuziapi/opentu/releases" target="_blank" rel="noreferrer">浏览全部版本 <span aria-hidden="true">↗</span></a>
+          <a class="asset-link" href="https://github.com/AiW520/opentuAI/releases" target="_blank" rel="noreferrer">浏览全部版本 <span aria-hidden="true">↗</span></a>
         </div>
         <div class="download-card">
           <div class="release-bar"><div class="release-title"><span id="release-channel">已发布</span><strong id="release-version">加载中</strong></div><div class="release-meta" id="release-date">—</div></div>
@@ -153,11 +153,10 @@
       </section>
     </main>
 
-    <footer class="shell footer"><span>© OpenTu 开图 · Open source creative workspace</span><span><a href="https://github.com/tuziapi/opentu/releases">Release notes</a> · <a href="https://opentu.ai/home.html">返回产品页</a></span></footer>
+    <footer class="shell footer"><span>© OpenTu 开图 · Open source creative workspace</span><span><a href="https://github.com/AiW520/opentuAI/releases">Release notes</a> · <a href="https://opentu.ai/home.html">返回产品页</a></span></footer>
 
     <script>
-      const repository = 'tuziapi/opentu';
-      const api = `https://api.github.com/repos/${repository}/releases/latest`;
+      const repository = 'AiW520/opentuAI';
       const grid = document.querySelector('#platform-grid');
       const version = document.querySelector('#release-version');
       const date = document.querySelector('#release-date');
@@ -223,20 +222,25 @@
         grid.replaceChildren(...platforms.map((platform) => renderPlatform(platform, assets)));
       }
       async function loadRelease() {
+        let verifiedRelease;
         try {
-          const response = await fetch(api, { headers: { Accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(5000) });
+          const fallback = await fetch('./download-release.json', { cache: 'no-store', signal: AbortSignal.timeout(5000) });
+          if (fallback.ok) verifiedRelease = await fallback.json();
+        } catch (error) {}
+        try {
+          const releasePath = verifiedRelease?.tag_name ? `tags/${encodeURIComponent(verifiedRelease.tag_name)}` : 'latest';
+          const response = await fetch(`https://api.github.com/repos/${repository}/releases/${releasePath}`, { headers: { Accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(5000) });
           if (!response.ok) throw new Error(`GitHub API ${response.status}`);
           applyRelease(await response.json());
           return;
         } catch (error) {
           try {
-            const fallback = await fetch('./download-release.json', { cache: 'no-store' });
-            if (!fallback.ok) throw new Error(`fallback ${fallback.status}`);
-            const release = await fallback.json();
+            if (!verifiedRelease) throw new Error('No verified release');
+            const release = verifiedRelease;
             applyRelease(release);
             state.textContent = release.repository_visibility === 'private'
-              ? '当前仓库需获授权的 GitHub 账号登录后下载。1.2.11 验证构建尚未正式发布。'
-              : '当前显示最近一次已核实 Release；请打开 GitHub 查看是否有更新。';
+              ? '当前仓库需获授权的 GitHub 账号登录后下载。'
+              : release.prerelease ? '预览版安装包尚未完成系统代码签名，安装前请阅读 Release 说明。' : '当前显示已核实 Release 的安装包。';
           } catch (fallbackError) {
             version.textContent = '暂时无法获取';
             state.textContent = 'Release 信息加载失败，请直接打开 GitHub Release 页面。';

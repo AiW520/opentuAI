@@ -1,21 +1,94 @@
 {
-  "tag_name": "v1.2.11-preview.1",
-  "name": "OpenTu Desktop v1.2.11 Preview",
+  "tag_name": "v1.2.12-preview.1",
+  "name": "OpenTu Desktop v1.2.12 Preview",
   "prerelease": true,
   "repository_visibility": "public",
-  "published_at": "2026-10-07T08:47:58Z",
+  "published_at": "2026-10-08T03:23:49Z",
   "assets": [
-    { "name": "Opentu-1.2.11-macos-aarch64.dmg", "size": 12327120, "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.11-preview.1/Opentu-1.2.11-macos-aarch64.dmg" },
-    { "name": "Opentu-1.2.11-macos-aarch64.dmg.sha256", "size": 98, "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.11-preview.1/Opentu-1.2.11-macos-aarch64.dmg.sha256" },
-    { "name": "Opentu-1.2.11-macos-x86_64.dmg", "size": 12489564, "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.11-preview.1/Opentu-1.2.11-macos-x86_64.dmg" },
-    { "name": "Opentu-1.2.11-macos-x86_64.dmg.sha256", "size": 97, "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.11-preview.1/Opentu-1.2.11-macos-x86_64.dmg.sha256" },
-    { "name": "Opentu-1.2.11-windows-x86_64-setup.exe", "size": 10700297, "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.11-preview.1/Opentu-1.2.11-windows-x86_64-setup.exe" },
-    { "name": "Opentu-1.2.11-windows-x86_64-setup.exe.sha256", "size": 105, "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.11-preview.1/Opentu-1.2.11-windows-x86_64-setup.exe.sha256" },
-    { "name": "Opentu-1.2.11-windows-x86_64.msi", "size": 12554240, "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.11-preview.1/Opentu-1.2.11-windows-x86_64.msi" },
-    { "name": "Opentu-1.2.11-windows-x86_64.msi.sha256", "size": 99, "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.11-preview.1/Opentu-1.2.11-windows-x86_64.msi.sha256" },
-    { "name": "Opentu-1.2.11-linux-x86_64.AppImage", "size": 91920888, "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.11-preview.1/Opentu-1.2.11-linux-x86_64.AppImage" },
-    { "name": "Opentu-1.2.11-linux-x86_64.AppImage.sha256", "size": 102, "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.11-preview.1/Opentu-1.2.11-linux-x86_64.AppImage.sha256" },
-    { "name": "Opentu-1.2.11-linux-x86_64.deb", "size": 13846956, "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.11-preview.1/Opentu-1.2.11-linux-x86_64.deb" },
-    { "name": "Opentu-1.2.11-linux-x86_64.deb.sha256", "size": 97, "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.11-preview.1/Opentu-1.2.11-linux-x86_64.deb.sha256" }
+    {
+      "name": "BUILD-NOTES.txt",
+      "size": 185,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.12-preview.1/BUILD-NOTES.txt"
+    },
+    {
+      "name": "manifest-linux-x86_64.json",
+      "size": 529,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.12-preview.1/manifest-linux-x86_64.json"
+    },
+    {
+      "name": "manifest-macos-aarch64.json",
+      "size": 354,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.12-preview.1/manifest-macos-aarch64.json"
+    },
+    {
+      "name": "manifest-macos-x86_64.json",
+      "size": 351,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.12-preview.1/manifest-macos-x86_64.json"
+    },
+    {
+      "name": "manifest-windows-x86_64.json",
+      "size": 534,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.12-preview.1/manifest-windows-x86_64.json"
+    },
+    {
+      "name": "Opentu-1.2.12-linux-x86_64.AppImage",
+      "size": 91920888,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.12-preview.1/Opentu-1.2.12-linux-x86_64.AppImage"
+    },
+    {
+      "name": "Opentu-1.2.12-linux-x86_64.AppImage.sha256",
+      "size": 102,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.12-preview.1/Opentu-1.2.12-linux-x86_64.AppImage.sha256"
+    },
+    {
+      "name": "Opentu-1.2.12-linux-x86_64.deb",
+      "size": 13847500,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.12-preview.1/Opentu-1.2.12-linux-x86_64.deb"
+    },
+    {
+      "name": "Opentu-1.2.12-linux-x86_64.deb.sha256",
+      "size": 97,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.12-preview.1/Opentu-1.2.12-linux-x86_64.deb.sha256"
+    },
+    {
+      "name": "Opentu-1.2.12-macos-aarch64.dmg",
+      "size": 12327333,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.12-preview.1/Opentu-1.2.12-macos-aarch64.dmg"
+    },
+    {
+      "name": "Opentu-1.2.12-macos-aarch64.dmg.sha256",
+      "size": 98,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.12-preview.1/Opentu-1.2.12-macos-aarch64.dmg.sha256"
+    },
+    {
+      "name": "Opentu-1.2.12-macos-x86_64.dmg",
+      "size": 12491483,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.12-preview.1/Opentu-1.2.12-macos-x86_64.dmg"
+    },
+    {
+      "name": "Opentu-1.2.12-macos-x86_64.dmg.sha256",
+      "size": 97,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.12-preview.1/Opentu-1.2.12-macos-x86_64.dmg.sha256"
+    },
+    {
+      "name": "Opentu-1.2.12-windows-x86_64-setup.exe",
+      "size": 10702266,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.12-preview.1/Opentu-1.2.12-windows-x86_64-setup.exe"
+    },
+    {
+      "name": "Opentu-1.2.12-windows-x86_64-setup.exe.sha256",
+      "size": 105,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.12-preview.1/Opentu-1.2.12-windows-x86_64-setup.exe.sha256"
+    },
+    {
+      "name": "Opentu-1.2.12-windows-x86_64.msi",
+      "size": 12554240,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.12-preview.1/Opentu-1.2.12-windows-x86_64.msi"
+    },
+    {
+      "name": "Opentu-1.2.12-windows-x86_64.msi.sha256",
+      "size": 99,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.12-preview.1/Opentu-1.2.12-windows-x86_64.msi.sha256"
+    }
   ]
 }

@@ -1217,7 +1217,8 @@ function adaptRuntimeModel(model: RemoteModelListItem): ModelConfig | null {
     if (
       GPT_IMAGE_25_MODEL_IDS.includes(staticConfig.id) ||
       GPT_IMAGE_1K_MODEL_IDS.includes(staticConfig.id) ||
-      GPT_IMAGE_2_MODEL_IDS.includes(staticConfig.id)
+      GPT_IMAGE_2_MODEL_IDS.includes(staticConfig.id) ||
+      staticConfig.id === 'gemini-nano-banana-2.1'
     ) {
       return clonedConfig;
     }

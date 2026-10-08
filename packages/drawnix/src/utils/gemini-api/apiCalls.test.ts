@@ -6,6 +6,7 @@ import {
   callApiWithRetry,
   callApiStreamRaw,
   callGoogleGenerateContentRaw,
+  normalizeGoogleImageResponse,
 } from './apiCalls';
 
 const { sendMock, analyticsMock, getCachedBlobMock } = vi.hoisted(() => ({
@@ -73,6 +74,59 @@ describe('callGoogleGenerateContentRaw', () => {
         }
       )
     );
+  });
+
+  it('filters thought images from Nano Banana 2.1 output', async () => {
+    sendMock.mockResolvedValue(
+      Response.json({
+        candidates: [
+          {
+            content: {
+              parts: [
+                { thought: true, inlineData: { mimeType: 'image/png', data: 'THOUGHT' } },
+                { fileData: { mimeType: 'image/jpeg', fileUri: 'https://result.example/final.jpg' } },
+                { inlineData: { mimeType: 'image/jpeg', data: 'AAAA' } },
+              ],
+            },
+          },
+        ],
+      })
+    );
+
+    const result = await callGoogleGenerateContentRaw(
+      {
+        apiKey: 'test-key',
+        baseUrl: 'https://api.tu-zi.com/v1',
+        modelName: 'gemini-nano-banana-2.1',
+        protocol: 'google.generateContent',
+        authType: 'bearer',
+        binding: {
+          id: 'nano-banana',
+          profileId: 'tuzi',
+          modelId: 'gemini-nano-banana-2.1',
+          operation: 'image',
+          protocol: 'google.generateContent',
+          requestSchema: 'google.generate-content.image-inline',
+          responseSchema: 'google.generate-content.parts',
+          submitPath: '/v1beta/models/{model}:generateContent',
+          baseUrlStrategy: 'trim-v1',
+          priority: 480,
+          confidence: 'high',
+          source: 'template',
+        },
+      },
+      [{ role: 'user', content: [{ type: 'text', text: 'draw' }] }],
+      { stream: false, generationConfig: { responseModalities: ['IMAGE'] } }
+    );
+
+    expect(result.choices[0].message.content).toBe(
+      'https://result.example/final.jpg\ndata:image/jpeg;base64,AAAA'
+    );
+    expect(
+      normalizeGoogleImageResponse({
+        candidates: [{ content: { parts: [{ thought: true, inlineData: { data: 'THOUGHT' } }, { inlineData: { data: 'AAAA' } }] } }],
+      }).data
+    ).toEqual([{ b64_json: 'AAAA', mime_type: 'image/png' }]);
   });
 
   it('forwards AbortSignal through non-stream manual HTTP calls', async () => {

@@ -61,6 +61,23 @@ describe('model-config image size options', () => {
     }
   );
 
+  it('为 Nano Banana 2.1 暴露尺寸、分辨率和 Thinking 控件', () => {
+    expect(getStaticModelConfig('gemini-nano-banana-2.1')).toMatchObject({
+      id: 'gemini-nano-banana-2.1',
+      type: 'image',
+      vendor: ModelVendor.GEMINI,
+      tags: ['new', 'nano-banana-2.1'],
+    });
+
+    const params = getCompatibleParams('gemini-nano-banana-2.1');
+    expect(params.find((param) => param.id === 'size')?.options?.map((option) => option.value))
+      .toEqual(expect.arrayContaining(['1x8', '8x1', '21x9']));
+    expect(params.find((param) => param.id === 'quality')?.options?.map((option) => option.value))
+      .toEqual(['1k', '2k', '4k']);
+    expect(params.find((param) => param.id === 'thinking')?.options?.map((option) => option.value))
+      .toEqual(['minimal', 'medium', 'high']);
+  });
+
   afterEach(() => {
     clearRuntimeModelConfigs();
   });

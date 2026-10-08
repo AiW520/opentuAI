@@ -2503,7 +2503,7 @@ checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
 name = "opentu"
-version = "1.2.11"
+version = "1.2.12"
 dependencies = [
  "base64 0.22.1",
  "chrono",

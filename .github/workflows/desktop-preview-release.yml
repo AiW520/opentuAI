@@ -52,6 +52,8 @@ jobs:
           cat >> "$notes_file" <<'EOF'
           This is an unsigned verification build from the desktop verification workflow.
           macOS and Windows may show security warnings because signing and notarization are not configured.
+          macOS bundles have a verified ad-hoc signature, but are not Apple Developer ID signed or notarized.
+          On macOS, open the DMG, drag Opentu into Applications, then launch it. If Gatekeeper blocks it, use System Settings > Privacy & Security > Open Anyway after verifying the source.
           Download the installer for your platform and verify the matching `.sha256` file when available.
           EOF
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then

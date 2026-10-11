@@ -78,6 +78,13 @@ jobs:
       - name: Build unsigned verification installers
         working-directory: apps/desktop
         run: pnpm exec tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+      - name: Verify macOS application and DMG signatures
+        if: runner.os == 'macOS'
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          node scripts/verify-macos-installer.cjs "apps/desktop/src-tauri/target/${BUILD_TARGET}/release/bundle"
       - name: Collect installers and checksums
         shell: bash
         env:

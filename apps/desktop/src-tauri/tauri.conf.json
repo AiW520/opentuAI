@@ -36,6 +36,9 @@
     "copyright": "Copyright © 2026 Opentu",
     "category": "Productivity",
     "shortDescription": "AI 图片生成、流程图、思维导图与画布工作区",
-    "longDescription": "Opentu（开图）是一个以画布工作区为核心的 AI 应用平台，支持 AI 图片生成、流程图、思维导图、素材管理与任务推进。"
+    "longDescription": "Opentu（开图）是一个以画布工作区为核心的 AI 应用平台，支持 AI 图片生成、流程图、思维导图、素材管理与任务推进。",
+    "macOS": {
+      "signingIdentity": "-"
+    }
   }
 }

@@ -1,7 +1,9 @@
 import '../../web/src/utils/permissions-policy-fix';
+import 'tdesign-react/es/style/css';
 import { isTauriEnvironment } from './utils/tauri-api';
 import { initializeVirtualUrlInterceptor } from './utils/virtual-url-interceptor';
 import { initializeDesktopUpdater } from './utils/desktop-updater';
+import { initializeDesktopAnalytics } from './utils/desktop-analytics';
 import { writeFile } from '@tauri-apps/plugin-fs';
 
 declare const __APP_VERSION__: string;
@@ -26,6 +28,7 @@ function injectAppVersionMeta() {
 }
 
 injectAppVersionMeta();
+initializeDesktopAnalytics();
 
 function updateBootProgress(progress: number) {
   const fill = document.getElementById('boot-progress-fill');

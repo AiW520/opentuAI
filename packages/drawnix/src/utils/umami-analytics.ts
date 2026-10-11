@@ -9,6 +9,7 @@
  */
 
 import { sanitizeObject } from '@aitu/utils';
+import { isTauriEnvironment } from './tauri-env';
 
 declare const __APP_VERSION__: string;
 
@@ -21,13 +22,15 @@ export interface AnalyticsReleaseContext {
   host: string;
   hostname: string;
   route_name: string;
+  client_type?: 'desktop';
 }
 
 declare global {
   interface Window {
+    __OPENTU_DESKTOP_ANALYTICS_READY__?: Promise<void>;
     umami?: {
       track: (
-        eventName: string,
+        eventName?: string,
         properties?: Record<string, any>
       ) => void | Promise<void>;
     };
@@ -204,6 +207,19 @@ export function getAnalyticsReleaseContext(): AnalyticsReleaseContext {
   }
 
   const { hostname, pathname } = window.location;
+  if (isTauriEnvironment()) {
+    return {
+      version: appVersion,
+      appVersion,
+      app_version: appVersion,
+      host: 'desktop.opentu.ai',
+      hostname: 'desktop.opentu.ai',
+      route_name: '/desktop',
+      client_type: 'desktop',
+      deployment_env: 'production',
+      release_channel: appVersion.includes('-') ? 'preview' : 'production',
+    };
+  }
   const deploymentEnv = inferDeploymentEnv(hostname);
   return {
     version: appVersion,
@@ -252,7 +268,13 @@ class UmamiAnalytics {
     eventName: string,
     eventData?: Record<string, any>
   ): Promise<void> {
-    if (typeof window === 'undefined' || !window.umami) {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    if (!window.umami && window.__OPENTU_DESKTOP_ANALYTICS_READY__) {
+      await window.__OPENTU_DESKTOP_ANALYTICS_READY__;
+    }
+    if (!window.umami) {
       return;
     }
 

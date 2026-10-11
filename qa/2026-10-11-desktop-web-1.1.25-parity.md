@@ -1,7 +1,7 @@
 # OpenTu Desktop 1.2.13 parity QA
 
-Date: 2026-10-11  
-Upstream source: `ljquan/opentu` `develop` at `df1715ab878d939418fb3d2e1fd793e585be7bd2` (web 1.1.25)  
+Date: 2026-10-11
+Upstream source: `ljquan/opentu` `develop` at `df1715ab878d939418fb3d2e1fd793e585be7bd2` (web 1.1.25)
 Desktop version: `1.2.13`
 
 ## Verified

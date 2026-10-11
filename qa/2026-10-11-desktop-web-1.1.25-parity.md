@@ -18,10 +18,10 @@ Desktop version: `1.2.13`
 
 ## Release gates still requiring the build environment
 
-- No native installer was built or launched in this workspace because the Rust toolchain is unavailable. The browser preview at `http://127.0.0.1:7341/` is not an installer test.
+- GitHub Actions run `38110388475` built all four platform targets successfully, including native core tests and TypeScript checks. Native installers have not been launched in this workspace; the browser preview is not an installer test.
 - Signed updater manifests, notarization/signing, and platform installers must be checked by the CI/build host before publishing a new release.
 - Umami delivery was verified at the SDK/request level, but the authenticated dashboard count and a signed native build have not been independently checked here.
-- The published download manifest remains `v1.2.12-preview.1`; this change does not alter existing public download links.
+- Published preview release: `https://github.com/AiW520/opentuAI/releases/tag/v1.2.13-preview.1`. The download manifest now points to these six unsigned installers and their SHA-256 files.
 
 ## Reproduction
 

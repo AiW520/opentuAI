@@ -124,7 +124,7 @@ const ADAPTER_PARAMETER_IDS: Record<string, string[]> = {
   ],
   'seedream-image-adapter': ['size', 'seedream_quality'],
   'flux-image-adapter': ['size'],
-  'tuzi-flux-3-image-adapter': ['size'],
+  'tuzi-flux-3-image-adapter': ['size', 'resolution'],
   'mj-image-adapter': ['mj_ar', 'mj_v', 'mj_style', 'mj_s', 'mj_q', 'mj_seed'],
   'gemini-video-adapter': [
     'size',

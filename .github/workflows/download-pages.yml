@@ -6,6 +6,7 @@ on:
     paths:
       - 'apps/web/public/download.html'
       - 'apps/web/public/download-release.json'
+      - 'apps/web/public/latest.json'
       - 'apps/web/public/desktop-preview.png'
       - 'apps/web/public/download-assets/**'
       - 'apps/web/public/icons/favicon-32x32.png'

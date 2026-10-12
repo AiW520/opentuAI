@@ -81,9 +81,7 @@ async function bootstrap() {
 
       if (isTauriEnvironment()) {
         initializeVirtualUrlInterceptor();
-        window.setTimeout(() => {
-          void initializeDesktopUpdater();
-        }, 3000);
+        void initializeDesktopUpdater();
       }
 
       setTimeout(hideBootScreen, 200);

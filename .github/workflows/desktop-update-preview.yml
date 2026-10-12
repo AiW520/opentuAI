@@ -1,0 +1,189 @@
+name: Build and publish update-signed desktop preview
+run-name: 'Desktop update preview · ${{ inputs.tag }}'
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Preview tag matching the numeric app version'
+        required: true
+        default: 'v1.2.14-preview.1'
+        type: string
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: desktop-preview-publish
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate tag and updater configuration
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REPOSITORY" == 'AiW520/opentuAI' ]] || { echo 'Preview channel belongs to AiW520/opentuAI'; exit 1; }
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-preview\.[1-9][0-9]*$ ]] || exit 1
+          node scripts/sync-desktop-version.js --tag="${RELEASE_TAG%%-preview.*}" --check
+          test -n "$TAURI_SIGNING_PRIVATE_KEY"
+          test -n "$TAURI_UPDATER_PUBLIC_KEY"
+          if gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft' > "$RUNNER_TEMP/existing-draft"; then
+            test "$(cat "$RUNNER_TEMP/existing-draft")" = true || { echo 'Refusing to replace a published release'; exit 1; }
+          fi
+
+  build:
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            target: aarch64-apple-darwin
+            platform: macos-aarch64
+            bundles: app,dmg
+          - runner: macos-14
+            target: x86_64-apple-darwin
+            platform: macos-x86_64
+            bundles: app,dmg
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            platform: windows-x86_64
+            bundles: nsis,msi
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            platform: linux-x86_64
+            bundles: appimage,deb
+          - runner: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            platform: linux-aarch64
+            bundles: appimage,deb
+    runs-on: ${{ matrix.runner }}
+    env:
+      NODE_OPTIONS: '--max-old-space-size=8192'
+      CARGO_NET_RETRY: '5'
+      CARGO_HTTP_TIMEOUT: '300'
+      OPENTU_UPDATER_ENABLED: '1'
+      OPENTU_UPDATER_ENDPOINT: 'https://aiw520.github.io/opentuAI/latest.json'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: 'apps/desktop/src-tauri -> target'
+          key: verification-${{ matrix.target }}
+      - run: pnpm install --frozen-lockfile
+      - run: node --test scripts/desktop-release-tools.test.cjs
+      - run: pnpm exec tsc -p apps/desktop/tsconfig.app.json --noEmit
+      - name: Test desktop updater
+        working-directory: apps/desktop
+        run: pnpm exec vitest run
+      - name: Test update prompt lifecycle
+        working-directory: packages/drawnix
+        run: pnpm exec vitest run src/components/version-update/version-update-prompt.test.tsx
+      - name: Test native core
+        working-directory: apps/desktop/src-tauri
+        run: cargo test --lib --locked
+      - name: Build update-signed preview installers
+        working-directory: apps/desktop
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+        run: |
+          node ../../scripts/prepare-tauri-release-config.js --output=src-tauri/tauri.release.conf.json
+          pnpm exec tauri build --config src-tauri/tauri.release.conf.json --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+      - name: Verify packaged QR assets
+        run: node scripts/verify-desktop-renderer.cjs
+      - name: Verify macOS application and DMG
+        if: runner.os == 'macOS'
+        run: node scripts/verify-macos-installer.cjs apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle
+      - name: Collect installers, updater payloads and checksums
+        env:
+          BUILD_PLATFORM: ${{ matrix.platform }}
+          BUILD_TARGET: ${{ matrix.target }}
+        run: node scripts/collect-desktop-artifacts.cjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: update-preview-${{ matrix.platform }}
+          path: outputs/desktop-build/*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      RELEASE_TAG: ${{ inputs.tag }}
+      TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: update-preview-*
+          path: release-assets
+          merge-multiple: true
+      - name: Verify all assets and generate update manifest
+        run: node scripts/prepare-desktop-preview.cjs --assets-dir=release-assets
+      - name: Publish complete preview release
+        run: |
+          set -euo pipefail
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" --draft --prerelease --title "OpenTu Desktop $RELEASE_TAG" --notes-file scripts/desktop-preview-notes.md
+          fi
+          test "$(gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft')" = true
+          gh release upload "$RELEASE_TAG" release-assets/* --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --prerelease --latest=false --notes-file scripts/desktop-preview-notes.md
+      - name: Update verified download channel
+        run: |
+          set -euo pipefail
+          gh release view "$RELEASE_TAG" --json tagName,name,isDraft,isPrerelease,publishedAt,body,assets > "$RUNNER_TEMP/published-release.json"
+          git fetch origin main
+          git checkout -B main origin/main
+          node scripts/update-desktop-download-channel.cjs --release="$RUNNER_TEMP/published-release.json" --manifest=release-assets/latest.json
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add apps/web/public/download-release.json apps/web/public/latest.json
+          git commit -m "chore(desktop): publish verified $RELEASE_TAG download channel"
+          git push origin main
+          node scripts/package-download-page.cjs
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: outputs/download-site
+
+  deploy:
+    needs: publish
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/deploy-pages@v4
+        id: deployment

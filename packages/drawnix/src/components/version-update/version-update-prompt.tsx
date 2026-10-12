@@ -61,6 +61,10 @@ export const VersionUpdatePrompt: React.FC = () => {
     };
 
     window.addEventListener('sw-update-available', handleUpdateAvailable);
+    const handleCheck = () => {
+      if (window.__OPENTU_DESKTOP_UPDATE_CHECK__?.status === 'current') setUpdateAvailable(null);
+    };
+    window.addEventListener('desktop-update-check-state', handleCheck);
 
     const queuedUpdate = window.__OPENTU_DESKTOP_UPDATE_EVENT__;
     if (queuedUpdate) {
@@ -82,6 +86,7 @@ export const VersionUpdatePrompt: React.FC = () => {
 
     return () => {
       window.removeEventListener('sw-update-available', handleUpdateAvailable);
+      window.removeEventListener('desktop-update-check-state', handleCheck);
     };
   }, []);
 
@@ -89,6 +94,7 @@ export const VersionUpdatePrompt: React.FC = () => {
     ? updateAvailable as DesktopUpdateState
     : null;
   const busy = Boolean(desktopUpdate && ['downloading', 'installing', 'restarting'].includes(desktopUpdate.status));
+  const actionLabel = desktopUpdate?.downloadUrl ? '下载新版' : desktopUpdate?.status === 'error' ? desktopUpdate.restartOnly ? '重启应用' : '重试更新' : '立即更新';
   const handleUpdate = () => {
     if (busy || activeTasks.length > 0) return;
     // Keep the prompt visible until the new SW actually takes over.
@@ -115,7 +121,7 @@ export const VersionUpdatePrompt: React.FC = () => {
               : desktopUpdate?.status === 'restarting'
               ? '更新已安装，正在重启'
               : desktopUpdate?.status === 'error'
-              ? desktopUpdate.restartOnly ? '更新已安装，重启失败' : '更新失败，请检查网络后重试'
+              ? desktopUpdate.restartOnly ? '更新已安装，重启失败' : desktopUpdate.downloadUrl ? '下载页面打开失败，请重试' : '更新失败，请检查网络后重试'
               : `发现新版本 v${updateAvailable.version}`}
           </span>
           {updateAvailable.changelog && updateAvailable.changelog.length > 0 && (
@@ -136,7 +142,7 @@ export const VersionUpdatePrompt: React.FC = () => {
             loading={busy}
             icon={<RefreshIcon />}
           >
-            {desktopUpdate?.status === 'error' ? desktopUpdate.restartOnly ? '重启应用' : '重试更新' : '立即更新'}
+            {actionLabel}
           </Button>
         </div>
       </div>
@@ -148,7 +154,7 @@ export const VersionUpdatePrompt: React.FC = () => {
         width="min(600px, calc(100vw - 32px))"
         footer={
           <Button theme="primary" onClick={handleUpdate} disabled={busy || activeTasks.length > 0} loading={busy}>
-            立即更新
+            {actionLabel}
           </Button>
         }
       >

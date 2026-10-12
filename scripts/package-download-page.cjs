@@ -11,4 +11,7 @@ for (const name of ['download.html', 'download-release.json', 'desktop-preview.p
   fs.copyFileSync(path.join(source, name), destination);
 }
 fs.copyFileSync(path.join(source, 'download.html'), path.join(output, 'index.html'));
+if (fs.existsSync(path.join(source, 'latest.json'))) {
+  fs.copyFileSync(path.join(source, 'latest.json'), path.join(output, 'latest.json'));
+}
 console.log(`Download site packaged at ${output}`);

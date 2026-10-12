@@ -96,11 +96,11 @@ async function fetchLatestRelease(): Promise<CachedCheck | null> {
  * 结果缓存 6 小时，避免每次打开菜单都打 API。
  * 仅在桌面端使用（Web 端走 SW 版本机制）。
  */
-export function useLatestRelease(currentVersion: string): LatestReleaseInfo | null {
+export function useLatestRelease(currentVersion: string, enabled = true): LatestReleaseInfo | null {
   const [latest, setLatest] = useState<LatestReleaseInfo | null>(null);
 
   useEffect(() => {
-    if (!currentVersion || currentVersion === '0.0.0') return;
+    if (!enabled || !currentVersion || currentVersion === '0.0.0') return;
     let cancelled = false;
 
     const apply = (entry: CachedCheck | null) => {
@@ -140,7 +140,7 @@ export function useLatestRelease(currentVersion: string): LatestReleaseInfo | nu
     return () => {
       cancelled = true;
     };
-  }, [currentVersion]);
+  }, [currentVersion, enabled]);
 
   return latest;
 }

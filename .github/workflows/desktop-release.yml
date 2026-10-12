@@ -484,11 +484,12 @@ jobs:
           ls -la $BUNDLE
           if [ -d "$BUNDLE/appimage" ]; then
             find "$BUNDLE/appimage" -name "*.AppImage" -exec sh -c 'cp "$1" "Opentu-linux-${ARCH}.AppImage"' _ {} \;
-            updater_signature="$(find "$BUNDLE/appimage" -name '*.AppImage.sig' -type f | head -n 1)"
-            [[ -n "$updater_signature" ]] || { echo "缺少 Linux 更新签名" >&2; exit 1; }
-            cp "$updater_signature" "Opentu-linux-${ARCH}.AppImage.sig"
+            updater_archive="$(find "$BUNDLE/appimage" -name '*.AppImage.tar.gz' -type f | head -n 1)"
+            [[ -n "$updater_archive" && -f "$updater_archive.sig" ]] || { echo "缺少 Linux 更新资产或签名" >&2; exit 1; }
+            cp "$updater_archive" "Opentu-linux-${ARCH}.AppImage.tar.gz"
+            cp "$updater_archive.sig" "Opentu-linux-${ARCH}.AppImage.tar.gz.sig"
             sha256sum "Opentu-linux-${ARCH}.AppImage" > "Opentu-linux-${ARCH}.AppImage.sha256"
-            gh release upload "$TAG" "Opentu-linux-${ARCH}.AppImage" "Opentu-linux-${ARCH}.AppImage.sig" "Opentu-linux-${ARCH}.AppImage.sha256" --clobber
+            gh release upload "$TAG" "Opentu-linux-${ARCH}.AppImage" "Opentu-linux-${ARCH}.AppImage.tar.gz" "Opentu-linux-${ARCH}.AppImage.tar.gz.sig" "Opentu-linux-${ARCH}.AppImage.sha256" --clobber
           fi
           if [ -d "$BUNDLE/deb" ]; then
             find "$BUNDLE/deb" -name "*.deb" -exec sh -c 'cp "$1" "Opentu-linux-${ARCH}.deb"' _ {} \;
@@ -532,10 +533,17 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.create-release.outputs.tag }}
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
       - name: Verify complete assets and publish draft
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.create-release.outputs.tag }}
+          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
         shell: bash
         run: |
           set -euo pipefail
@@ -553,8 +561,8 @@ jobs:
             Opentu-windows-x86_64-setup.exe Opentu-windows-x86_64-setup.exe.sha256
             Opentu-windows-x86_64.msi Opentu-windows-x86_64.msi.sha256
             Opentu-windows-x86_64.nsis.zip Opentu-windows-x86_64.nsis.zip.sig
-            Opentu-linux-x86_64.AppImage Opentu-linux-x86_64.AppImage.sig Opentu-linux-x86_64.AppImage.sha256
-            Opentu-linux-aarch64.AppImage Opentu-linux-aarch64.AppImage.sig Opentu-linux-aarch64.AppImage.sha256
+            Opentu-linux-x86_64.AppImage Opentu-linux-x86_64.AppImage.tar.gz Opentu-linux-x86_64.AppImage.tar.gz.sig Opentu-linux-x86_64.AppImage.sha256
+            Opentu-linux-aarch64.AppImage Opentu-linux-aarch64.AppImage.tar.gz Opentu-linux-aarch64.AppImage.tar.gz.sig Opentu-linux-aarch64.AppImage.sha256
             install_opentu.sh latest.json
           )
           for asset in "${required[@]}"; do

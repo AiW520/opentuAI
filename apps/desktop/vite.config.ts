@@ -26,6 +26,7 @@ function readDesktopVersion(): string {
 }
 
 const appVersion = readDesktopVersion();
+const qrAssets = ['logo/opentu-community-qr.png', 'logo/opentu-support-qr.png'];
 
 export default defineConfig({
   root: __dirname,
@@ -37,6 +38,7 @@ export default defineConfig({
     __APP_VERSION__: JSON.stringify(appVersion),
     'import.meta.env.VITE_TUZI_EMBEDDED_MODE': JSON.stringify('false'),
     'import.meta.env.VITE_OPENTU_DESKTOP': JSON.stringify('true'),
+    'import.meta.env.VITE_OPENTU_SIGNED_UPDATER': JSON.stringify(process.env.OPENTU_UPDATER_ENABLED === '1' ? 'true' : 'false'),
     __VUE_OPTIONS_API__: JSON.stringify(false),
     __VUE_PROD_DEVTOOLS__: JSON.stringify(false),
     __VUE_PROD_HYDRATION_MISMATCH_DETAILS__: JSON.stringify(false),
@@ -80,5 +82,21 @@ export default defineConfig({
   },
 
   worker: { format: 'es' },
-  plugins: [react(), nxViteTsPaths(), workflowAssetsPlugin()],
+  plugins: [react(), nxViteTsPaths(), workflowAssetsPlugin(), {
+    name: 'desktop-qr-assets',
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        const name = req.url?.split('?')[0].replace(/^\//, '');
+        if (!name || !qrAssets.includes(name)) return next();
+        res.setHeader('Content-Type', 'image/png');
+        res.end(fs.readFileSync(path.join(workspaceRoot, 'apps/web/public', name)));
+      });
+    },
+    generateBundle() {
+      for (const fileName of qrAssets) this.emitFile({
+        type: 'asset', fileName,
+        source: fs.readFileSync(path.join(workspaceRoot, 'apps/web/public', fileName)),
+      });
+    },
+  }],
 });

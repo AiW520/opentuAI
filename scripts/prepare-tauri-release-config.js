@@ -8,6 +8,9 @@ const repository =
   process.env.OPENTU_UPDATER_REPOSITORY ||
   process.env.GITHUB_REPOSITORY ||
   'AiW520/opentuAI';
+const endpoint = process.env.OPENTU_UPDATER_ENDPOINT ||
+  `https://github.com/${repository}/releases/latest/download/latest.json`;
+if (!endpoint.startsWith('https://')) throw new Error('Updater endpoint must use HTTPS');
 
 if (!output || !pubkey) {
   console.error('正式发布需要 --output 与 TAURI_UPDATER_PUBLIC_KEY');
@@ -15,11 +18,11 @@ if (!output || !pubkey) {
 }
 
 const config = {
-  bundle: { createUpdaterArtifacts: true },
+  bundle: { createUpdaterArtifacts: 'v1Compatible' },
   plugins: {
     updater: {
       endpoints: [
-        `https://github.com/${repository}/releases/latest/download/latest.json`,
+        endpoint,
       ],
       pubkey,
     },

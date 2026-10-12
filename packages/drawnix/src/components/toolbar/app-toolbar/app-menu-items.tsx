@@ -35,8 +35,9 @@ import { useDrawnix } from '../../../hooks/use-drawnix';
 import { useI18n } from '../../../i18n';
 import { useLatestRelease } from '../../../hooks/useLatestRelease';
 import Menu from '../../menu/menu';
-import { useContext, useState, useCallback } from 'react';
-import { Workflow as WorkflowIcon } from 'lucide-react';
+import { useContext, useState, useCallback, useEffect } from 'react';
+import { Workflow as WorkflowIcon, RefreshCw } from 'lucide-react';
+import { DESKTOP_DOWNLOAD_PAGE, publishDesktopUpdate, type DesktopUpdateCheckState, type DesktopUpdateState } from '../../../utils/desktop-update-state';
 import { MenuContentPropsContext } from '../../menu/common';
 import { EVENT } from '../../../constants';
 import { queueProviderSettingsNavigation } from '../../settings-dialog/provider-settings-navigation';
@@ -347,7 +348,25 @@ export const VersionInfo = () => {
   const { t } = useI18n();
   // 从 HTML meta 标签获取版本号
   const version = document.querySelector('meta[name="app-version"]')?.getAttribute('content') || '0.0.0';
-  const latest = useLatestRelease(version);
+  const isDesktop = !!(window as any).__TAURI_INTERNALS__;
+  const webLatest = useLatestRelease(version, !isDesktop);
+  const [desktopUpdate, setDesktopUpdate] = useState<DesktopUpdateState | undefined>(window.__OPENTU_DESKTOP_UPDATE_EVENT__);
+  const [checkState, setCheckState] = useState<DesktopUpdateCheckState | undefined>(window.__OPENTU_DESKTOP_UPDATE_CHECK__);
+  useEffect(() => {
+    if (!isDesktop) return;
+    const sync = () => {
+      setDesktopUpdate(window.__OPENTU_DESKTOP_UPDATE_EVENT__);
+      setCheckState(window.__OPENTU_DESKTOP_UPDATE_CHECK__);
+    };
+    sync();
+    window.addEventListener('sw-update-available', sync);
+    window.addEventListener('desktop-update-check-state', sync);
+    return () => {
+      window.removeEventListener('sw-update-available', sync);
+      window.removeEventListener('desktop-update-check-state', sync);
+    };
+  }, [isDesktop]);
+  const latest = isDesktop ? desktopUpdate && { tag: `v${desktopUpdate.version}`, url: DESKTOP_DOWNLOAD_PAGE } : webLatest;
 
   const openExternalUrl = (url: string) => {
     const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__;
@@ -359,6 +378,15 @@ export const VersionInfo = () => {
   };
 
   return (
+    <>
+    {isDesktop && <MenuItem
+      icon={<RefreshCw size={16} />}
+      data-testid="desktop-check-for-updates"
+      onSelect={() => window.dispatchEvent(new CustomEvent('desktop-check-for-updates'))}
+      aria-label="检查更新"
+    >
+      {checkState?.status === 'checking' ? '正在检查更新…' : checkState?.status === 'current' ? '已是最新版本 · 再次检查' : checkState?.status === 'error' ? '检查失败 · 重试' : '检查更新'}
+    </MenuItem>}
     <MenuItem
       data-track="toolbar_click_menu_version"
       onSelect={() => {}}
@@ -369,13 +397,15 @@ export const VersionInfo = () => {
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
+          flexWrap: 'wrap',
+          gap: 8,
           width: '100%',
         }}
       >
         <span style={{ color: '#666' }}>
           {t('menu.version')}：{version}
         </span>
-        <span style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+        <span style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
           {latest && (
             <span
               style={{
@@ -394,7 +424,8 @@ export const VersionInfo = () => {
               title={t('menu.updateAvailable').replace('{version}', latest.tag)}
               onClick={(e) => {
                 e.stopPropagation();
-                openExternalUrl(latest.url);
+                if (desktopUpdate) publishDesktopUpdate(desktopUpdate);
+                else openExternalUrl(latest.url);
               }}
             >
               <span
@@ -414,7 +445,7 @@ export const VersionInfo = () => {
             data-track="toolbar_click_menu_changelog"
             onClick={(e) => {
               e.stopPropagation();
-              openExternalUrl('./versions.html');
+              openExternalUrl(isDesktop ? 'https://github.com/AiW520/opentuAI/releases' : './versions.html');
             }}
           >
             {t('menu.changelog')}
@@ -424,7 +455,7 @@ export const VersionInfo = () => {
             data-track="toolbar_click_menu_more_versions"
             onClick={(e) => {
               e.stopPropagation();
-              openExternalUrl('https://release.opentu.ai/');
+              openExternalUrl(isDesktop ? DESKTOP_DOWNLOAD_PAGE : 'https://release.opentu.ai/');
             }}
           >
             {t('menu.more')}
@@ -432,6 +463,7 @@ export const VersionInfo = () => {
         </span>
       </span>
     </MenuItem>
+    </>
   );
 };
 VersionInfo.displayName = 'VersionInfo';

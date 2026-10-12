@@ -8,7 +8,7 @@ const repository =
   process.env.GITHUB_REPOSITORY ||
   'AiW520/opentuAI';
 
-if (!tag || !/^v\d+\.\d+\.\d+/.test(tag)) {
+if (!tag || !/^v\d+\.\d+\.\d+(?:-preview\.[1-9]\d*)?$/.test(tag)) {
   console.error('RELEASE_TAG 必须是语义化版本标签');
   process.exit(1);
 }
@@ -17,8 +17,8 @@ const mappings = {
   'darwin-aarch64': 'Opentu-macos-aarch64.app.tar.gz',
   'darwin-x86_64': 'Opentu-macos-x86_64.app.tar.gz',
   'windows-x86_64': 'Opentu-windows-x86_64.nsis.zip',
-  'linux-x86_64': 'Opentu-linux-x86_64.AppImage',
-  'linux-aarch64': 'Opentu-linux-aarch64.AppImage',
+  'linux-x86_64': 'Opentu-linux-x86_64.AppImage.tar.gz',
+  'linux-aarch64': 'Opentu-linux-aarch64.AppImage.tar.gz',
 };
 
 const platforms = {};
@@ -41,7 +41,7 @@ for (const [platform, asset] of Object.entries(mappings)) {
 }
 
 const manifest = {
-  version: tag.slice(1),
+  version: tag.slice(1).split('-')[0],
   notes: `Opentu Desktop ${tag}`,
   pub_date: new Date().toISOString(),
   platforms,

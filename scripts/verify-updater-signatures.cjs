@@ -39,8 +39,8 @@ if (require.main === module) {
     'Opentu-macos-aarch64.app.tar.gz',
     'Opentu-macos-x86_64.app.tar.gz',
     'Opentu-windows-x86_64.nsis.zip',
-    'Opentu-linux-x86_64.AppImage',
-    'Opentu-linux-aarch64.AppImage',
+    'Opentu-linux-x86_64.AppImage.tar.gz',
+    'Opentu-linux-aarch64.AppImage.tar.gz',
   ];
   for (const asset of assets) {
     verifyUpdaterSignature(

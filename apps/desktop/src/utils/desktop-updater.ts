@@ -1,74 +1,120 @@
 import { isTauriEnvironment } from './tauri-api';
 import {
+  DESKTOP_DOWNLOAD_PAGE,
   publishDesktopUpdate,
+  publishDesktopUpdateCheck,
   type DesktopUpdateState,
 } from '../../../../packages/drawnix/src/utils/desktop-update-state';
+import { fetchDesktopRelease } from './desktop-release';
+import type { Update } from '@tauri-apps/plugin-updater';
 
 let initialized = false;
+let pendingCheck: Promise<void> | undefined;
+let update: Update | null = null;
+let available: DesktopUpdateState | undefined;
+let busy = false;
+let installed = false;
+let lastCheck = 0;
+const CHECK_INTERVAL = 6 * 60 * 60 * 1000;
 
-export async function initializeDesktopUpdater(): Promise<void> {
-  if (!isTauriEnvironment() || initialized) return;
-  initialized = true;
-
+async function install(): Promise<void> {
+  if (pendingCheck) await pendingCheck;
+  if (busy || !available) return;
+  busy = true;
   try {
-    const [{ check }, { relaunch }] = await Promise.all([
-      import('@tauri-apps/plugin-updater'),
-      import('@tauri-apps/plugin-process'),
-    ]);
-    const update = await check();
+    if (available.downloadUrl) {
+      const { openUrl } = await import('@tauri-apps/plugin-opener');
+      await openUrl(available.downloadUrl);
+      publishDesktopUpdate({ ...available, status: 'ready' });
+      return;
+    }
     if (!update) return;
-
-    window.__OPENTU_DESKTOP_UPDATER_ACTIVE__ = true;
-    const available: DesktopUpdateState = {
-      version: update.version,
-      desktop: true,
-      status: 'ready',
-      changelog: update.body?.split(/\r?\n/).filter(Boolean),
-    };
-    let busy = false;
-    let installed = false;
-
-    const install = async () => {
-      if (busy) return;
-      busy = true;
-      try {
-        if (!installed) {
-          publishDesktopUpdate({ ...available, status: 'downloading' });
-          let total: number | undefined;
-          let received = 0;
-          await update.downloadAndInstall((event) => {
-            if (event.event === 'Started') {
-              total = event.data.contentLength;
-              received = 0;
-            } else if (event.event === 'Progress') {
-              received += event.data.chunkLength;
-            } else if (event.event === 'Finished') {
-              publishDesktopUpdate({ ...available, status: 'installing' });
-              return;
-            }
-            publishDesktopUpdate({
-              ...available,
-              status: 'downloading',
-              progress: total ? Math.min(100, Math.floor(received / total * 100)) : undefined,
-            });
-          });
-          installed = true;
+    if (!installed) {
+      publishDesktopUpdate({ ...available, status: 'downloading' });
+      let total: number | undefined;
+      let received = 0;
+      await update.downloadAndInstall((event) => {
+        if (event.event === 'Started') {
+          total = event.data.contentLength;
+          received = 0;
+        } else if (event.event === 'Progress') {
+          received += event.data.chunkLength;
+        } else if (event.event === 'Finished') {
+          publishDesktopUpdate({ ...available!, status: 'installing' });
+          return;
         }
-        publishDesktopUpdate({ ...available, status: 'restarting' });
-        await relaunch();
-        window.removeEventListener('user-confirmed-upgrade', install);
-      } catch (error) {
-        console.error('[Desktop Updater] 安装更新失败:', error);
-        publishDesktopUpdate({ ...available, status: 'error', restartOnly: installed });
-      } finally {
-        busy = false;
-      }
-    };
-    window.addEventListener('user-confirmed-upgrade', install);
-    publishDesktopUpdate(available);
+        publishDesktopUpdate({
+          ...available!, status: 'downloading',
+          progress: total ? Math.min(100, Math.floor(received / total * 100)) : undefined,
+        });
+      });
+      installed = true;
+    }
+    publishDesktopUpdate({ ...available, status: 'restarting' });
+    const { relaunch } = await import('@tauri-apps/plugin-process');
+    await relaunch();
   } catch (error) {
-    // 普通本地构建未启用签名 updater 时应静默降级，不展示虚假的更新能力。
-    window.__OPENTU_DESKTOP_UPDATER_ACTIVE__ = false;
-    console.info('[Desktop Updater] 当前构建未启用签名自动更新:', error);
+    console.error('[Desktop Updater] 更新失败:', error);
+    publishDesktopUpdate({ ...available, status: 'error', restartOnly: installed });
+  } finally {
+    busy = false;
   }
+}
+
+async function runCheck(): Promise<void> {
+  publishDesktopUpdateCheck({ status: 'checking' });
+  let candidate: Update | null = null;
+  let signedCheckFailed = false;
+  try {
+    if (import.meta.env.VITE_OPENTU_SIGNED_UPDATER === 'true') {
+      try {
+        const { check } = await import('@tauri-apps/plugin-updater');
+        candidate = await check({ timeout: 15000 });
+      } catch (error) {
+        signedCheckFailed = true;
+        console.info('[Desktop Updater] 签名更新检查失败，尝试发布信息:', error);
+      }
+    }
+    let next: DesktopUpdateState | undefined;
+    if (candidate) {
+      next = { version: candidate.version, desktop: true, status: 'ready', changelog: candidate.body?.split(/\r?\n/).filter(Boolean) };
+    } else {
+      const version = document.querySelector('meta[name="app-version"]')?.getAttribute('content') || '0.0.0';
+      const release = await fetchDesktopRelease(version);
+      if (release) next = { ...release, desktop: true, status: 'ready', downloadUrl: DESKTOP_DOWNLOAD_PAGE };
+      else if (signedCheckFailed) throw new Error('Signed update channel unavailable');
+    }
+    if (update) await update.close();
+    update = candidate;
+    available = next;
+    lastCheck = Date.now();
+    window.__OPENTU_DESKTOP_UPDATER_ACTIVE__ = Boolean(candidate);
+    if (next) publishDesktopUpdate(next);
+    publishDesktopUpdateCheck({ status: next ? 'available' : 'current' });
+  } catch (error) {
+    console.info('[Desktop Updater] 暂时无法检查更新:', error);
+    publishDesktopUpdateCheck({ status: 'error' });
+  }
+}
+
+export function checkDesktopUpdates(): Promise<void> {
+  if (!isTauriEnvironment() || busy || installed) return Promise.resolve();
+  if (pendingCheck) return pendingCheck;
+  pendingCheck = runCheck().finally(() => { pendingCheck = undefined; });
+  return pendingCheck;
+}
+
+export function initializeDesktopUpdater(): Promise<void> {
+  if (!isTauriEnvironment()) return Promise.resolve();
+  if (initialized) return pendingCheck || Promise.resolve();
+  initialized = true;
+  window.__OPENTU_DESKTOP_UPDATER_ACTIVE__ = false;
+  window.addEventListener('user-confirmed-upgrade', () => { void install(); });
+  window.addEventListener('desktop-check-for-updates', () => { void checkDesktopUpdates(); });
+  window.addEventListener('online', () => { void checkDesktopUpdates(); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && Date.now() - lastCheck >= CHECK_INTERVAL) void checkDesktopUpdates();
+  });
+  window.setInterval(() => { void checkDesktopUpdates(); }, CHECK_INTERVAL);
+  return checkDesktopUpdates();
 }

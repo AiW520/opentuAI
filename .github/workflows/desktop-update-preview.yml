@@ -114,6 +114,18 @@ jobs:
         run: |
           node ../../scripts/prepare-tauri-release-config.js --output=src-tauri/tauri.release.conf.json
           pnpm exec tauri build --config src-tauri/tauri.release.conf.json --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+      - name: Sign Debian updater packages
+        if: runner.os == 'Linux'
+        working-directory: apps/desktop
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          version="$(node -p 'require("./package.json").version')"
+          for installer in src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb; do
+            pnpm exec tauri signer sign --app-version "$version" "$installer"
+          done
       - name: Verify packaged QR assets
         run: node scripts/verify-desktop-renderer.cjs
       - name: Verify macOS application and DMG

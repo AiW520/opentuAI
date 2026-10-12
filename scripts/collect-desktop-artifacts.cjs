@@ -56,6 +56,12 @@ if (updaterSigned) {
   if (!fs.existsSync(`${payload}.sig`)) throw new Error(`Missing updater signature: ${payload}`);
   fs.copyFileSync(payload, path.join(output, name));
   fs.copyFileSync(`${payload}.sig`, path.join(output, `${name}.sig`));
+  if (platform.startsWith('linux-')) {
+    const debs = files.filter(file => file.endsWith('.deb'));
+    if (debs.length !== 1 || !fs.existsSync(`${debs[0]}.sig`)) throw new Error(`Expected one signed Debian updater for ${platform}`);
+    fs.copyFileSync(debs[0], path.join(output, `Opentu-${platform}.deb`));
+    fs.copyFileSync(`${debs[0]}.sig`, path.join(output, `Opentu-${platform}.deb.sig`));
+  }
 }
 fs.writeFileSync(path.join(output, `manifest-${platform}.json`), `${JSON.stringify(manifest, null, 2)}\n`);
 fs.writeFileSync(path.join(output, 'BUILD-NOTES.txt'),

@@ -21,6 +21,9 @@ for (const platform of platforms) {
     if (bytes.length !== entry.size || sha256 !== entry.sha256 || fs.readFileSync(path.join(directory, `${name}.sha256`), 'utf8') !== `${sha256}  ${name}\n`) {
       throw new Error(`Installer checksum mismatch: ${name}`);
     }
+    if (extension === '.deb' && !bytes.equals(fs.readFileSync(path.join(directory, `Opentu-${platform}.deb`)))) {
+      throw new Error(`Debian updater and manual installer differ: ${platform}`);
+    }
   }
 }
 for (const script of ['verify-updater-signatures.cjs', 'generate-updater-manifest.js']) {

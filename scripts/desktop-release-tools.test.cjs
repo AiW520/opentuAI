@@ -47,6 +47,10 @@ test('publishes a manifest only after all platforms, commits, checksums and sign
       const bytes = Buffer.from(platform);
       fs.writeFileSync(path.join(directory, `Opentu-${platform}${extension}`), bytes);
       fs.writeFileSync(path.join(directory, `Opentu-${platform}${extension}.sig`), sign(bytes));
+      if (platform.startsWith('linux-')) {
+        fs.writeFileSync(path.join(directory, `Opentu-${platform}.deb`), bytes);
+        fs.writeFileSync(path.join(directory, `Opentu-${platform}.deb.sig`), sign(bytes));
+      }
       const extensions = platform.startsWith('macos') ? ['.dmg'] : platform.startsWith('windows') ? ['-setup.exe', '.msi'] : ['.AppImage', '.deb'];
       const files = extensions.map(ext => {
         const name = `Opentu-1.2.14-${platform}${ext}`;
@@ -63,8 +67,13 @@ test('publishes a manifest only after all platforms, commits, checksums and sign
     run();
     const manifest = JSON.parse(fs.readFileSync(path.join(directory, 'latest.json'), 'utf8'));
     assert.equal(manifest.version, '1.2.14');
-    assert.equal(Object.keys(manifest.platforms).length, 5);
+    assert.equal(Object.keys(manifest.platforms).length, 7);
     assert.match(manifest.platforms['windows-x86_64'].url, /v1\.2\.14-preview\.1\/Opentu-windows-x86_64\.nsis\.zip$/);
+    assert.match(manifest.platforms['linux-aarch64-deb'].url, /\/Opentu-linux-aarch64\.deb$/);
+    assert.match(manifest.platforms['linux-aarch64'].url, /\.AppImage\.tar\.gz$/);
+    fs.writeFileSync(path.join(directory, 'Opentu-linux-aarch64.deb'), 'corrupt');
+    assert.throws(run);
+    fs.writeFileSync(path.join(directory, 'Opentu-linux-aarch64.deb'), Buffer.from('linux-aarch64'));
     fs.writeFileSync(path.join(directory, 'Opentu-1.2.14-macos-aarch64.dmg'), 'corrupt');
     assert.throws(run);
   } finally {

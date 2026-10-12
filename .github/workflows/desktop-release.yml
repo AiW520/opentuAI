@@ -476,6 +476,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.create-release.outputs.tag }}
           TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           ARCH: ${{ matrix.arch }}
           TARGET: ${{ matrix.target }}
         run: |
@@ -493,8 +495,10 @@ jobs:
           fi
           if [ -d "$BUNDLE/deb" ]; then
             find "$BUNDLE/deb" -name "*.deb" -exec sh -c 'cp "$1" "Opentu-linux-${ARCH}.deb"' _ {} \;
+            version="$(node -p 'require("./apps/desktop/package.json").version')"
+            pnpm --dir apps/desktop exec tauri signer sign --app-version "$version" "$GITHUB_WORKSPACE/Opentu-linux-${ARCH}.deb"
             sha256sum "Opentu-linux-${ARCH}.deb" > "Opentu-linux-${ARCH}.deb.sha256"
-            gh release upload "$TAG" "Opentu-linux-${ARCH}.deb" "Opentu-linux-${ARCH}.deb.sha256" --clobber
+            gh release upload "$TAG" "Opentu-linux-${ARCH}.deb" "Opentu-linux-${ARCH}.deb.sig" "Opentu-linux-${ARCH}.deb.sha256" --clobber
           fi
           if [ -d "$BUNDLE/rpm" ]; then
             find "$BUNDLE/rpm" -name "*.rpm" -exec sh -c 'cp "$1" "Opentu-linux-${ARCH}.rpm"' _ {} \;
@@ -563,6 +567,8 @@ jobs:
             Opentu-windows-x86_64.nsis.zip Opentu-windows-x86_64.nsis.zip.sig
             Opentu-linux-x86_64.AppImage Opentu-linux-x86_64.AppImage.tar.gz Opentu-linux-x86_64.AppImage.tar.gz.sig Opentu-linux-x86_64.AppImage.sha256
             Opentu-linux-aarch64.AppImage Opentu-linux-aarch64.AppImage.tar.gz Opentu-linux-aarch64.AppImage.tar.gz.sig Opentu-linux-aarch64.AppImage.sha256
+            Opentu-linux-x86_64.deb Opentu-linux-x86_64.deb.sig Opentu-linux-x86_64.deb.sha256
+            Opentu-linux-aarch64.deb Opentu-linux-aarch64.deb.sig Opentu-linux-aarch64.deb.sha256
             install_opentu.sh latest.json
           )
           for asset in "${required[@]}"; do

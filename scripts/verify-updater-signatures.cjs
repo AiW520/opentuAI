@@ -41,6 +41,8 @@ if (require.main === module) {
     'Opentu-windows-x86_64.nsis.zip',
     'Opentu-linux-x86_64.AppImage.tar.gz',
     'Opentu-linux-aarch64.AppImage.tar.gz',
+    'Opentu-linux-x86_64.deb',
+    'Opentu-linux-aarch64.deb',
   ];
   for (const asset of assets) {
     verifyUpdaterSignature(

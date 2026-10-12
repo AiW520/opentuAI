@@ -19,6 +19,8 @@ const mappings = {
   'windows-x86_64': 'Opentu-windows-x86_64.nsis.zip',
   'linux-x86_64': 'Opentu-linux-x86_64.AppImage.tar.gz',
   'linux-aarch64': 'Opentu-linux-aarch64.AppImage.tar.gz',
+  'linux-x86_64-deb': 'Opentu-linux-x86_64.deb',
+  'linux-aarch64-deb': 'Opentu-linux-aarch64.deb',
 };
 
 const platforms = {};

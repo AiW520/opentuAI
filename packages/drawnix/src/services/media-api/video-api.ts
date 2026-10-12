@@ -31,6 +31,7 @@ import {
 import { prepareVideoReferenceImageBlob } from '../video-reference-image-utils';
 import { prepareReferenceImageForMultipart } from '../reference-image-form-data';
 import { mapWithConcurrency } from '../../utils/map-with-concurrency';
+import { appendVeoAdvancedMetadata } from '../../utils/veo-parameters';
 import { prepareMiniMaxH3Submission } from '../minimax-h3-video-workflow';
 
 const DURATION_IN_MODEL_PREFIX = 'sora-2-';
@@ -209,6 +210,7 @@ export async function submitVideoGeneration(
   }
 
   appendVideoOutputParams(formData, model, params.size, params.params);
+  appendVeoAdvancedMetadata(formData, model, params.params, config.binding?.metadata?.video);
 
   // 处理参考图片（体积控制在 1MB 内，与图片生成一致）
   if (!isMiniMaxH3 && params.referenceImages && params.referenceImages.length > 0) {

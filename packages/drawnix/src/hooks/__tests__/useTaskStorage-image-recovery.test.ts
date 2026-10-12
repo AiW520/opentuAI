@@ -46,7 +46,7 @@ vi.mock('../../services/task-storage-reader', () => ({
 }));
 
 vi.mock('../../services/app-database', async (importOriginal) => ({
-  ...await importOriginal<object>(),
+  ...await importOriginal<typeof import('../../services/app-database')>(),
   migrateFromLegacyDB: vi.fn(async () => undefined),
 }));
 

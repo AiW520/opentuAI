@@ -115,14 +115,15 @@ export class ImageGenerationAnchorGenerator {
     const rect = RectangleClient.getRectangleByPoints(element.points);
     const isFailed = element.phase === 'failed';
     const isCompleted = element.phase === 'completed';
-    const accent = isFailed ? '#dc2626' : isCompleted ? '#15803d' : '#d97706';
+    const accent = isFailed ? '#c15a5a' : '#25755e';
     const background = isFailed
-      ? '#fff1f2'
+      ? '#fffafa'
       : isCompleted
-      ? '#f0fdf4'
-      : '#fff7ed';
+      ? '#f8fcfa'
+      : '#fcfdfc';
+    const border = isFailed ? '#e5caca' : isCompleted ? '#c9dfd4' : '#dfe4e9';
     const minDimension = Math.min(rect.width, rect.height);
-    const compact = rect.width < 220 || rect.height < 120;
+    const compact = rect.width < 220 || rect.height < 190;
     const titleSize = compact ? 14 : 18;
     const bodySize = compact ? 11 : 13;
     const padding = compact ? 12 : 20;
@@ -130,10 +131,7 @@ export class ImageGenerationAnchorGenerator {
       typeof element.progress === 'number'
         ? Math.max(0, Math.min(100, Math.round(element.progress)))
         : null;
-    const phaseLabel =
-      element.phase === 'generating' && progress != null
-        ? `${progress}%`
-        : DESKTOP_PHASE_LABELS[element.phase];
+    const phaseLabel = DESKTOP_PHASE_LABELS[element.phase];
     const subtitle = isFailed
       ? element.error || DESKTOP_PHASE_SUBTITLES.failed
       : element.subtitle || DESKTOP_PHASE_SUBTITLES[element.phase];
@@ -150,9 +148,80 @@ export class ImageGenerationAnchorGenerator {
     backgroundRect.setAttribute('height', String(rect.height));
     backgroundRect.setAttribute('rx', String(Math.min(18, minDimension / 8)));
     backgroundRect.setAttribute('fill', background);
-    backgroundRect.setAttribute('stroke', accent);
-    backgroundRect.setAttribute('stroke-width', '1.5');
+    backgroundRect.setAttribute('stroke', border);
+    backgroundRect.setAttribute('stroke-width', '1');
     host.appendChild(backgroundRect);
+
+    if (!compact) {
+      const patternId = `generation-anchor-grid-${encodeURIComponent(
+        element.id
+      )}`;
+      const defs = createSvgElement('defs');
+      const pattern = createSvgElement('pattern');
+      pattern.setAttribute('id', patternId);
+      pattern.setAttribute('width', '18');
+      pattern.setAttribute('height', '18');
+      pattern.setAttribute('patternUnits', 'userSpaceOnUse');
+      const dot = createSvgElement('circle');
+      dot.setAttribute('cx', '1');
+      dot.setAttribute('cy', '1');
+      dot.setAttribute('r', '0.65');
+      dot.setAttribute('fill', '#d5ddd8');
+      pattern.appendChild(dot);
+      defs.appendChild(pattern);
+      host.appendChild(defs);
+
+      const grid = createSvgElement('rect');
+      grid.setAttribute('class', 'image-generation-anchor-desktop-grid');
+      grid.setAttribute('x', String(rect.x + padding));
+      grid.setAttribute('y', String(rect.y + 52));
+      grid.setAttribute('width', String(rect.width - padding * 2));
+      grid.setAttribute('height', String(rect.height - 112));
+      grid.setAttribute('fill', `url(#${patternId})`);
+      grid.setAttribute('opacity', '0.65');
+      grid.style.pointerEvents = 'none';
+      host.appendChild(grid);
+
+      const left = rect.x + 32;
+      const right = rect.x + rect.width - 32;
+      const top = rect.y + 64;
+      const bottom = rect.y + rect.height - 64;
+      const corners = createSvgElement('path');
+      corners.setAttribute('class', 'image-generation-anchor-desktop-corners');
+      corners.setAttribute(
+        'd',
+        `M ${left + 14} ${top} H ${left} V ${top + 14} ` +
+          `M ${right - 14} ${top} H ${right} V ${top + 14} ` +
+          `M ${left} ${bottom - 14} V ${bottom} H ${left + 14} ` +
+          `M ${right} ${bottom - 14} V ${bottom} H ${right - 14}`
+      );
+      corners.setAttribute('fill', 'none');
+      corners.setAttribute('stroke', '#b7c8bd');
+      corners.setAttribute('stroke-width', '1.2');
+      corners.style.pointerEvents = 'none';
+      host.appendChild(corners);
+
+      const count =
+        element.batchTotal ||
+        element.requestedCount ||
+        element.taskIds.length ||
+        1;
+      const header = createSvgElement('text');
+      header.setAttribute('x', String(rect.x + 22));
+      header.setAttribute('y', String(rect.y + 32));
+      header.setAttribute('fill', '#777e88');
+      header.setAttribute('font-size', '11');
+      header.textContent = count > 1 ? '批量生成' : '图片生成';
+      host.appendChild(header);
+      const counter = createSvgElement('text');
+      counter.setAttribute('x', String(rect.x + rect.width - 22));
+      counter.setAttribute('y', String(rect.y + 32));
+      counter.setAttribute('text-anchor', 'end');
+      counter.setAttribute('fill', '#777e88');
+      counter.setAttribute('font-size', '11');
+      counter.textContent = `${count} 张`;
+      host.appendChild(counter);
+    }
 
     if (element.previewImageUrl) {
       const preview = createSvgElement('image');
@@ -166,57 +235,64 @@ export class ImageGenerationAnchorGenerator {
     }
 
     const centerX = rect.x + rect.width / 2;
+    const spinning = !isFailed && !isCompleted;
+    const spinnerRadius = compact ? 10 : Math.min(28, minDimension * 0.1);
     const contentCenterY =
-      rect.y + rect.height * (isFailed && !compact ? 0.38 : 0.45);
+      rect.y +
+      (compact
+        ? rect.height * (isFailed ? 0.34 : 0.5)
+        : (rect.height - (spinning ? 2 * spinnerRadius + 68 : 42)) / 2 +
+          (spinning ? spinnerRadius : 9));
+    const spinnerX = compact
+      ? centerX - (phaseLabel.length * titleSize) / 2 - 10
+      : centerX;
 
-    if (!isFailed && !isCompleted && !compact) {
-      const ringRadius = Math.max(22, Math.min(38, minDimension * 0.13));
-      const ringBackground = createSvgElement('circle');
-      ringBackground.setAttribute('cx', String(centerX));
-      ringBackground.setAttribute('cy', String(contentCenterY));
-      ringBackground.setAttribute('r', String(ringRadius));
-      ringBackground.setAttribute('fill', '#ffffff');
-      ringBackground.setAttribute('fill-opacity', '0.82');
-      ringBackground.setAttribute('stroke', '#fed7aa');
-      ringBackground.setAttribute('stroke-width', '6');
-      host.appendChild(ringBackground);
+    if (spinning) {
+      const spinnerTrack = createSvgElement('circle');
+      spinnerTrack.setAttribute('cx', String(spinnerX));
+      spinnerTrack.setAttribute('cy', String(contentCenterY));
+      spinnerTrack.setAttribute('r', String(spinnerRadius));
+      spinnerTrack.setAttribute('fill', 'none');
+      spinnerTrack.setAttribute('stroke', '#e7ebef');
+      spinnerTrack.setAttribute('stroke-width', '3');
+      host.appendChild(spinnerTrack);
 
-      if (progress != null) {
-        const circumference = 2 * Math.PI * ringRadius;
-        const progressRing = createSvgElement('circle');
-        progressRing.setAttribute('cx', String(centerX));
-        progressRing.setAttribute('cy', String(contentCenterY));
-        progressRing.setAttribute('r', String(ringRadius));
-        progressRing.setAttribute('fill', 'none');
-        progressRing.setAttribute('stroke', accent);
-        progressRing.setAttribute('stroke-width', '6');
-        progressRing.setAttribute('stroke-linecap', 'round');
-        progressRing.setAttribute('stroke-dasharray', String(circumference));
-        progressRing.setAttribute(
-          'stroke-dashoffset',
-          String(circumference * (1 - progress / 100))
-        );
-        progressRing.setAttribute(
-          'transform',
-          `rotate(-90 ${centerX} ${contentCenterY})`
-        );
-        host.appendChild(progressRing);
-      }
+      const spinner = createSvgElement('circle');
+      spinner.setAttribute('cx', String(spinnerX));
+      spinner.setAttribute('cy', String(contentCenterY));
+      spinner.setAttribute('r', String(spinnerRadius));
+      spinner.setAttribute('fill', 'none');
+      spinner.setAttribute('stroke', accent);
+      spinner.setAttribute('stroke-width', '3');
+      spinner.setAttribute('stroke-linecap', 'round');
+      spinner.setAttribute(
+        'stroke-dasharray',
+        `${spinnerRadius * 1.7} ${spinnerRadius * (2 * Math.PI - 1.7)}`
+      );
+      const spinnerAnimation = createSvgElement('animateTransform');
+      spinnerAnimation.setAttribute('attributeName', 'transform');
+      spinnerAnimation.setAttribute('type', 'rotate');
+      spinnerAnimation.setAttribute('from', `0 ${spinnerX} ${contentCenterY}`);
+      spinnerAnimation.setAttribute('to', `360 ${spinnerX} ${contentCenterY}`);
+      spinnerAnimation.setAttribute('dur', '1.05s');
+      spinnerAnimation.setAttribute('repeatCount', 'indefinite');
+      spinner.appendChild(spinnerAnimation);
+      host.appendChild(spinner);
     }
 
     const title = createSvgElement('text');
-    title.setAttribute('x', String(centerX));
+    title.setAttribute('x', String(centerX + (compact && spinning ? 12 : 0)));
     title.setAttribute(
       'y',
       String(
-        !isFailed && !isCompleted && !compact
-          ? contentCenterY + 6
+        spinning && !compact
+          ? contentCenterY + spinnerRadius + 30
           : contentCenterY
       )
     );
     title.setAttribute('text-anchor', 'middle');
     title.setAttribute('dominant-baseline', 'middle');
-    title.setAttribute('fill', isFailed ? '#991b1b' : '#7c2d12');
+    title.setAttribute('fill', isFailed ? '#9c4b4b' : '#27313a');
     title.setAttribute(
       'font-family',
       '-apple-system, BlinkMacSystemFont, sans-serif'
@@ -236,13 +312,11 @@ export class ImageGenerationAnchorGenerator {
       description.setAttribute(
         'y',
         String(
-          isFailed
-            ? contentCenterY + 42
-            : contentCenterY + Math.max(58, minDimension * 0.2)
+          spinning ? contentCenterY + spinnerRadius + 56 : contentCenterY + 30
         )
       );
       description.setAttribute('text-anchor', 'middle');
-      description.setAttribute('fill', isFailed ? '#b91c1c' : '#92400e');
+      description.setAttribute('fill', isFailed ? '#a76565' : '#74808b');
       description.setAttribute(
         'font-family',
         '-apple-system, BlinkMacSystemFont, sans-serif'
@@ -250,6 +324,31 @@ export class ImageGenerationAnchorGenerator {
       description.setAttribute('font-size', String(bodySize));
       description.textContent = truncateText(subtitle, maxChars);
       host.appendChild(description);
+    }
+
+    if (spinning && !compact && rect.height >= 230 && progress != null) {
+      const progressWidth = Math.min(180, rect.width - padding * 2);
+      const progressX = centerX - progressWidth / 2;
+      const progressY = rect.y + rect.height - Math.max(22, padding);
+      const progressTrack = createSvgElement('rect');
+      progressTrack.setAttribute('x', String(progressX));
+      progressTrack.setAttribute('y', String(progressY));
+      progressTrack.setAttribute('width', String(progressWidth));
+      progressTrack.setAttribute('height', '3');
+      progressTrack.setAttribute('rx', '1.5');
+      progressTrack.setAttribute('fill', '#e7ebef');
+      host.appendChild(progressTrack);
+      const progressBar = createSvgElement('rect');
+      progressBar.setAttribute('x', String(progressX));
+      progressBar.setAttribute('y', String(progressY));
+      progressBar.setAttribute(
+        'width',
+        String((progressWidth * progress) / 100)
+      );
+      progressBar.setAttribute('height', '3');
+      progressBar.setAttribute('rx', '1.5');
+      progressBar.setAttribute('fill', accent);
+      host.appendChild(progressBar);
     }
 
     if (isFailed && rect.width >= 180 && rect.height >= 120) {

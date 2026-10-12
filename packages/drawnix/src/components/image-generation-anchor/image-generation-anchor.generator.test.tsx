@@ -116,12 +116,12 @@ describe('ImageGenerationAnchorGenerator', () => {
     expect(fallback?.textContent).toContain('API Key 无效或已过期');
     expect(fallback?.textContent).toContain('重试');
     expect(fallback?.textContent).toContain('关闭');
+    expect(fallback?.querySelector('animateTransform')).toBeNull();
 
     const retryListener = vi.fn();
     window.addEventListener(IMAGE_GENERATION_ANCHOR_RETRY_EVENT, retryListener);
-    const retryButton = fallback?.querySelector<SVGGElement>(
-      '[aria-label="重试"]'
-    );
+    const retryButton =
+      fallback?.querySelector<SVGGElement>('[aria-label="重试"]');
     const pointerDownEvent = new Event('pointerdown', {
       bubbles: true,
       cancelable: true,
@@ -146,6 +146,39 @@ describe('ImageGenerationAnchorGenerator', () => {
       ?.querySelector<SVGGElement>('[aria-label="关闭"]')
       ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     expect(deleteFragment).toHaveBeenCalledWith([element]);
+
+    for (const phase of [
+      'queued',
+      'generating',
+      'developing',
+      'inserting',
+    ] as const) {
+      generator.updateDrawing(
+        { ...element, phase, progress: 62 },
+        parentG,
+        false
+      );
+      expect(
+        fallback?.querySelector('animateTransform')?.getAttribute('repeatCount')
+      ).toBe('indefinite');
+      expect(fallback?.querySelector('[aria-label="重试"]')).toBeNull();
+    }
+    generator.updateDrawing({ ...element, phase: 'completed' }, parentG, false);
+    expect(fallback?.querySelector('animateTransform')).toBeNull();
+
+    generator.updateDrawing(
+      {
+        ...element,
+        phase: 'generating',
+        points: [
+          [10, 20],
+          [210, 140],
+        ],
+      },
+      parentG,
+      false
+    );
+    expect(fallback?.querySelector('animateTransform')).not.toBeNull();
 
     generator.destroy();
   });

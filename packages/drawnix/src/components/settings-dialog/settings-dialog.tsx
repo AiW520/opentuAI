@@ -108,7 +108,7 @@ import {
   TUZI_BRIDGE_EVENT,
 } from '../../services/tuzi-postmessage-bridge';
 import { syncTuziSessionProviders } from '../../services/tuzi-session-provider-sync';
-import { hasTuziSystemToken } from '../../services/tuzi-token-auth';
+import { hasTuziSystemToken, isLocalTuziSession } from '../../services/tuzi-token-auth';
 import { openModelBenchmarkTool } from '../../services/model-benchmark-launcher';
 import {
   analytics,
@@ -1157,6 +1157,7 @@ export const SettingsDialog = ({
   const [tuziMode, setTuziMode] = useState(
     () =>
       isTuziEmbeddedMode() ||
+      isLocalTuziSession() ||
       (tuziEmbeddedConfig.enabled && window.parent !== window)
   );
   const [accountBoundary, setAccountBoundary] = useState('');
@@ -1164,6 +1165,7 @@ export const SettingsDialog = ({
     const syncBridgeMode = () => {
       setTuziMode(
         isTuziEmbeddedMode() ||
+          isLocalTuziSession() ||
           (tuziEmbeddedConfig.enabled && window.parent !== window)
       );
       const context = getTuziBridgeContext();
@@ -1312,7 +1314,7 @@ export const SettingsDialog = ({
   const enabledProfiles = profilesDraft.filter((profile) => profile.enabled);
   const showTuziProviders =
     tuziMode &&
-    getTuziBridgeContext()?.status === 'ready' &&
+    (getTuziBridgeContext()?.status === 'ready' || isLocalTuziSession()) &&
     hasTuziSystemToken();
   const isCompactLayout =
     isMobileDevice || viewportWidth <= SETTINGS_DIALOG_COMPACT_BREAKPOINT;

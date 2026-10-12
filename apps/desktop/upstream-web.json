@@ -1,7 +1,7 @@
 {
   "repository": "https://github.com/ljquan/opentu.git",
   "branch": "develop",
-  "commit": "df1715ab878d939418fb3d2e1fd793e585be7bd2",
-  "version": "1.1.25",
-  "syncedAt": "2026-10-11"
+  "commit": "3d84bb7c3b24fe6215a2daa945b80227fbd72456",
+  "version": "1.1.28",
+  "syncedAt": "2026-10-12"
 }

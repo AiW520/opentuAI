@@ -216,6 +216,11 @@ import {
   type ImageGenerationAnchorPresentationState,
 } from '../../utils/image-generation-anchor-state';
 import { WorkZoneTransforms } from '../../plugins/with-workzone';
+import {
+  getRetainedTaskCardRectangles,
+  occupiesGenerationPlacement,
+  placeBelowRetainedTaskCards,
+} from '../../utils/generation-task-placement';
 import { useWorkflowSubmission } from '../../hooks/useWorkflowSubmission';
 import { isFrameElement } from '../../types/frame.types';
 import { matchFrameSizeForModel } from '../../utils/frame-size-matcher';
@@ -5808,7 +5813,7 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
             const originY = board.viewport?.origination?.[1] || 0;
 
             const allElements = board.children.filter(
-              (el: { type?: string }) => el.type !== 'workzone'
+              occupiesGenerationPlacement
             );
 
             const viewportCenterX =
@@ -5986,6 +5991,7 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
                       frameRect: shouldCreateIndependentBatchAnchors
                         ? targetFrameRect
                         : undefined,
+                      extraOccupiedRects: getRetainedTaskCardRectangles(board),
                     }
                   )
                 : null;
@@ -6072,6 +6078,18 @@ export const AIInputBar: React.FC<AIInputBarProps> = React.memo(
                 }, 100);
               }
             } else {
+              const retainedTaskPlacement = placeBelowRetainedTaskCards(
+                board,
+                [workzoneX, workzoneY],
+                { width: WORKZONE_WIDTH, height: WORKZONE_HEIGHT },
+                GAP,
+                zoom
+              );
+              if (!targetFrameId) {
+                expectedInsertY += retainedTaskPlacement[1] - workzoneY;
+              }
+              [workzoneX, workzoneY] = retainedTaskPlacement;
+
               const workzoneElement = WorkZoneTransforms.insertWorkZone(board, {
                 workflow: workflowMessageData,
                 position: [workzoneX, workzoneY],

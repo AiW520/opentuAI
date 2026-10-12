@@ -22,6 +22,8 @@ import {
   MessagePlugin,
   hasTuziSystemToken,
   isTuziEmbeddedMode,
+  importLocalTuziCredentials,
+  isLocalTuziSession,
   syncTuziSessionProvidersOnStartup,
 } from '@drawnix/drawnix/runtime';
 import type {
@@ -32,6 +34,8 @@ import type {
 } from '@plait/core';
 import { ErrorFallbackUI, safeModeReload, goToDebug } from './ErrorBoundary';
 import { collectAndDownloadErrorLog } from '../utils/error-log-exporter';
+
+importLocalTuziCredentials();
 
 const Drawnix = lazy(() =>
   // eslint-disable-next-line @nx/enforce-module-boundaries -- 同上，仅放行 Drawnix 正式入口。
@@ -96,7 +100,7 @@ function updateBootStatus(options: { progress?: number; tip?: string }): void {
 let tuziStartupPromise: Promise<boolean> | null = null;
 
 function shouldWaitForTuziStartup(): boolean {
-  return isTuziEmbeddedMode() && hasTuziSystemToken();
+  return (isTuziEmbeddedMode() || isLocalTuziSession()) && hasTuziSystemToken();
 }
 
 function getTuziStartupPromise(): Promise<boolean> | null {
@@ -315,6 +319,7 @@ export function App() {
 
   // Initialize workspace and handle migration
   useEffect(() => {
+    importLocalTuziCredentials();
     const initialize = async () => {
       // 检查是否需要显示崩溃恢复对话框
       if (

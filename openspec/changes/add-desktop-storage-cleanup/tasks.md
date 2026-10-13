@@ -17,4 +17,4 @@
 - [x] 4.3 Build the desktop renderer and check desktop/mobile layouts and interactions with screenshots.
 - [x] 4.4 Test cross-batch references, absent legacy WebKit databases, write ordering, queue drain and failed-write recovery.
 - [x] 4.5 Recheck the packaged macOS app after the WebKit compatibility fix.
-- [ ] 4.6 Publish verified preview installers and check the live download and update manifests.
+- [x] 4.6 Publish verified preview installers and check the live download and update manifests.

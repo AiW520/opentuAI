@@ -243,6 +243,8 @@ class SyncEngine {
    * 执行完整同步
    */
   async sync(): Promise<SyncResult> {
+    const { assertDesktopCleanupAvailable } = await import('../desktop-cleanup-lock');
+    assertDesktopCleanupAvailable();
     if (this.syncInProgress) {
       return {
         success: false,
@@ -1006,7 +1008,10 @@ class SyncEngine {
    * 异步同步当前画布的媒体（不阻塞同步流程）
    */
   private async syncCurrentBoardMediaAsync(currentBoardId: string): Promise<void> {
+    let release: (() => void) | undefined;
     try {
+      const { beginDesktopMediaWrite } = await import('../desktop-cleanup-lock');
+      release = beginDesktopMediaWrite();
       logDebug('Starting async current board media sync', { currentBoardId });
       const mediaResult = await mediaSyncService.syncCurrentBoardMedia(currentBoardId, (current, total, url, status) => {
         logDebug('Media sync progress', { status, current, total, url });
@@ -1014,6 +1019,8 @@ class SyncEngine {
       logSuccess('Current board media sync completed', { succeeded: mediaResult.succeeded, failed: mediaResult.failed, skipped: mediaResult.skipped });
     } catch (error) {
       logError('Current board media sync failed', error instanceof Error ? error : new Error(String(error)));
+    } finally {
+      release?.();
     }
   }
 
@@ -1046,7 +1053,10 @@ class SyncEngine {
    * 异步下载已同步的媒体文件（不阻塞同步流程）
    */
   private async downloadSyncedMediaAsync(): Promise<void> {
+    let release: (() => void) | undefined;
     try {
+      const { beginDesktopMediaWrite } = await import('../desktop-cleanup-lock');
+      release = beginDesktopMediaWrite();
       logDebug('Starting async media download...');
       
       // 下载远程媒体
@@ -1056,6 +1066,8 @@ class SyncEngine {
       logSuccess('Media download completed', { succeeded: result.succeeded, failed: result.failed, skipped: result.skipped });
     } catch (error) {
       logError('Media download failed', error instanceof Error ? error : new Error(String(error)));
+    } finally {
+      release?.();
     }
   }
 
@@ -1065,6 +1077,8 @@ class SyncEngine {
    * 数据使用 AES-GCM 加密存储
    */
   async pushToRemote(): Promise<SyncResult> {
+    const { assertDesktopCleanupAvailable } = await import('../desktop-cleanup-lock');
+    assertDesktopCleanupAvailable();
     if (this.syncInProgress) {
       return {
         success: false,
@@ -1281,6 +1295,8 @@ class SyncEngine {
    * 只下载远程比本地新的数据，减少网络请求
    */
   async pullFromRemote(): Promise<SyncResult> {
+    const { assertDesktopCleanupAvailable } = await import('../desktop-cleanup-lock');
+    assertDesktopCleanupAvailable();
     logInfo('pullFromRemote START');
     
     if (this.syncInProgress) {
@@ -2354,6 +2370,8 @@ class SyncEngine {
    * 注意：不会复用已存在的 Gist，而是直接创建新的
    */
   async createNewGist(): Promise<SyncResult> {
+    const { assertDesktopCleanupAvailable } = await import('../desktop-cleanup-lock');
+    assertDesktopCleanupAvailable();
     const startTime = Date.now();
     const result: SyncResult = {
       success: false,

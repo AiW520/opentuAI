@@ -97,6 +97,7 @@ import { ModelDropdown } from '../ai-input-bar/ModelDropdown';
 import { WinBoxWindow } from '../winbox';
 import { TtsSettingsPanel } from '../project-drawer/TtsSettingsPanel';
 import { TuziAccountPanel } from './TuziAccountPanel';
+import { DesktopStorageCleanup } from './DesktopStorageCleanup';
 import {
   isTuziEmbeddedMode,
   tuziEmbeddedConfig,
@@ -209,7 +210,7 @@ const VIEW_SECTIONS: Array<{ value: SettingsView; label: string }> = [
   { value: 'presets', label: '模型预设' },
   { value: 'canvas', label: '画布显示' },
   { value: 'speech', label: '语音播放' },
-  ...(isDesktopTauri ? [{ value: 'storage' as SettingsView, label: '存储路径' }] : []),
+  ...(isDesktopTauri ? [{ value: 'storage' as SettingsView, label: '存储与清理' }] : []),
 ];
 
 const TUZI_ACCOUNT_SECTION: { value: SettingsView; label: string } = {
@@ -4839,7 +4840,7 @@ export const SettingsDialog = ({
           {isCompactLayout ? (
             <div className="settings-dialog__compact-stage-header">
               <div className="settings-dialog__compact-stage-copy">
-                <span className="settings-dialog__compact-stage-eyebrow">存储路径</span>
+                <span className="settings-dialog__compact-stage-eyebrow">存储与清理</span>
                 <p className="settings-dialog__compact-stage-text">
                   设置生成图片、视频等产物的存放位置。
                 </p>
@@ -4887,11 +4888,11 @@ export const SettingsDialog = ({
                   <span className="settings-dialog__field-hint" style={{ marginTop: 8 }}>
                     生成的文件将保存在：
                     <br />
-                    {desktopInputPath || '...'}\图片\ — 生成的图片
+                    {desktopInputPath || '...'}/images/ — 图片
                     <br />
-                    {desktopInputPath || '...'}\视频\ — 生成的视频
+                    {desktopInputPath || '...'}/videos/ — 视频
                     <br />
-                    {desktopInputPath || '...'}\音频\ — 生成的音频
+                    {desktopInputPath || '...'}/audio/ — 音频
                   </span>
                 </div>
 
@@ -4926,6 +4927,7 @@ export const SettingsDialog = ({
               </>
             )}
           </div>
+          {!desktopStorageLoading && <DesktopStorageCleanup mediaPath={desktopMediaPath} />}
         </div>
       </div>
     );

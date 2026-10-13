@@ -1,5 +1,10 @@
 ## OpenTu Desktop Preview
 
+- Added Storage & Cleanup settings with categorized disk usage, file search, filtering, folder opening and file reveal.
+- Added confirmed deletion of unused application-owned originals, with board/task reference checks, stale-file protection and partial failure reporting. Referenced, unknown or incompletely inspected files remain protected.
+- Added separate preview-cache clearing that retains persistent media and project data.
+- Improved cleanup responsiveness with small database read batches, scan progress, recent inventory previews and debounced search. Native cache writes are bounded and ordered for shared destinations.
+- Fixed inspection of absent legacy databases enumerated by macOS WebKit after aborted migration attempts.
 - Added a permanent Check for Updates menu command, startup checks, periodic checks and retry after reconnecting.
 - Update notices wait until active generation tasks finish. Downloads show progress and support retry.
 - Preview updates now include verified Tauri updater signatures and a complete update manifest.

@@ -8,6 +8,7 @@
  */
 
 import localforage from 'localforage';
+import { beginDesktopMediaWrite } from './desktop-cleanup-lock';
 import { calculateBlobChecksum } from '@aitu/utils';
 import { generateUUID } from '../utils/runtime-helpers';
 import { ASSET_CONSTANTS } from '../constants/ASSET_CONSTANTS';
@@ -536,6 +537,15 @@ class AssetStorageService {
    * 添加新素材到存储
    */
   async addAsset(data: AddAssetData): Promise<Asset> {
+    const release = beginDesktopMediaWrite();
+    try {
+      return await this.addAssetInternal(data);
+    } finally {
+      release();
+    }
+  }
+
+  private async addAssetInternal(data: AddAssetData): Promise<Asset> {
     // console.log('[AssetStorageService] addAsset called with:', {
     //   type: data.type,
     //   source: data.source,

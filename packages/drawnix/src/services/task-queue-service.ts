@@ -10,6 +10,10 @@
 
 import { Subject, Observable } from 'rxjs';
 import {
+  assertDesktopCleanupAvailable,
+  beginDesktopMediaWrite,
+} from './desktop-cleanup-lock';
+import {
   Task,
   TaskStatus,
   TaskType,
@@ -2393,6 +2397,7 @@ class TaskQueueService {
    * @throws Error if validation fails
    */
   createTask(params: GenerationParams, type: TaskType): Task {
+    assertDesktopCleanupAvailable();
     if (params.documentBatch) throw new Error('Document batch tasks require the deferred task bridge');
     // Validate parameters
     const validation = validateGenerationParams(params, type);
@@ -2474,6 +2479,19 @@ class TaskQueueService {
     params: GenerationParams,
     metadata: DocumentBatchTaskMetadata
   ): Promise<Task> {
+    const release = beginDesktopMediaWrite();
+    try {
+      return await this.prepareDocumentBatchTaskInternal(taskId, params, metadata);
+    } finally {
+      release();
+    }
+  }
+
+  private async prepareDocumentBatchTaskInternal(
+    taskId: string,
+    params: GenerationParams,
+    metadata: DocumentBatchTaskMetadata
+  ): Promise<Task> {
     if (metadata.dispatchOwner !== 'document-batch') {
       throw new Error('Invalid document batch dispatch owner');
     }
@@ -2518,6 +2536,17 @@ class TaskQueueService {
     claimTicket: () => string | false | Promise<string | false>;
     scopeGuard: () => boolean;
   }): Promise<'started' | 'already-started' | 'rejected'> {
+    const release = beginDesktopMediaWrite();
+    try {
+      return await this.startPreparedDocumentBatchTaskInternal(options);
+    } finally {
+      release();
+    }
+  }
+
+  private async startPreparedDocumentBatchTaskInternal(
+    options: Parameters<TaskQueueService['startPreparedDocumentBatchTask']>[0]
+  ): Promise<'started' | 'already-started' | 'rejected'> {
     const { taskId, metadata, claimTicket, scopeGuard } = options;
     if (!scopeGuard()) return 'rejected';
     const current = await taskStorageWriter.getTask(taskId);
@@ -2947,6 +2976,7 @@ class TaskQueueService {
    * @param taskId - The task ID to retry
    */
   retryTask(taskId: string, options: { allowCompleted?: boolean } = {}): void {
+    assertDesktopCleanupAvailable();
     const task = this.tasks.get(taskId);
     if (task?.params.documentBatch || task?.params.workflow || task?.error?.code === 'SUBMISSION_PERSISTENCE_FAILED') return;
     if (!task) {
@@ -3266,6 +3296,7 @@ class TaskQueueService {
    * Idempotent: skips if task already exists in memory.
    */
   trackExternalTask(task: Task): void {
+    assertDesktopCleanupAvailable();
     if (
       this.pendingTaskDeletions.has(task.id) ||
       this.recentlyDeletedTaskIds.has(task.id)

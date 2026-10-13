@@ -513,6 +513,8 @@ class WorkflowSubmissionService {
    * 始终使用主线程工作流引擎（不再依赖 SW）
    */
   async submit(workflow: WorkflowDefinition): Promise<void> {
+    const { assertDesktopCleanupAvailable } = await import('./desktop-cleanup-lock');
+    assertDesktopCleanupAvailable();
     // Store locally
     this.workflows.set(workflow.id, workflow);
 

@@ -22,6 +22,7 @@ import {
   isDesktopAssetUrl,
 } from '../utils/desktop-asset-url';
 import { writeDesktopBinaryFile } from '../utils/desktop-binary-writer';
+import { assertDesktopCleanupAvailable } from './desktop-cleanup-lock';
 import type {
   CacheWarning,
   CacheWarningReasonCode,
@@ -333,7 +334,13 @@ class UnifiedCacheService {
   private listeners: Set<() => void> = new Set();
   private quotaExceededListeners: Set<() => void> = new Set();
   private cachedUrls: Set<string> = new Set();
-  private desktopFileSaveQueue: Promise<void> = Promise.resolve();
+  private desktopFileSavePending = new Map<
+    string,
+    { blob: Blob; type: CacheMediaType; contentHash: string }
+  >();
+  private desktopFileSaveActive = 0;
+  private desktopFileSaveActivePaths = new Set<string>();
+  private desktopFileSaveWaiters: Array<() => void> = [];
   private indexDBWriteQueue: Promise<void> = Promise.resolve();
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
   private cacheWritesPaused = false;
@@ -390,6 +397,67 @@ class UnifiedCacheService {
     return new Promise((resolve) => {
       this.cacheWriteDrainWaiters.push(resolve);
     });
+  }
+
+  private waitForDesktopFileSaves(): Promise<void> {
+    if (
+      this.desktopFileSaveActive === 0 &&
+      this.desktopFileSavePending.size === 0
+    ) {
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => this.desktopFileSaveWaiters.push(resolve));
+  }
+
+  private drainDesktopFileSaves(): void {
+    while (
+      this.desktopFileSaveActive < 2 &&
+      this.desktopFileSavePending.size > 0
+    ) {
+      // URLs can share a filename, so serialize by the actual destination key.
+      const next = Array.from(this.desktopFileSavePending.entries()).find(
+        ([url, payload]) =>
+          !this.desktopFileSaveActivePaths.has(
+            `${payload.type}/${this.getFileNameFromUrl(url)}`
+          )
+      );
+      if (!next) break;
+      const [url, payload] = next;
+      const pathKey = `${payload.type}/${this.getFileNameFromUrl(url)}`;
+      this.desktopFileSavePending.delete(url);
+      this.desktopFileSaveActivePaths.add(pathKey);
+      this.desktopFileSaveActive += 1;
+      void waitForIdle()
+        .then(() =>
+          this.saveToTauriFileSystem(
+            url,
+            payload.blob,
+            payload.type,
+            payload.contentHash
+          )
+        )
+        .catch((error) => {
+          console.warn(
+            '[UnifiedCache] Failed to save to Tauri file system:',
+            error
+          );
+        })
+        .finally(() => {
+          this.desktopFileSaveActivePaths.delete(pathKey);
+          this.desktopFileSaveActive = Math.max(
+            0,
+            this.desktopFileSaveActive - 1
+          );
+          this.drainDesktopFileSaves();
+          if (
+            this.desktopFileSaveActive === 0 &&
+            this.desktopFileSavePending.size === 0
+          ) {
+            const waiters = this.desktopFileSaveWaiters.splice(0);
+            waiters.forEach((resolve) => resolve());
+          }
+        });
+    }
   }
 
   private async withMediaWriteLock<T>(
@@ -1411,6 +1479,7 @@ class UnifiedCacheService {
    * 删除缓存
    */
   async deleteCache(url: string): Promise<void> {
+    assertDesktopCleanupAvailable();
     try {
       // 1. 从 IndexedDB 删除
       await this.deleteItem(url);
@@ -1452,6 +1521,7 @@ class UnifiedCacheService {
    * 批量删除缓存
    */
   async deleteCacheBatch(urls: string[]): Promise<number> {
+    assertDesktopCleanupAvailable();
     let deletedCount = 0;
 
     try {
@@ -1616,6 +1686,31 @@ class UnifiedCacheService {
 
   resumeCacheWrites(): void {
     this.cacheWritesPaused = false;
+  }
+
+  async pauseDesktopCleanupWrites(): Promise<void> {
+    if (this.cacheWritesPaused) throw new Error('媒体缓存正在清理，请稍后重试');
+    this.cacheWritesPaused = true;
+    try {
+      await this.waitForActiveCacheWrites();
+      await this.waitForDesktopFileSaves();
+    } catch (error) {
+      this.cacheWritesPaused = false;
+      throw error;
+    }
+  }
+
+  async removeDeletedDesktopCacheIndex(url: string): Promise<void> {
+    await this.deleteItem(url);
+    await this.deleteBlobItem(url);
+    this.cachedUrls.delete(url);
+    if (typeof caches !== 'undefined') {
+      for (const name of [IMAGE_CACHE_NAME, IMAGE_THUMB_CACHE_NAME]) {
+        const cache = await caches.open(name);
+        await cache.delete(url);
+      }
+    }
+    this.notifyListeners();
   }
 
   /**
@@ -1905,16 +2000,10 @@ class UnifiedCacheService {
     type: CacheMediaType,
     contentHash: string
   ): void {
-    this.desktopFileSaveQueue = this.desktopFileSaveQueue
-      .catch(() => undefined)
-      .then(() => waitForIdle())
-      .then(() => this.saveToTauriFileSystem(url, blob, type, contentHash))
-      .catch((error) => {
-        console.warn(
-          '[UnifiedCache] Failed to save to Tauri file system:',
-          error
-        );
-      });
+    // 同一个虚拟资源连续更新时只保留最新版本，避免写入队列堆积。
+    this.desktopFileSavePending.delete(url);
+    this.desktopFileSavePending.set(url, { blob, type, contentHash });
+    this.drainDesktopFileSaves();
   }
 
   private shouldGenerateEagerThumbnail(

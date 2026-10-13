@@ -102,6 +102,9 @@ jobs:
       - name: Test update prompt lifecycle
         working-directory: packages/drawnix
         run: pnpm exec vitest run src/components/version-update/version-update-prompt.test.tsx
+      - name: Test desktop storage cleanup and write scheduling
+        working-directory: packages/drawnix
+        run: pnpm exec vitest run src/services/desktop-storage-cleanup-service.test.ts src/services/desktop-file-save-scheduler.test.ts src/services/local-data-clear-service.test.ts
       - name: Test native core
         working-directory: apps/desktop/src-tauri
         run: cargo test --lib --locked

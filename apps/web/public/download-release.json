@@ -1,196 +1,196 @@
 {
-  "tag_name": "v1.2.14-preview.1",
-  "name": "OpenTu Desktop v1.2.14-preview.1",
+  "tag_name": "v1.2.15-preview.1",
+  "name": "OpenTu Desktop v1.2.15-preview.1",
   "draft": false,
   "prerelease": true,
-  "published_at": "2026-10-12T11:47:07Z",
-  "body": "## OpenTu Desktop Preview\n\n- Added a permanent Check for Updates menu command, startup checks, periodic checks and retry after reconnecting.\n- Update notices wait until active generation tasks finish. Downloads show progress and support retry.\n- Preview updates now include verified Tauri updater signatures and a complete update manifest.\n- Fixed missing community and support QR images in the desktop package.\n\nThis preview is signed for Tauri update integrity. macOS uses an ad-hoc application signature; Apple Developer ID signing, notarization and Windows Authenticode signing are not configured. Operating-system security warnings may appear. This is not a trusted stable release.\n\nOlder installations without the updater plugin must install this preview manually once. Existing local data is stored separately from the application bundle. Back up important work before upgrading.\n\nDownload the installer matching your OS and architecture and verify its SHA-256 checksum. `.app.tar.gz`, `.nsis.zip`, `.AppImage.tar.gz` and their `.sig` files are updater payloads, not the normal manual installers.\n",
+  "published_at": "2026-10-13T04:35:13Z",
+  "body": "## OpenTu Desktop Preview\n\n- Added Storage & Cleanup settings with categorized disk usage, file search, filtering, folder opening and file reveal.\n- Added confirmed deletion of unused application-owned originals, with board/task reference checks, stale-file protection and partial failure reporting. Referenced, unknown or incompletely inspected files remain protected.\n- Added separate preview-cache clearing that retains persistent media and project data.\n- Improved cleanup responsiveness with small database read batches, scan progress, recent inventory previews and debounced search. Native cache writes are bounded and ordered for shared destinations.\n- Fixed inspection of absent legacy databases enumerated by macOS WebKit after aborted migration attempts.\n- Added a permanent Check for Updates menu command, startup checks, periodic checks and retry after reconnecting.\n- Update notices wait until active generation tasks finish. Downloads show progress and support retry.\n- Preview updates now include verified Tauri updater signatures and a complete update manifest.\n- Fixed missing community and support QR images in the desktop package.\n\nThis preview is signed for Tauri update integrity. macOS uses an ad-hoc application signature; Apple Developer ID signing, notarization and Windows Authenticode signing are not configured. Operating-system security warnings may appear. This is not a trusted stable release.\n\nOlder installations without the updater plugin must install this preview manually once. Existing local data is stored separately from the application bundle. Back up important work before upgrading.\n\nDownload the installer matching your OS and architecture and verify its SHA-256 checksum. `.app.tar.gz`, `.nsis.zip`, `.AppImage.tar.gz` and their `.sig` files are updater payloads, not the normal manual installers.\n",
   "repository_visibility": "public",
   "assets": [
     {
       "name": "BUILD-NOTES.txt",
       "size": 215,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.14-preview.1/BUILD-NOTES.txt"
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.15-preview.1/BUILD-NOTES.txt"
     },
     {
       "name": "latest.json",
       "size": 4389,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.14-preview.1/latest.json"
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.15-preview.1/latest.json"
     },
     {
       "name": "manifest-linux-aarch64.json",
       "size": 558,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.14-preview.1/manifest-linux-aarch64.json"
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.15-preview.1/manifest-linux-aarch64.json"
     },
     {
       "name": "manifest-linux-x86_64.json",
       "size": 554,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.14-preview.1/manifest-linux-x86_64.json"
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.15-preview.1/manifest-linux-x86_64.json"
     },
     {
       "name": "manifest-macos-aarch64.json",
       "size": 379,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.14-preview.1/manifest-macos-aarch64.json"
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.15-preview.1/manifest-macos-aarch64.json"
     },
     {
       "name": "manifest-macos-x86_64.json",
       "size": 376,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.14-preview.1/manifest-macos-x86_64.json"
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.15-preview.1/manifest-macos-x86_64.json"
     },
     {
       "name": "manifest-windows-x86_64.json",
       "size": 559,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.14-preview.1/manifest-windows-x86_64.json"
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.15-preview.1/manifest-windows-x86_64.json"
     },
     {
-      "name": "Opentu-1.2.14-linux-aarch64.AppImage",
-      "size": 90946056,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.14-preview.1/Opentu-1.2.14-linux-aarch64.AppImage"
+      "name": "Opentu-1.2.15-linux-aarch64.AppImage",
+      "size": 90991112,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.15-preview.1/Opentu-1.2.15-linux-aarch64.AppImage"
     },
     {
-      "name": "Opentu-1.2.14-linux-aarch64.AppImage.sha256",
+      "name": "Opentu-1.2.15-linux-aarch64.AppImage.sha256",
       "size": 103,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.14-preview.1/Opentu-1.2.14-linux-aarch64.AppImage.sha256"
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.15-preview.1/Opentu-1.2.15-linux-aarch64.AppImage.sha256"
     },
     {
-      "name": "Opentu-1.2.14-linux-aarch64.deb",
-      "size": 14958536,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.14-preview.1/Opentu-1.2.14-linux-aarch64.deb"
+      "name": "Opentu-1.2.15-linux-aarch64.deb",
+      "size": 15023946,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.15-preview.1/Opentu-1.2.15-linux-aarch64.deb"
     },
     {
-      "name": "Opentu-1.2.14-linux-aarch64.deb.sha256",
+      "name": "Opentu-1.2.15-linux-aarch64.deb.sha256",
       "size": 98,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.14-preview.1/Opentu-1.2.14-linux-aarch64.deb.sha256"
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.15-preview.1/Opentu-1.2.15-linux-aarch64.deb.sha256"
     },
     {
-      "name": "Opentu-1.2.14-linux-x86_64.AppImage",
-      "size": 92752376,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.14-preview.1/Opentu-1.2.14-linux-x86_64.AppImage"
+      "name": "Opentu-1.2.15-linux-x86_64.AppImage",
+      "size": 92781048,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.15-preview.1/Opentu-1.2.15-linux-x86_64.AppImage"
     },
     {
-      "name": "Opentu-1.2.14-linux-x86_64.AppImage.sha256",
+      "name": "Opentu-1.2.15-linux-x86_64.AppImage.sha256",
       "size": 102,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.14-preview.1/Opentu-1.2.14-linux-x86_64.AppImage.sha256"
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.15-preview.1/Opentu-1.2.15-linux-x86_64.AppImage.sha256"
     },
     {
-      "name": "Opentu-1.2.14-linux-x86_64.deb",
-      "size": 14790762,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.14-preview.1/Opentu-1.2.14-linux-x86_64.deb"
+      "name": "Opentu-1.2.15-linux-x86_64.deb",
+      "size": 14837106,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.15-preview.1/Opentu-1.2.15-linux-x86_64.deb"
     },
     {
-      "name": "Opentu-1.2.14-linux-x86_64.deb.sha256",
+      "name": "Opentu-1.2.15-linux-x86_64.deb.sha256",
       "size": 97,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.14-preview.1/Opentu-1.2.14-linux-x86_64.deb.sha256"
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.15-preview.1/Opentu-1.2.15-linux-x86_64.deb.sha256"
     },
     {
-      "name": "Opentu-1.2.14-macos-aarch64.dmg",
-      "size": 13221082,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.14-preview.1/Opentu-1.2.14-macos-aarch64.dmg"
+      "name": "Opentu-1.2.15-macos-aarch64.dmg",
+      "size": 13287118,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.15-preview.1/Opentu-1.2.15-macos-aarch64.dmg"
     },
     {
-      "name": "Opentu-1.2.14-macos-aarch64.dmg.sha256",
+      "name": "Opentu-1.2.15-macos-aarch64.dmg.sha256",
       "size": 98,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.14-preview.1/Opentu-1.2.14-macos-aarch64.dmg.sha256"
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.15-preview.1/Opentu-1.2.15-macos-aarch64.dmg.sha256"
     },
     {
-      "name": "Opentu-1.2.14-macos-x86_64.dmg",
-      "size": 13613565,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.14-preview.1/Opentu-1.2.14-macos-x86_64.dmg"
+      "name": "Opentu-1.2.15-macos-x86_64.dmg",
+      "size": 13674484,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.15-preview.1/Opentu-1.2.15-macos-x86_64.dmg"
     },
     {
-      "name": "Opentu-1.2.14-macos-x86_64.dmg.sha256",
+      "name": "Opentu-1.2.15-macos-x86_64.dmg.sha256",
       "size": 97,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.14-preview.1/Opentu-1.2.14-macos-x86_64.dmg.sha256"
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.15-preview.1/Opentu-1.2.15-macos-x86_64.dmg.sha256"
     },
     {
-      "name": "Opentu-1.2.14-windows-x86_64-setup.exe",
-      "size": 11238078,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.14-preview.1/Opentu-1.2.14-windows-x86_64-setup.exe"
+      "name": "Opentu-1.2.15-windows-x86_64-setup.exe",
+      "size": 11284293,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.15-preview.1/Opentu-1.2.15-windows-x86_64-setup.exe"
     },
     {
-      "name": "Opentu-1.2.14-windows-x86_64-setup.exe.sha256",
+      "name": "Opentu-1.2.15-windows-x86_64-setup.exe.sha256",
       "size": 105,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.14-preview.1/Opentu-1.2.14-windows-x86_64-setup.exe.sha256"
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.15-preview.1/Opentu-1.2.15-windows-x86_64-setup.exe.sha256"
     },
     {
-      "name": "Opentu-1.2.14-windows-x86_64.msi",
-      "size": 13381632,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.14-preview.1/Opentu-1.2.14-windows-x86_64.msi"
+      "name": "Opentu-1.2.15-windows-x86_64.msi",
+      "size": 13484032,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.15-preview.1/Opentu-1.2.15-windows-x86_64.msi"
     },
     {
-      "name": "Opentu-1.2.14-windows-x86_64.msi.sha256",
+      "name": "Opentu-1.2.15-windows-x86_64.msi.sha256",
       "size": 99,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.14-preview.1/Opentu-1.2.14-windows-x86_64.msi.sha256"
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.15-preview.1/Opentu-1.2.15-windows-x86_64.msi.sha256"
     },
     {
       "name": "Opentu-linux-aarch64.AppImage.tar.gz",
-      "size": 90320774,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.14-preview.1/Opentu-linux-aarch64.AppImage.tar.gz"
+      "size": 90368865,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.15-preview.1/Opentu-linux-aarch64.AppImage.tar.gz"
     },
     {
       "name": "Opentu-linux-aarch64.AppImage.tar.gz.sig",
       "size": 452,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.14-preview.1/Opentu-linux-aarch64.AppImage.tar.gz.sig"
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.15-preview.1/Opentu-linux-aarch64.AppImage.tar.gz.sig"
     },
     {
       "name": "Opentu-linux-aarch64.deb",
-      "size": 14958536,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.14-preview.1/Opentu-linux-aarch64.deb"
+      "size": 15023946,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.15-preview.1/Opentu-linux-aarch64.deb"
     },
     {
       "name": "Opentu-linux-aarch64.deb.sig",
       "size": 432,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.14-preview.1/Opentu-linux-aarch64.deb.sig"
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.15-preview.1/Opentu-linux-aarch64.deb.sig"
     },
     {
       "name": "Opentu-linux-x86_64.AppImage.tar.gz",
-      "size": 92073522,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.14-preview.1/Opentu-linux-x86_64.AppImage.tar.gz"
+      "size": 92101638,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.15-preview.1/Opentu-linux-x86_64.AppImage.tar.gz"
     },
     {
       "name": "Opentu-linux-x86_64.AppImage.tar.gz.sig",
       "size": 448,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.14-preview.1/Opentu-linux-x86_64.AppImage.tar.gz.sig"
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.15-preview.1/Opentu-linux-x86_64.AppImage.tar.gz.sig"
     },
     {
       "name": "Opentu-linux-x86_64.deb",
-      "size": 14790762,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.14-preview.1/Opentu-linux-x86_64.deb"
+      "size": 14837106,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.15-preview.1/Opentu-linux-x86_64.deb"
     },
     {
       "name": "Opentu-linux-x86_64.deb.sig",
       "size": 432,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.14-preview.1/Opentu-linux-x86_64.deb.sig"
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.15-preview.1/Opentu-linux-x86_64.deb.sig"
     },
     {
       "name": "Opentu-macos-aarch64.app.tar.gz",
-      "size": 13374068,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.14-preview.1/Opentu-macos-aarch64.app.tar.gz"
+      "size": 13440843,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.15-preview.1/Opentu-macos-aarch64.app.tar.gz"
     },
     {
       "name": "Opentu-macos-aarch64.app.tar.gz.sig",
       "size": 424,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.14-preview.1/Opentu-macos-aarch64.app.tar.gz.sig"
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.15-preview.1/Opentu-macos-aarch64.app.tar.gz.sig"
     },
     {
       "name": "Opentu-macos-x86_64.app.tar.gz",
-      "size": 13702543,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.14-preview.1/Opentu-macos-x86_64.app.tar.gz"
+      "size": 13766179,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.15-preview.1/Opentu-macos-x86_64.app.tar.gz"
     },
     {
       "name": "Opentu-macos-x86_64.app.tar.gz.sig",
       "size": 424,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.14-preview.1/Opentu-macos-x86_64.app.tar.gz.sig"
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.15-preview.1/Opentu-macos-x86_64.app.tar.gz.sig"
     },
     {
       "name": "Opentu-windows-x86_64.nsis.zip",
-      "size": 11238230,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.14-preview.1/Opentu-windows-x86_64.nsis.zip"
+      "size": 11284445,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.15-preview.1/Opentu-windows-x86_64.nsis.zip"
     },
     {
       "name": "Opentu-windows-x86_64.nsis.zip.sig",
       "size": 444,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.14-preview.1/Opentu-windows-x86_64.nsis.zip.sig"
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.15-preview.1/Opentu-windows-x86_64.nsis.zip.sig"
     }
   ]
 }

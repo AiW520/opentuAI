@@ -1,35 +1,35 @@
 {
-  "version": "1.2.14",
-  "notes": "Opentu Desktop v1.2.14-preview.1",
-  "pub_date": "2026-10-12T11:46:56.690Z",
+  "version": "1.2.15",
+  "notes": "Opentu Desktop v1.2.15-preview.1",
+  "pub_date": "2026-10-13T04:35:00.478Z",
   "platforms": {
     "darwin-aarch64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVScGFmZXA2M2ZDL0t3ckpubHBlZXhmYTd0cmxpT2tUV28veXFkcjJJc29jeHlaMWpnWm9tZkQ4YlYzd0M2RUpUZitTaXJ0YStNUDJ4U0lXR25pZVFOZC92cHNKU05XaGc4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxODA1NTIxCWZpbGU6T3BlbnR1LmFwcC50YXIuZ3oJdmVyc2lvbjoxLjIuMTQKd2xYQ21XT1hCcTFXeTlPbGR4bU95Q0lYcHQyc2oycllpOEJhQmg5WFZ4Vm5qdGlPTTJZanMzQ015NE1zdTYzS2JIcU5zTnl4VExLYjRwRmhtTHRlRFE9PQo=",
-      "url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.14-preview.1/Opentu-macos-aarch64.app.tar.gz"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVScGFmZXA2M2ZDL0NOVWlhT0NNSkdLaFB1SXVTMnpUbXpObnlIelJmeDZacXBqL1htU2FqdVo4U2U4K3VFQ0g4Uk9Jayt2elIwSkRGbTFxbHFZdkZ4OUNWOTF5WFMvT1FRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxODY1NjQ3CWZpbGU6T3BlbnR1LmFwcC50YXIuZ3oJdmVyc2lvbjoxLjIuMTUKRGxidjBhU3FSNTZka3pOUVRtdTYreUhOZ0VqL2dpbW9CcXIxTXA0Y2p6Rkx1aUxxTVRKM2hQck1GanBFVk13ZFFHSVJCOE8rQzVZTGVYL3NGcW5VQ1E9PQo=",
+      "url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.15-preview.1/Opentu-macos-aarch64.app.tar.gz"
     },
     "darwin-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVScGFmZXA2M2ZDL0E2WGZHdDJ0YmxVbVFTRFhjc29kVWx5NjZ5RnliWEtqRnhuY05Rc2tpL2U5VGU0Mm5UUzVhMUFBNkJnV1hJazNTT3pYcUZZUis0Tnd3L1ppdDg2VlFJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxODA1NDYxCWZpbGU6T3BlbnR1LmFwcC50YXIuZ3oJdmVyc2lvbjoxLjIuMTQKZlhtZ0FSMXN5bDR0OTFLNTl2VG00cC9LRElXMUpRdlBZNndDQk1qM0lEdmZLZjB3Y2dicW5OWWhpZGR0VWRMNVAwZjFMQ3BRMDBuUml0d1M1b1JCQ1E9PQo=",
-      "url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.14-preview.1/Opentu-macos-x86_64.app.tar.gz"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVScGFmZXA2M2ZDL056Z3dyZ0k3OGpMNi9hSDhlRU82MzhQZ1NzVWo1SG1oNExyVnFoYUZEV2RFQUN1RzROYkErSUlJd3JISzBtWkdqb0lpSzlYblF3cGpPellRRzFsWGdZPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxODY2MDUxCWZpbGU6T3BlbnR1LmFwcC50YXIuZ3oJdmVyc2lvbjoxLjIuMTUKYVdWZnVoTEZjWnRiMTBpYkFwTVJxT1M2Rnk1NGowREk3Vnl2Vlo2Q0pUL2RoTmVQQ1dWZnRDb0ExamE2eittd1dJUGNrWE01UUk1NHBXWDNyMkFnRFE9PQo=",
+      "url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.15-preview.1/Opentu-macos-x86_64.app.tar.gz"
     },
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVScGFmZXA2M2ZDL05iNkF0NHV6NUxEcW1YMVo3RDNGS3B6SkVCdFphRjZucEJwdCs4WDd5ZFl0U2M0c08yZnlNdHg3djRoK3NLUmZObllCcVdsMWM0V2xEYWRsazc3YVEwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxODA1MzYyCWZpbGU6T3BlbnR1XzEuMi4xNF94NjQtc2V0dXAubnNpcy56aXAJdmVyc2lvbjoxLjIuMTQKd08zUm9ES1FRNEpVU2VWcUVCbk9TbzJhMHFvR3pXUVducStuaVNmWFY4b3U5Q1g5QlZ5dDJZNlhzRW15VnJzVndPaVZFbytXN211L0kvbitWNVdzQmc9PQo=",
-      "url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.14-preview.1/Opentu-windows-x86_64.nsis.zip"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVScGFmZXA2M2ZDL0pqb1IyUlRsWG4renJTTDdQaXFIV1NtS2JpMmpVbE5mdkYxVU03cXFveVgxT01lQ1dMTXBQb3pCZk1mWHJBWEVDelZXVE5YMFg1eGt6VDROOEd3eVF3PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxODY1ODU0CWZpbGU6T3BlbnR1XzEuMi4xNV94NjQtc2V0dXAubnNpcy56aXAJdmVyc2lvbjoxLjIuMTUKTHpOYVhha0k4elBzQTlCVTZwR0JHWlF3ci9BSVJobFptTmRCYm0wVWQyZkVTb2Z6OWlSdVc1bSs4YWsvTDU1RlRWemtnTkRaaFVKZUFWMmNMb2lxQWc9PQo=",
+      "url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.15-preview.1/Opentu-windows-x86_64.nsis.zip"
     },
     "linux-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVScGFmZXA2M2ZDL0I1UnNPcEQyZ1JGNTlrdENKMDVDTXoyb0ZSc20weVkwcEV6QTFST21taUpEcmdFQzlsWUMzZjZUZlZOQkhxN2xqT1B5bUZEenA3Unc4REZMV0hEalFjPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxODA1NDgzCWZpbGU6T3BlbnR1XzEuMi4xNF9hbWQ2NC5BcHBJbWFnZS50YXIuZ3oJdmVyc2lvbjoxLjIuMTQKaFhTRUU2eExadUJBVEZsM1BHMmlVVytZTzB3OUxUeGdqOGg5d1FQVUI4RHNaeTBWZ1VnOU1XbFJJUjM2d0c3ZWJwMzUzd3pvMlprVFZaOHQyR2pTQXc9PQo=",
-      "url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.14-preview.1/Opentu-linux-x86_64.AppImage.tar.gz"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVScGFmZXA2M2ZDL0lxVjEzQnJtZ3BYcnkwUEF0MkI3RktEbkw2em0wZ05uMFFyNGlKTVpTMkNqU0NDNkhnZS9pUlc0dCtRM1ZtMm56a1c4WWVJU2NHbjgzM0xqcllHc0FFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxODY1NzU0CWZpbGU6T3BlbnR1XzEuMi4xNV9hbWQ2NC5BcHBJbWFnZS50YXIuZ3oJdmVyc2lvbjoxLjIuMTUKNCtWOEUxL0gwbDI3dTZZVDZDYzZqaGJzcXprcU40bjJxZ2FHc0FZWXgycDgxaFFKS0ZCa2Zpc1pCbnROL2RZelZDaXZzeUp0V2U5NkZWTm1XYU9nQnc9PQo=",
+      "url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.15-preview.1/Opentu-linux-x86_64.AppImage.tar.gz"
     },
     "linux-aarch64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVScGFmZXA2M2ZDL0dFb1p3Z3M4d0U1aFhRcnMvR1l6b0djWnJIK2FXeFdZbnJ3MHI2VEd1M3V6RWZ6TzB2TllCVWkrbElzNFV0ZWhOS2lxUHhBUEdUNTBwdUUzUWtQZkF3PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxODA1NDA0CWZpbGU6T3BlbnR1XzEuMi4xNF9hYXJjaDY0LkFwcEltYWdlLnRhci5negl2ZXJzaW9uOjEuMi4xNAozREtjUDBsZWF1V09OZXd0cWFwbG1Yd09QQ3VQM1Fhc0tRYU5hRGVzZ2dvZVpQRmRWU29pQklESWFwbERxYktYc3lqa0JjUmZZY2l1c3ZZTm5INkNBdz09Cg==",
-      "url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.14-preview.1/Opentu-linux-aarch64.AppImage.tar.gz"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVScGFmZXA2M2ZDL0Z6ZzRaQ3JFWENzMHJFKzBVaTBrT1pOMi9Td3NPTWZCRkxXM2dNaGx0SzlwaFdMQVB6OFBlZ05iQ29OTWo2Y0tlRlpuNkI5R1Y5aWFIVUpFRmtEMUFRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxODY1Nzk0CWZpbGU6T3BlbnR1XzEuMi4xNV9hYXJjaDY0LkFwcEltYWdlLnRhci5negl2ZXJzaW9uOjEuMi4xNQpuZld1U0hrTExUNi85OGh4NXZNNUZIU1Qya3FYQUk4UlREeE1VbUxMajN5NUp0ZnlnSk9KWWoyOENBbGFBTUVid0ZPSUoyMFViM3A2eGpxZ1dERm9BUT09Cg==",
+      "url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.15-preview.1/Opentu-linux-aarch64.AppImage.tar.gz"
     },
     "linux-x86_64-deb": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVScGFmZXA2M2ZDL0VUTWNQRFd5aXVpMEtmaEM4VlNRKzQrT1FwbHk5S2toQlRabUMrTXNPSXFPelppa1Brc1dxTXFLa0MxUEVBZEo5RXk2dDlNanQ4Qjd3bmJ3NWhjQVFBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxODA1NDgzCWZpbGU6T3BlbnR1XzEuMi4xNF9hbWQ2NC5kZWIJdmVyc2lvbjoxLjIuMTQKc1o2ZFNINElmeldPVjhhd3IzQnFaeXMyOUREcGtTN24reWpWNzk1a3poNE80b3crbEErUk5ydlJKWjl6QytDZjh1M09lUEJOZ1FGc0JvV2RRdGRvRFE9PQo=",
-      "url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.14-preview.1/Opentu-linux-x86_64.deb"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVScGFmZXA2M2ZDL0UrU3N2anBIZWVmRU04QWlEbzltQzlsSVVxNW1tZlNwWWIxZmYvbHhxc0haUml1dmxabERWcXU0cEUvNnBxSjdzM1hYNGxLVU02L1FqUFBwdUdnTkFNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxODY1NzU1CWZpbGU6T3BlbnR1XzEuMi4xNV9hbWQ2NC5kZWIJdmVyc2lvbjoxLjIuMTUKK01kNUJxekVuYTBhbGNnSCtON0hhdkNFa1FZdTJWWG8vdzNMTElKUHNQTHdldXVUT2I4bm1adldOZDdHbCtEVmhmMkVNVFkxaUpZVHM0TVNINDlRREE9PQo=",
+      "url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.15-preview.1/Opentu-linux-x86_64.deb"
     },
     "linux-aarch64-deb": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVScGFmZXA2M2ZDL0N1ci95VG1aOW9wWHNpMk1nYXR4NWFZZS9taE9QQ3R1elVISHVMSG9aeXVHcEVTdmdQRHByemI0emxCaDRjRzJKOHVQWjVCajVPNE1VWFRha0xHVkFBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxODA1NDA0CWZpbGU6T3BlbnR1XzEuMi4xNF9hcm02NC5kZWIJdmVyc2lvbjoxLjIuMTQKOHFWZnVQdzFka0RhZWpTcHNNaXhuTUVQWEJJNktKZU1wZzdLOCtQNFdkeDkzR1F5WGh4ZGpreE9OQ05nRjNueEZPRlVOYzFWa2hIRkRhaGFWT0orQXc9PQo=",
-      "url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.14-preview.1/Opentu-linux-aarch64.deb"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVScGFmZXA2M2ZDL0IzVHQ4SDl6Q1N1czRLcGVOY0xvR3ZBWUI1aXdLUjJLUDEzWUZhSGFrV1U1YUFkcm1ZUGlGTDZLbUZwQ0pIZXVISGJkYkk2S2JpK29MelQ2NVJ2NndZPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxODY1Nzk0CWZpbGU6T3BlbnR1XzEuMi4xNV9hcm02NC5kZWIJdmVyc2lvbjoxLjIuMTUKMXBWZ05nYldaN3FIN2RuNnZhbFlBbW9iOENBNm5IZmZ5d2h1ZmVzNmVmUlN2QTdtNkY2YzJFUjMwUU1IYW5qTnNybkMxNWZSTlcrYjlMaTNzeDZiQ0E9PQo=",
+      "url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.15-preview.1/Opentu-linux-aarch64.deb"
     }
   }
 }

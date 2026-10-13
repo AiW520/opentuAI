@@ -12,6 +12,8 @@ Validated on macOS on 2026-10-13. Release target: `v1.2.15-preview.1`.
 - A production macOS app was built and launched against the existing local data. The saved board and its media loaded. The menu contained Check for Updates. Storage settings scanned 26 files (57.8 MB), displayed references, blocked referenced-file deletion, filtered by filename and refreshed successfully. Opening the media directory launched Finder at the correct location.
 - Native acceptance found a WebKit compatibility issue: an absent legacy database can remain enumerated after an aborted migration. The fix skips only `oldVersion=0` creation attempts aborted with `AbortError`; persisted database inspection errors still block deletion. The packaged app was restarted and the actual scan then completed without this error.
 - Remote preview builds also run the focused storage cleanup and file scheduler tests before packaging.
+- The first remote run exposed a Windows test fixture issue: joining `..` onto a canonical verbatim path normalizes it before the validator sees it. The traversal fixture now constructs the original path text with the platform separator so the rejection assertion exercises the intended input.
+- Concurrent native tests use an atomic fixture sequence in addition to process ID and timestamp to avoid shared temporary directories when clock readings coincide.
 
 ## Limits
 

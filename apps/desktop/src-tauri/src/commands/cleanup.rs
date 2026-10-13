@@ -265,14 +265,19 @@ pub async fn delete_inspected_media(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
+
     fn fixture() -> PathBuf {
         let root = std::env::temp_dir().join(format!(
-            "opentu-cleanup-{}-{}",
+            "opentu-cleanup-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir_all(root.join("images")).unwrap();
         fs::create_dir_all(root.join("图片")).unwrap();
@@ -289,7 +294,10 @@ mod tests {
         fs::write(&path, b"changed").unwrap();
         assert!(delete_one(&root, &file, &[]).is_err());
         let file = entry(&path, "image").unwrap();
-        assert!(checked_path(&root, root.join("images/../图片/a.png").to_str().unwrap()).is_err());
+        // Joining onto Windows verbatim paths normalizes `..` before validation.
+        let sep = std::path::MAIN_SEPARATOR;
+        let traversal = format!("{}{sep}images{sep}..{sep}图片{sep}a.png", root.display());
+        assert!(checked_path(&root, &traversal).is_err());
         assert!(checked_path(&root, "/tmp/outside.png").is_err());
         assert_eq!(delete_one(&root, &file, &[]).unwrap(), 7);
         assert!(delete_one(&root, &file, &[]).is_err());

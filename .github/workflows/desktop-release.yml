@@ -41,6 +41,8 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
           OPENTU_UPDATER_ENABLED: '1'
+          OPENTU_DESKTOP_RELEASE_PROFILE: production
+          OPENTU_DESKTOP_CHANNEL_EXPECTED: '3'
         run: |
           set -euo pipefail
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]] || { echo "非法发布标签: $RELEASE_TAG" >&2; exit 1; }
@@ -227,6 +229,8 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
           OPENTU_UPDATER_ENABLED: '1'
+          OPENTU_DESKTOP_RELEASE_PROFILE: production
+          OPENTU_DESKTOP_CHANNEL_EXPECTED: '3'
           CI: true
           RUST_BACKTRACE: '1'
           NODE_OPTIONS: '--max-old-space-size=8192'
@@ -243,6 +247,8 @@ jobs:
             echo "tauri build failed, retrying in 30s (attempt $attempt/$max)..."
             sleep 30
           done
+      - name: Verify production renderer attribution
+        run: node scripts/verify-desktop-client-channel.cjs --expected=3
       - name: Upload assets
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -333,6 +339,8 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
           OPENTU_UPDATER_ENABLED: '1'
+          OPENTU_DESKTOP_RELEASE_PROFILE: production
+          OPENTU_DESKTOP_CHANNEL_EXPECTED: '3'
           WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
           OPENTU_WINDOWS_SIGN_COMMAND: 'powershell -NoProfile -ExecutionPolicy Bypass -File ../../scripts/sign-windows-binary.ps1 %1'
@@ -351,6 +359,8 @@ jobs:
             echo "tauri build failed, retrying in 30s (attempt $attempt/$max)..."
             sleep 30
           done
+      - name: Verify production renderer attribution
+        run: node scripts/verify-desktop-client-channel.cjs --expected=3
       - name: Upload assets
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -455,6 +465,8 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
           OPENTU_UPDATER_ENABLED: '1'
+          OPENTU_DESKTOP_RELEASE_PROFILE: production
+          OPENTU_DESKTOP_CHANNEL_EXPECTED: '3'
           CI: true
           RUST_BACKTRACE: '1'
           NODE_OPTIONS: '--max-old-space-size=8192'
@@ -471,6 +483,8 @@ jobs:
             echo "tauri build failed, retrying in 30s (attempt $attempt/$max)..."
             sleep 30
           done
+      - name: Verify production renderer attribution
+        run: node scripts/verify-desktop-client-channel.cjs --expected=3
       - name: Upload assets
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

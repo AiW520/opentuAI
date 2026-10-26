@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { extractCompletionText, fetchTextCompletion, safeTextError, textCompletionPath, textRequestBody } from './text-response';
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 
 describe('Tuzi text compatibility', () => {
   it('supports root and versioned addresses without overriding custom paths', () => {
@@ -19,14 +19,24 @@ describe('Tuzi text compatibility', () => {
     vi.stubGlobal('window', { location: { hostname: '127.0.0.1', origin: 'http://127.0.0.1:7200' } });
     const init = { method: 'POST', body: '{}', signal: new AbortController().signal };
     await fetchTextCompletion('https://api.tu-zi.com/v1/chat/completions', init);
-    expect(fetcher).toHaveBeenLastCalledWith('/__opentu_tuzi_session__/v1/chat/completions', init);
+    expect(fetcher).toHaveBeenLastCalledWith('/__opentu_tuzi_session__/v1/chat/completions?ch=2', init);
     await fetchTextCompletion('https://api.tu-zi.com/v1/responses', init);
-    expect(fetcher).toHaveBeenLastCalledWith('/__opentu_tuzi_session__/v1/responses', init);
+    expect(fetcher).toHaveBeenLastCalledWith('/__opentu_tuzi_session__/v1/responses?ch=2', init);
     await fetchTextCompletion('https://other.test/v1/chat/completions', init);
     expect(fetcher).toHaveBeenLastCalledWith('https://other.test/v1/chat/completions', init);
     vi.stubGlobal('window', { location: { hostname: 'example.com', origin: 'https://example.com' } });
     await fetchTextCompletion('https://api.tu-zi.com/v1/chat/completions', init);
-    expect(fetcher).toHaveBeenLastCalledWith('https://api.tu-zi.com/v1/chat/completions', init);
+    expect(fetcher).toHaveBeenLastCalledWith('https://api.tu-zi.com/v1/chat/completions?ch=0', init);
+  });
+  it('uses direct Tuzi requests in a packaged desktop on the localhost origin', async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response('{}'));
+    vi.stubGlobal('fetch', fetcher);
+    vi.stubEnv('VITE_OPENTU_DESKTOP', 'true');
+    vi.stubGlobal('__OPENTU_DESKTOP_CHANNEL_PROOF__', 'opentu-desktop-client-channel:3');
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: {}, location: { hostname: 'localhost', origin: 'tauri://localhost' } });
+    const init = { method: 'POST', body: '{}' };
+    await fetchTextCompletion('https://api.tu-zi.com/v1/chat/completions', init);
+    expect(fetcher).toHaveBeenLastCalledWith('https://api.tu-zi.com/v1/chat/completions?ch=3', init);
   });
   it('maps system, assistant and image inputs plus output parameters to Responses', () => {
     const body = textRequestBody('/v1/responses', {model:'gpt-5.6-sol',stream:false,max_tokens:1024,temperature:1,top_p:1,response_format:{type:'json_schema',json_schema:{name:'answer',strict:true,schema:{type:'object'}}},messages:[

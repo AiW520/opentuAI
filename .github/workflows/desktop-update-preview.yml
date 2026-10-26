@@ -7,7 +7,7 @@ on:
       tag:
         description: 'Preview tag matching the numeric app version'
         required: true
-        default: 'v1.2.14-preview.1'
+        default: 'v1.2.16-preview.1'
         type: string
 
 permissions:
@@ -73,6 +73,8 @@ jobs:
       CARGO_NET_RETRY: '5'
       CARGO_HTTP_TIMEOUT: '300'
       OPENTU_UPDATER_ENABLED: '1'
+      OPENTU_DESKTOP_RELEASE_PROFILE: preview
+      OPENTU_DESKTOP_CHANNEL_EXPECTED: '3'
       OPENTU_UPDATER_ENDPOINT: 'https://aiw520.github.io/opentuAI/latest.json'
     steps:
       - uses: actions/checkout@v4
@@ -94,7 +96,12 @@ jobs:
           workspaces: 'apps/desktop/src-tauri -> target'
           key: verification-${{ matrix.target }}
       - run: pnpm install --frozen-lockfile
-      - run: node --test scripts/desktop-release-tools.test.cjs
+      - run: node --test scripts/desktop-release-tools.test.cjs scripts/desktop-client-channel.test.cjs
+      - name: Test desktop channel request boundaries
+        working-directory: packages/drawnix
+        run: pnpm exec vitest run src/services/__tests__/tuzi-client-attribution.test.ts src/services/__tests__/provider-routing.test.ts src/services/media-executor/text-response.test.ts
+      - name: Test workflow channel request boundaries
+        run: pnpm exec vitest run --config packages/drawnix/src/workflow-mode/web/vitest.config.ts packages/drawnix/src/workflow-mode/web/tests/native-client-channel.test.ts
       - run: pnpm exec tsc -p apps/desktop/tsconfig.app.json --noEmit
       - name: Test desktop updater
         working-directory: apps/desktop
@@ -111,12 +118,18 @@ jobs:
       - name: Build update-signed preview installers
         working-directory: apps/desktop
         env:
+          OPENTU_DESKTOP_RELEASE_PROFILE: preview
+          OPENTU_DESKTOP_CHANNEL_EXPECTED: '3'
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
         run: |
           node ../../scripts/prepare-tauri-release-config.js --output=src-tauri/tauri.release.conf.json
           pnpm exec tauri build --config src-tauri/tauri.release.conf.json --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+      - name: Verify preview renderer attribution
+        env:
+          OPENTU_DESKTOP_CHANNEL_EXPECTED: '3'
+        run: node scripts/verify-desktop-client-channel.cjs
       - name: Sign Debian updater packages
         if: runner.os == 'Linux'
         working-directory: apps/desktop

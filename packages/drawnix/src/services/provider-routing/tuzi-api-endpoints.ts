@@ -104,7 +104,7 @@ export function isConfiguredTuziApiBaseUrl(url?: string | null): boolean {
     tuziEmbeddedConfig.apiBaseUrl
   );
   return Boolean(
-    tuziEmbeddedConfig.enabled &&
+    (tuziEmbeddedConfig.enabled || import.meta.env.VITE_OPENTU_DESKTOP === 'true') &&
       configuredOrigin &&
       normalizeTuziApiEndpointUrl(url) === configuredOrigin
   );

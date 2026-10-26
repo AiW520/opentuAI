@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react';
 import { nxViteTsPaths } from '@nx/vite/plugins/nx-tsconfig-paths.plugin';
 import path from 'path';
 import fs from 'fs';
+import { assertExpectedChannel, resolveDesktopClientChannel } from '../../scripts/desktop-client-channel.cjs';
 import { workflowAssetsPlugin } from '../web/workflow-assets-plugin';
 
 const workspaceRoot = path.resolve(__dirname, '../..');
@@ -28,7 +29,18 @@ function readDesktopVersion(): string {
 const appVersion = readDesktopVersion();
 const qrAssets = ['logo/opentu-community-qr.png', 'logo/opentu-support-qr.png'];
 
-export default defineConfig({
+export default defineConfig(({ command }) => {
+  const desktopClientChannel = resolveDesktopClientChannel({
+    command,
+    profile: process.env.OPENTU_DESKTOP_RELEASE_PROFILE,
+    updaterEnabled: process.env.OPENTU_UPDATER_ENABLED,
+    signingKeyPresent: Boolean(process.env.TAURI_SIGNING_PRIVATE_KEY),
+    nodeEnv: process.env.NODE_ENV,
+  });
+  if (process.env.OPENTU_DESKTOP_CHANNEL_EXPECTED) {
+    assertExpectedChannel(desktopClientChannel, process.env.OPENTU_DESKTOP_CHANNEL_EXPECTED);
+  }
+  return {
   root: __dirname,
   cacheDir: '../../node_modules/.vite/apps/desktop',
   base: './',
@@ -36,6 +48,7 @@ export default defineConfig({
   define: {
     'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV || 'production'),
     __APP_VERSION__: JSON.stringify(appVersion),
+    __OPENTU_DESKTOP_CHANNEL_PROOF__: JSON.stringify(`opentu-desktop-client-channel:${desktopClientChannel}`),
     'import.meta.env.VITE_TUZI_EMBEDDED_MODE': JSON.stringify('false'),
     'import.meta.env.VITE_OPENTU_DESKTOP': JSON.stringify('true'),
     'import.meta.env.VITE_OPENTU_SIGNED_UPDATER': JSON.stringify(process.env.OPENTU_UPDATER_ENABLED === '1' ? 'true' : 'false'),
@@ -98,5 +111,14 @@ export default defineConfig({
         source: fs.readFileSync(path.join(workspaceRoot, 'apps/web/public', fileName)),
       });
     },
+  }, {
+    name: 'desktop-client-channel-proof',
+    generateBundle() {
+      this.emitFile({
+        type: 'asset', fileName: 'opentu-client-channel.json',
+        source: JSON.stringify({ appVersion, profile: process.env.OPENTU_DESKTOP_RELEASE_PROFILE || 'local', channel: desktopClientChannel }) + '\n',
+      });
+    },
   }],
+  };
 });

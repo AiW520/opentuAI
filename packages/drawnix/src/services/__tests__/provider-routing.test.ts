@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import {
   getTextBindingMaxImageCount,
   inferBindingsForProviderModel,
@@ -27,6 +27,11 @@ import type {
   ProviderProfileSnapshot,
 } from '../provider-routing';
 import { ModelVendor, type ModelConfig } from '../../constants/model-config';
+
+// Routing assertions use the deterministic unsigned desktop channel. Profile
+// selection and web/native origins are covered by tuzi-client-attribution tests.
+beforeEach(() => { vi.stubEnv('VITE_OPENTU_DESKTOP', 'true'); });
+afterEach(() => { vi.unstubAllEnvs(); });
 
 function createRepositories(params: {
   profiles?: ProviderProfileSnapshot[];
@@ -460,7 +465,7 @@ describe('provider routing', () => {
       }
     );
 
-    expect(prepared.url).toBe('https://api.tu-zi.com/v1/images/generations');
+    expect(prepared.url).toBe('https://api.tu-zi.com/v1/images/generations?ch=0');
   });
 
   it('keeps different API version segments when joining provider URLs', () => {
@@ -517,7 +522,7 @@ describe('provider routing', () => {
       }
     );
 
-    expect(prepared.url).toBe('https://api.tu-zi.com/v1/images/generations');
+    expect(prepared.url).toBe('https://api.tu-zi.com/v1/images/generations?ch=0');
   });
 
   it('omits X-Request-Id for custom cross-origin providers', () => {
@@ -566,7 +571,7 @@ describe('provider routing', () => {
         expect(canAttachProviderRequestIdHeader(context, request)).toBe(true);
 
         const prepared = providerTransport.prepareRequest(context, request);
-        expect(prepared.url).toBe(`${baseUrl}/v1/images/generations`);
+        expect(prepared.url).toBe(`${baseUrl}/v1/images/generations?ch=0`);
         expect(prepared.headers['X-Request-Id']).toBe('public-task-id');
       } finally {
         vi.unstubAllGlobals();
@@ -590,7 +595,7 @@ describe('provider routing', () => {
         );
 
         expect(prepared.url).toBe(
-          'https://api.tu-zi.com/v1/images/generations'
+          'https://api.tu-zi.com/v1/images/generations?ch=0'
         );
         expect(prepared.headers['X-Request-Id']).toBe(
           'supported-deployment-task-id'
@@ -646,7 +651,7 @@ describe('provider routing', () => {
 
       expect(fetcher).toHaveBeenCalledTimes(1);
       expect(fetcher.mock.calls[0]?.[0]).toBe(
-        'https://api.tu-zi.com/v1/images/generations'
+        'https://api.tu-zi.com/v1/images/generations?ch=0'
       );
       expect(fetcher.mock.calls[0]?.[1]?.headers).toMatchObject({
         Authorization: 'Bearer secret',
@@ -667,7 +672,7 @@ describe('provider routing', () => {
         path: '/images/generations',
         method: 'POST',
       });
-      expect(prepared.url).toBe('https://api.tu-zi.com/v1/images/generations');
+      expect(prepared.url).toBe('https://api.tu-zi.com/v1/images/generations?ch=0');
     } finally {
       vi.unstubAllGlobals();
     }
@@ -695,7 +700,7 @@ describe('provider routing', () => {
 
         expect(fetcher).toHaveBeenCalledTimes(1);
         expect(String(fetcher.mock.calls[0]?.[0])).toBe(
-          `https://api.tu-zi.com/v1${path}`
+          `https://api.tu-zi.com/v1${path}?ch=0`
         );
         expect(fetcher.mock.calls[0]?.[1]?.headers).toMatchObject({
           'X-Request-Id': 'main-endpoint-task-id',
@@ -726,7 +731,7 @@ describe('provider routing', () => {
 
       expect(fetcher).toHaveBeenCalledTimes(1);
       expect(String(fetcher.mock.calls[0]?.[0])).toBe(
-        'https://api.tu-zi.com/v1/images/generations'
+        'https://api.tu-zi.com/v1/images/generations?ch=0'
       );
       expect(fetcher.mock.calls[0]?.[1]?.headers).toMatchObject({
         'X-Request-Id': 'versioned-path-task-id',
@@ -751,7 +756,7 @@ describe('provider routing', () => {
           }
         );
 
-        expect(prepared.url).toBe(`https://api.tu-zi.com/v1${path}`);
+        expect(prepared.url).toBe(`https://api.tu-zi.com/v1${path}?ch=0`);
         expect(prepared.headers['X-Request-Id']).toBeUndefined();
       } finally {
         vi.unstubAllGlobals();
@@ -771,7 +776,7 @@ describe('provider routing', () => {
       });
 
       expect(prepared.url).toBe(
-        'https://api.tu-zi.com/v1/images/generations/result?request_id=main-endpoint-task-id'
+        'https://api.tu-zi.com/v1/images/generations/result?request_id=main-endpoint-task-id&ch=0'
       );
       expect(prepared.headers['X-Request-Id']).toBe('main-endpoint-task-id');
     } finally {
@@ -799,7 +804,7 @@ describe('provider routing', () => {
         request
       );
 
-      expect(prepared.url).toBe('https://api.tu-zi.com/v1/images/generations');
+      expect(prepared.url).toBe('https://api.tu-zi.com/v1/images/generations?ch=0');
       expect(
         canAttachProviderRequestIdHeader(tuziTransportContext, request)
       ).toBe(false);
@@ -847,7 +852,7 @@ describe('provider routing', () => {
       try {
         expect(canAttachProviderRequestIdHeader(context, request)).toBe(true);
         const prepared = providerTransport.prepareRequest(context, request);
-        expect(prepared.url).toBe(`${url}/v1/images/generations`);
+        expect(prepared.url).toBe(`${url}/v1/images/generations?ch=0`);
         expect(prepared.headers['X-Request-Id']).toBe('compatible-task-id');
       } finally {
         vi.unstubAllGlobals();
@@ -874,7 +879,7 @@ describe('provider routing', () => {
           request
         );
         expect(prepared.url).toBe(
-          'https://api.tu-zi.com/v1/images/generations'
+          'https://api.tu-zi.com/v1/images/generations?ch=0'
         );
         expect(prepared.headers['X-Request-Id']).toBe(
           'unsupported-host-task-id'
@@ -906,7 +911,7 @@ describe('provider routing', () => {
 
       expect(fetcher).toHaveBeenCalledTimes(1);
       expect(String(fetcher.mock.calls[0]?.[0])).toBe(
-        `https://bus.tu-zi.com/v1${path}`
+        `https://bus.tu-zi.com/v1${path}?ch=0`
       );
     }
   );
@@ -939,7 +944,7 @@ describe('provider routing', () => {
         allowImageSubmissionOutcomeRecovery: false,
       });
 
-      expect(prepared.url).toBe('https://api.tu-zi.com/v1/images/generations');
+      expect(prepared.url).toBe('https://api.tu-zi.com/v1/images/generations?ch=0');
       expect(prepared.headers['X-Request-Id']).toBeUndefined();
     } finally {
       vi.unstubAllGlobals();
@@ -1609,7 +1614,7 @@ describe('provider routing', () => {
 
       expect(fetcher).toHaveBeenCalledTimes(1);
       expect(String(fetcher.mock.calls[0]?.[0])).toBe(
-        'https://api.tu-zi.com/v1/images/generations/result'
+        'https://api.tu-zi.com/v1/images/generations/result?ch=0'
       );
       const headers = new Headers(fetcher.mock.calls[0]?.[1]?.headers);
       expect(headers.get('X-Request-Id')).toBe(
@@ -1691,7 +1696,7 @@ describe('provider routing', () => {
       }
     );
 
-    expect(prepared.url).toBe('https://apius.tu-zi.com/v1/images/generations');
+    expect(prepared.url).toBe('https://apius.tu-zi.com/v1/images/generations?ch=0');
     expect(prepared.headers.Authorization).toBeUndefined();
     expect(prepared.headers['X-Tuzi-Profile']).toBeUndefined();
     expect(prepared.headers['X-Request-Id']).toBeUndefined();
@@ -1713,7 +1718,7 @@ describe('provider routing', () => {
       }
     );
 
-    expect(prepared.url).toBe('https://apius.tu-zi.com/v1/images/generations');
+    expect(prepared.url).toBe('https://apius.tu-zi.com/v1/images/generations?ch=0');
     expect(prepared.url).not.toContain('secret-query-key');
   });
 
@@ -1852,7 +1857,7 @@ describe('provider routing', () => {
     );
 
     expect(prepared.url).toBe(
-      'https://api.tu-zi.com/v1beta/models/test:generateContent?key=secret'
+      'https://api.tu-zi.com/v1beta/models/test:generateContent?key=secret&ch=0'
     );
   });
 
@@ -1919,8 +1924,8 @@ describe('provider routing', () => {
     expect(response.ok).toBe(true);
     expect(fetcher).toHaveBeenCalledTimes(2);
     expect(fetcher.mock.calls.map(([url]) => String(url))).toEqual([
-      'https://api.tu-zi.com/v1/images/generations',
-      'https://apius.tu-zi.com/v1/images/generations',
+      'https://api.tu-zi.com/v1/images/generations?ch=0',
+      'https://apius.tu-zi.com/v1/images/generations?ch=0',
     ]);
     for (const [, init] of fetcher.mock.calls) {
       expect(new Headers(init?.headers).get('X-Request-Id')).toBe(
@@ -1971,8 +1976,8 @@ describe('provider routing', () => {
     expect(response.status).toBe(429);
     expect(fetcher).toHaveBeenCalledTimes(2);
     expect(fetcher.mock.calls.map(([url]) => String(url))).toEqual([
-      'https://api.tu-zi.com/v1/images/generations',
-      'https://apius.tu-zi.com/v1/images/generations',
+      'https://api.tu-zi.com/v1/images/generations?ch=0',
+      'https://apius.tu-zi.com/v1/images/generations?ch=0',
     ]);
   });
 
@@ -2049,7 +2054,7 @@ describe('provider routing', () => {
       expect(response.headers.get('Content-Type')).toContain('text/html');
       expect(fetcher).toHaveBeenCalledTimes(1);
       expect(String(fetcher.mock.calls[0]?.[0])).toBe(
-        'https://api.tu-zi.com/v1/images/generations'
+        'https://api.tu-zi.com/v1/images/generations?ch=0'
       );
     } finally {
       vi.unstubAllGlobals();
@@ -2136,7 +2141,7 @@ describe('provider routing', () => {
     expect(response.status).toBe(404);
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(String(fetcher.mock.calls[0]?.[0])).toBe(
-      'https://api.tu-zi.com/v1/images/generations'
+      'https://api.tu-zi.com/v1/images/generations?ch=0'
     );
   });
 

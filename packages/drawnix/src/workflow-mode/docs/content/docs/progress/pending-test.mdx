@@ -3,6 +3,11 @@ title: Pending Tests
 description: Implemented changes that still need manual verification
 ---
 
+## Desktop channel attribution
+
+- Signed desktop preview/production packages use Tuzi channel `ch=3`; local and unsigned builds remain `ch=0`. Verify both canvas request paths and channel analysis after the normal daily aggregate.
+- Real asynchronous terminal refunds/adjustments remain pending; text generation does not validate that flow.
+
 # Pending Tests
 
 - Web 1.1.28 桌面增量同步：Flux 3、Suno v6、Gemini/Seedream 别名、Veo 高级参数与 Seedance 不支持字段清理已移植。需在桌面确认参数保存恢复、真实渠道消费及资源二维码显示；上游真实请求结果不作为桌面验收证据。

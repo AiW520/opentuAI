@@ -78,6 +78,8 @@ jobs:
       - name: Build unsigned verification installers
         working-directory: apps/desktop
         run: pnpm exec tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+      - name: Verify unsigned renderer attribution
+        run: node scripts/verify-desktop-client-channel.cjs --expected=0
       - name: Verify macOS application and DMG signatures
         if: runner.os == 'macOS'
         env:

@@ -55,6 +55,7 @@ export type AiConfig = {
     background: string;
     count: string;
     canvasImageCount: string;
+    autoFocusOnSelect: boolean;
     proxyEnabled: boolean;
     proxyUrl: string;
 };
@@ -122,6 +123,7 @@ export const defaultConfig: AiConfig = {
     background: "",
     count: "1",
     canvasImageCount: "1",
+    autoFocusOnSelect: false,
     proxyEnabled: false,
     proxyUrl: DEFAULT_LOCAL_PROXY_URL,
 };
@@ -281,6 +283,7 @@ export const useConfigStore = create<ConfigStore>()(
                         videoWatermark: config.videoWatermark || "false",
                         videoMode: config.videoMode === "reference" ? "reference" : "frames",
                         canvasImageCount: config.canvasImageCount || defaultConfig.canvasImageCount,
+                        autoFocusOnSelect: config.autoFocusOnSelect === true,
                         proxyEnabled: Boolean(config.proxyEnabled),
                         proxyUrl: config.proxyUrl || DEFAULT_LOCAL_PROXY_URL,
                     }),

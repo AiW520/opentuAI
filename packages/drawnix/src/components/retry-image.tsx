@@ -22,6 +22,7 @@ import React, {
 import { unifiedCacheService } from '../services/unified-cache-service';
 import { normalizeImageDataUrl } from '@aitu/utils';
 import { isDesktopAssetUrl } from '../utils/desktop-asset-url';
+import { IMAGE_CACHE_TIMEOUT_MS, ImageOperationTimeoutError, withImageOperationTimeout } from '../utils/image-operation-timeout';
 
 export interface RetryImageProps
   extends React.ImgHTMLAttributes<HTMLImageElement> {
@@ -55,6 +56,8 @@ export interface RetryImageProps
   onSourceChange?: (src: string) => void;
   /** Defer cache reads for offscreen canvas media while keeping its DOM source. */
   deferCacheRead?: boolean;
+  /** Total loading budget for eager previews, including retries. */
+  loadTimeoutMs?: number;
 }
 
 /**
@@ -187,6 +190,7 @@ export const RetryImage = forwardRef<HTMLImageElement, RetryImageProps>(
       preferCachedBlob = false,
       onSourceChange,
       deferCacheRead = false,
+      loadTimeoutMs,
       onLoad,
       onError,
       ...imgProps
@@ -207,10 +211,22 @@ export const RetryImage = forwardRef<HTMLImageElement, RetryImageProps>(
     // 存储降级创建的 blob URL，用于清理
     const blobUrlRef = useRef<string | null>(null);
     const retryTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+    const loadTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const settledRef = useRef(false);
+    const cacheFallbackTriedRef = useRef(false);
+    const failureCallbackRef = useRef(onLoadFailure);
+    failureCallbackRef.current = onLoadFailure;
     const currentSourceRef = useRef(normalizedSrc);
     const mountedRef = useRef(true);
     const sourceVersionRef = useRef(0);
     currentSourceRef.current = normalizedSrc;
+
+    const clearLoadTimeout = useCallback(() => {
+      if (loadTimeoutRef.current !== null) {
+        clearTimeout(loadTimeoutRef.current);
+        loadTimeoutRef.current = null;
+      }
+    }, []);
 
     const isCurrentSource = useCallback(
       (source: string, sourceVersion?: number) =>
@@ -238,6 +254,10 @@ export const RetryImage = forwardRef<HTMLImageElement, RetryImageProps>(
         if (blobUrlRef.current && blobUrlRef.current !== blobUrl) {
           URL.revokeObjectURL(blobUrlRef.current);
         }
+        if (retryTimeoutRef.current) {
+          clearTimeout(retryTimeoutRef.current);
+          retryTimeoutRef.current = null;
+        }
         blobUrlRef.current = blobUrl;
         setImageSrc(blobUrl);
         return true;
@@ -264,10 +284,11 @@ export const RetryImage = forwardRef<HTMLImageElement, RetryImageProps>(
         }
 
         try {
-          const blob =
-            await unifiedCacheService.getCachedImageBlobWithThumbnailFallback(
-              url
-            );
+          const blob = await withImageOperationTimeout(
+            () => unifiedCacheService.getCachedImageBlobWithThumbnailFallback(url),
+            IMAGE_CACHE_TIMEOUT_MS,
+            '图片缓存读取超时（20秒）'
+          );
           if (blob && blob.size > 0) {
             const blobUrl = URL.createObjectURL(blob);
             return blobUrl;
@@ -295,18 +316,26 @@ export const RetryImage = forwardRef<HTMLImageElement, RetryImageProps>(
     // Handle image load success
     const handleLoad = useCallback(
       (event: React.SyntheticEvent<HTMLImageElement, Event>) => {
+        if (!isCurrentSource(normalizedSrc) || settledRef.current) return;
+        settledRef.current = true;
+        sourceVersionRef.current += 1;
+        if (retryTimeoutRef.current) {
+          clearTimeout(retryTimeoutRef.current);
+          retryTimeoutRef.current = null;
+        }
+        clearLoadTimeout();
         setIsLoading(false);
         setHasError(false);
         onLoad?.(event);
         onLoadSuccess?.();
       },
-      [onLoad, onLoadSuccess]
+      [clearLoadTimeout, isCurrentSource, normalizedSrc, onLoad, onLoadSuccess]
     );
 
     // Handle image load error with retry logic
     const handleError = useCallback(
       async (event: React.SyntheticEvent<HTMLImageElement, Event>) => {
-        if (deferCacheRead) return;
+        if (deferCacheRead || settledRef.current) return;
         const sourceAtError = normalizedSrc;
         const sourceVersionAtError = sourceVersionRef.current;
         if (!isCurrentSource(sourceAtError, sourceVersionAtError)) {
@@ -314,6 +343,9 @@ export const RetryImage = forwardRef<HTMLImageElement, RetryImageProps>(
         }
 
         if (sourceAtError.startsWith('data:')) {
+          settledRef.current = true;
+          sourceVersionRef.current += 1;
+          clearLoadTimeout();
           setIsLoading(false);
           setHasError(true);
           onError?.(event);
@@ -338,8 +370,9 @@ export const RetryImage = forwardRef<HTMLImageElement, RetryImageProps>(
             (isVirtualUrl(sourceAtError) ||
               isExternalUrl(sourceAtError) ||
               isDesktopAssetUrl(sourceAtError)) &&
-            !blobUrlRef.current
+            !cacheFallbackTriedRef.current
           ) {
+            cacheFallbackTriedRef.current = true;
             const blobUrl = await tryFallbackToBlobUrl(sourceAtError);
             if (
               blobUrl &&
@@ -354,19 +387,17 @@ export const RetryImage = forwardRef<HTMLImageElement, RetryImageProps>(
             return;
           }
 
+          if (blobUrlRef.current) {
+            URL.revokeObjectURL(blobUrlRef.current);
+            blobUrlRef.current = null;
+          }
+
           // Schedule retry
           retryTimeoutRef.current = setTimeout(() => {
             if (!isCurrentSource(sourceAtError, sourceVersionAtError)) {
               return;
             }
             setRetryCount(nextRetryCount);
-
-            // 如果已经有 blob URL，继续使用它
-            if (blobUrlRef.current) {
-              // 添加时间戳强制重新加载 blob URL
-              setImageSrc(`${blobUrlRef.current}#retry=${Date.now()}`);
-              return;
-            }
 
             // 外部签名 URL 不能追加参数，否则会破坏签名。
             let retryUrl = sourceAtError;
@@ -388,6 +419,9 @@ export const RetryImage = forwardRef<HTMLImageElement, RetryImageProps>(
           }, delay);
         } else {
           // All retries exhausted
+          settledRef.current = true;
+          sourceVersionRef.current += 1;
+          clearLoadTimeout();
           setIsLoading(false);
           setHasError(true);
           onError?.(event);
@@ -410,6 +444,7 @@ export const RetryImage = forwardRef<HTMLImageElement, RetryImageProps>(
         adoptBlobUrl,
         isCurrentSource,
         deferCacheRead,
+        clearLoadTimeout,
       ]
     );
 
@@ -418,6 +453,8 @@ export const RetryImage = forwardRef<HTMLImageElement, RetryImageProps>(
       // 清理之前的 blob URL
       sourceVersionRef.current += 1;
       const sourceVersion = sourceVersionRef.current;
+      settledRef.current = false;
+      cacheFallbackTriedRef.current = false;
       if (blobUrlRef.current) {
         URL.revokeObjectURL(blobUrlRef.current);
         blobUrlRef.current = null;
@@ -428,6 +465,7 @@ export const RetryImage = forwardRef<HTMLImageElement, RetryImageProps>(
       setHasError(false);
       setBypassSW(false);
       setImageSrc(normalizedSrc);
+      clearLoadTimeout();
 
       let active = true;
       const shouldReadCachedBlob = !deferCacheRead && (
@@ -438,6 +476,7 @@ export const RetryImage = forwardRef<HTMLImageElement, RetryImageProps>(
         (isVirtualUrl(normalizedSrc) && !isSWAvailable()));
 
       if (shouldReadCachedBlob) {
+        cacheFallbackTriedRef.current = true;
         tryFallbackToBlobUrl(normalizedSrc).then((blobUrl) => {
           if (!active || !isCurrentSource(normalizedSrc, sourceVersion)) {
             if (blobUrl) {
@@ -447,9 +486,6 @@ export const RetryImage = forwardRef<HTMLImageElement, RetryImageProps>(
           }
           if (blobUrl) {
             adoptBlobUrl(normalizedSrc, blobUrl, sourceVersion);
-          } else {
-            // 降级失败，仍然使用原始 URL（可能会失败，但有重试机制）
-            setImageSrc(normalizedSrc);
           }
         });
       } else {
@@ -463,6 +499,7 @@ export const RetryImage = forwardRef<HTMLImageElement, RetryImageProps>(
           clearTimeout(retryTimeoutRef.current);
           retryTimeoutRef.current = null;
         }
+        clearLoadTimeout();
       };
     }, [
       adoptBlobUrl,
@@ -471,7 +508,27 @@ export const RetryImage = forwardRef<HTMLImageElement, RetryImageProps>(
       preferCachedBlob,
       tryFallbackToBlobUrl,
       deferCacheRead,
+      clearLoadTimeout,
     ]);
+
+    useEffect(() => {
+      if (!loadTimeoutMs || !shouldEagerLoad || deferCacheRead || !isLoading || hasError) return;
+      const sourceVersion = sourceVersionRef.current;
+      loadTimeoutRef.current = setTimeout(() => {
+        loadTimeoutRef.current = null;
+        if (!isCurrentSource(normalizedSrc, sourceVersion) || settledRef.current) return;
+        settledRef.current = true;
+        sourceVersionRef.current += 1;
+        if (retryTimeoutRef.current) {
+          clearTimeout(retryTimeoutRef.current);
+          retryTimeoutRef.current = null;
+        }
+        setIsLoading(false);
+        setHasError(true);
+        failureCallbackRef.current?.(new ImageOperationTimeoutError('图片预览加载超时，可重试加载已有结果'));
+      }, loadTimeoutMs);
+      return clearLoadTimeout;
+    }, [clearLoadTimeout, deferCacheRead, hasError, isCurrentSource, isLoading, loadTimeoutMs, normalizedSrc, preferCachedBlob, shouldEagerLoad]);
 
     // Cleanup on unmount
     useEffect(() => {
@@ -479,13 +536,14 @@ export const RetryImage = forwardRef<HTMLImageElement, RetryImageProps>(
         if (retryTimeoutRef.current) {
           clearTimeout(retryTimeoutRef.current);
         }
+        clearLoadTimeout();
         // 清理 blob URL
         if (blobUrlRef.current) {
           URL.revokeObjectURL(blobUrlRef.current);
           blobUrlRef.current = null;
         }
       };
-    }, []);
+    }, [clearLoadTimeout]);
 
     // Render fallback if all retries failed
     if (hasError && fallback) {

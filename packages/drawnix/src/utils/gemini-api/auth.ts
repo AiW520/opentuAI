@@ -7,13 +7,22 @@ import { geminiSettings } from '../settings-manager';
 import { isTuziEmbeddedMode } from '../../services/tuzi-embedded-config';
 import './auth-dialog.scss';
 
-/**
- * DOM弹窗获取API Key
- */
-export function promptForApiKey(): Promise<string | null> {
-  if (typeof window === 'undefined') return Promise.resolve(null);
+type ApiKeyPromptOptions = {
+  contextId: string;
+  providerName: string;
+  showTuziGuide?: boolean;
+  container?: HTMLElement;
+  onSave: (apiKey: string) => Promise<void>;
+};
+let activePrompt: { contextId: string; promise: Promise<string | null> } | null = null;
 
-  return new Promise((resolve) => {
+/** Reuse the credential dialog without writing a channel key to global settings. */
+export function promptForApiKey(options?: ApiKeyPromptOptions): Promise<string | null> {
+  if (typeof window === 'undefined') return Promise.resolve(null);
+  const contextId = options?.contextId || 'legacy-default';
+  if (activePrompt) return activePrompt.contextId === contextId ? activePrompt.promise : Promise.resolve(null);
+
+  const promise = new Promise<string | null>((resolve) => {
     // 创建弹窗遮罩
     const overlay = document.createElement('div');
     overlay.className = 'api-key-overlay';
@@ -52,15 +61,26 @@ export function promptForApiKey(): Promise<string | null> {
         </figure>
       </div>
       <label class="api-key-dialog__label" for="apiKeyInput">API Key</label>
-      <input class="api-key-dialog__input" type="text" id="apiKeyInput" placeholder="粘贴你的 API Key" />
+      <input class="api-key-dialog__input" type="password" autocomplete="off" id="apiKeyInput" placeholder="粘贴你的 API Key" />
+      <p id="apiKeyError" role="alert"></p>
       <div class="api-key-dialog__actions">
         <button id="cancelBtn" type="button">取消</button>
         <button id="confirmBtn" type="button" class="api-key-dialog__confirm">确认</button>
       </div>
     `;
 
+    if (options) {
+      dialog.querySelector('h3')!.textContent = `配置 ${options.providerName} API Key`;
+      dialog.querySelector('header p')!.textContent = '填写当前渠道的 API Key；渠道编辑中的改动需保存后生效。';
+      if (!options.showTuziGuide) {
+        dialog.querySelector('.api-key-dialog__guide')?.remove();
+        dialog.querySelector('.api-key-dialog__support')?.remove();
+      }
+    }
     overlay.appendChild(dialog);
-    document.body.appendChild(overlay);
+    // Keep nested prompts inside the active UI focus scope (for example, an
+    // Ant Design model modal) so its focus trap does not steal input focus.
+    (options?.container || document.body).appendChild(overlay);
 
     // 获取元素
     const input = dialog.querySelector('#apiKeyInput') as HTMLInputElement;
@@ -71,29 +91,40 @@ export function promptForApiKey(): Promise<string | null> {
     const stopKeyboardPropagation = (e: KeyboardEvent) => {
       e.stopPropagation();
     };
-    overlay.addEventListener('keydown', stopKeyboardPropagation, true);
-    overlay.addEventListener('keyup', stopKeyboardPropagation, true);
-    overlay.addEventListener('keypress', stopKeyboardPropagation, true);
+    overlay.addEventListener('keydown', stopKeyboardPropagation);
+    overlay.addEventListener('keyup', stopKeyboardPropagation);
+    overlay.addEventListener('keypress', stopKeyboardPropagation);
 
     // 自动聚焦到输入框
-    setTimeout(() => input.focus(), 100);
+    const focusTimer = setTimeout(() => input.focus(), 100);
 
     // 清理函数
     const cleanup = () => {
-      overlay.removeEventListener('keydown', stopKeyboardPropagation, true);
-      overlay.removeEventListener('keyup', stopKeyboardPropagation, true);
-      overlay.removeEventListener('keypress', stopKeyboardPropagation, true);
-      document.body.removeChild(overlay);
+      clearTimeout(focusTimer);
+      overlay.removeEventListener('keydown', stopKeyboardPropagation);
+      overlay.removeEventListener('keyup', stopKeyboardPropagation);
+      overlay.removeEventListener('keypress', stopKeyboardPropagation);
+      overlay.remove();
     };
 
+    let saving = false;
+    const dismiss = () => { if (!saving) { cleanup(); resolve(null); } };
     // 确认按钮点击
     confirmBtn.addEventListener('click', async () => {
+      if (saving) return;
       const apiKey = input.value.trim();
       if (apiKey) {
-        // 更新本地设置（内部会 await syncToIndexedDB，确保 SW 能拿到最新配置）
-        await geminiSettings.update({ apiKey });
-        cleanup();
-        resolve(apiKey);
+        saving = true;
+        confirmBtn.disabled = true;
+        cancelBtn.disabled = true;
+        try {
+          if (options) await options.onSave(apiKey);
+          else await geminiSettings.update({ apiKey });
+          cleanup();
+          resolve(apiKey);
+        } catch {
+          dialog.querySelector('#apiKeyError')!.textContent = '保存失败，请重试。';
+        } finally { saving = false; confirmBtn.disabled = false; cancelBtn.disabled = false; }
       } else {
         input.style.borderColor = '#ff4d4f';
         input.focus();
@@ -101,26 +132,24 @@ export function promptForApiKey(): Promise<string | null> {
     });
 
     // 取消按钮点击
-    cancelBtn.addEventListener('click', () => {
-      cleanup();
-      resolve(null);
-    });
+    cancelBtn.addEventListener('click', dismiss);
 
     // 回车键确认
-    input.addEventListener('keypress', (e) => {
-      if (e.key === 'Enter') {
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.isComposing) {
+        e.preventDefault();
         confirmBtn.click();
       }
     });
 
     // 点击遮罩关闭
     overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) {
-        cleanup();
-        resolve(null);
-      }
+      if (e.target === overlay) dismiss();
     });
   });
+  activePrompt = { contextId, promise };
+  void promise.finally(() => { if (activePrompt?.promise === promise) activePrompt = null; });
+  return promise;
 }
 
 /**

@@ -439,7 +439,8 @@ export const insertImageFromUrl = async (
   skipSelect?: boolean,
   boardGuard?: () => boolean,
   // 暂存画板没有 DOM 宿主；已有明确坐标时直接构造图片节点
-  insertWithoutBoardHost?: boolean
+  insertWithoutBoardHost?: boolean,
+  onCacheFailure?: () => void
 ): Promise<string | undefined> => {
   // 插入画布前把临时 Blob、远程签名 URL 和 data URL 固化为稳定本地地址。
   let resolvedUrl = normalizeImageDataUrl(imageUrl);
@@ -458,7 +459,7 @@ export const insertImageFromUrl = async (
       'image',
       'png',
       undefined,
-      { forceRemoteCache: true, returnLocalCacheUrl: true }
+      { forceRemoteCache: true, returnLocalCacheUrl: true, ...(onCacheFailure ? { onCacheWarning: onCacheFailure } : {}) }
     );
     if (cachedUrl !== resolvedUrl) {
       resolvedUrl = cachedUrl;

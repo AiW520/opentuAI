@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
     stores: new Map<string, Map<string, unknown>>(),
     get: vi.fn(),
+    set: vi.fn(),
     thumbnail: vi.fn(),
     createUrl: vi.fn(),
     revokeUrl: vi.fn(),
@@ -13,7 +14,7 @@ vi.mock('localforage', () => ({ default: {
         mocks.stores.set(storeName, values);
         return {
             getItem: (key: string) => mocks.get(storeName, key, values),
-            setItem: async (key: string, value: unknown) => { values.set(key, value); return value; },
+            setItem: async (key: string, value: unknown) => mocks.set(storeName, key, value, values),
             removeItem: async (key: string) => { values.delete(key); },
             iterate: async (callback: (value: unknown, key: string) => void) => { for (const [key, value] of values) callback(value, key); },
         };
@@ -37,6 +38,7 @@ beforeEach(async () => {
     autoImageLoad = true;
     sequence = 0;
     mocks.get.mockImplementation(async (_store: string, key: string, values: Map<string, unknown>) => values.get(key) ?? null);
+    mocks.set.mockImplementation(async (_store: string, key: string, value: unknown, values: Map<string, unknown>) => { values.set(key, value); return value; });
     mocks.thumbnail.mockImplementation(async () => new window.Blob(['thumb'], { type: 'image/webp' }));
     mocks.createUrl.mockImplementation(() => `blob:file-${++sequence}`);
     vi.stubGlobal('URL', class extends URL { static createObjectURL = mocks.createUrl; static revokeObjectURL = mocks.revokeUrl; });
@@ -66,6 +68,17 @@ beforeEach(async () => {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe('workflow media storage lifecycle', () => {
+    it('retains the remote URL when recovered image caching fails', async () => {
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, blob: async () => new window.Blob(['image'], { type: 'image/png' }) }));
+        mocks.set.mockImplementation(async (store: string, key: string, value: unknown, values: Map<string, unknown>) => {
+            if (store === 'image_files') throw new Error('storage full');
+            values.set(key, value); return value;
+        });
+        const result = await imageStorage.uploadImage('https://example.test/image.png', { remoteFallbackOnCacheFailure: true });
+        expect(result).toMatchObject({ url: 'https://example.test/image.png', width: 1600, height: 900, remoteOnly: true });
+        expect(result.storageKey).toBeUndefined();
+        expect(mocks.revokeUrl).toHaveBeenCalled();
+    });
     it('does not retain unused full media URLs when imports only persist blobs', async () => {
         await imageStorage.setImageBlob('image:import', new window.Blob(['one']), false);
         await fileStorage.setMediaBlob('video:import', new window.Blob(['one']), false);

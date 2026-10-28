@@ -106,6 +106,7 @@ export interface TaskInvocationRouteSnapshot {
   providerType?: string | null;
   modelId?: string | null;
   binding?: TaskInvocationBindingSnapshot | null;
+  imageRecoveryCredentialIdentity?: string;
 }
 
 // ============================================================================

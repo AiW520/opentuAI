@@ -96,7 +96,7 @@ jobs:
           workspaces: 'apps/desktop/src-tauri -> target'
           key: verification-${{ matrix.target }}
       - run: pnpm install --frozen-lockfile
-      - run: node --test scripts/desktop-release-tools.test.cjs scripts/desktop-client-channel.test.cjs
+      - run: node --test scripts/desktop-release-tools.test.cjs scripts/desktop-client-channel.test.cjs scripts/macos-signing.test.cjs
       - name: Test desktop channel request boundaries
         working-directory: packages/drawnix
         run: pnpm exec vitest run src/services/__tests__/tuzi-client-attribution.test.ts src/services/__tests__/provider-routing.test.ts src/services/media-executor/text-response.test.ts

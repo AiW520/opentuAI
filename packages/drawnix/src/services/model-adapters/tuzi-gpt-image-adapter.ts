@@ -1,5 +1,6 @@
 import {
   normalizeImageResolutionTier,
+  resolveGPTImagePromptAspectRatio,
   resolveOfficialGPTImageQuality,
   resolveOfficialGPTImageSize,
 } from './image-size-quality-resolver';
@@ -21,6 +22,7 @@ import {
 import { registerModelAdapter } from './registry';
 import type { ImageGenerationRequest, ImageModelAdapter } from './types';
 import {
+  GPT_IMAGE_25_EXTENDED_MODEL_IDS,
   GPT_IMAGE_2_MODEL_IDS,
   isGPTImage2ModelId,
 } from '../../constants/model-config';
@@ -105,6 +107,7 @@ export function buildTuziGPTImageRequestOptions(
   quality?: 'auto' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   count?: number;
   imageSize?: string;
+  resolution?: string;
   background?: ImageGenerationRequest['background'];
   output_format?: 'png' | 'jpeg' | 'webp';
   output_compression?: number;
@@ -123,6 +126,9 @@ export function buildTuziGPTImageRequestOptions(
     GPT_IMAGE_2_MODEL_IDS.includes(model.toLowerCase()) &&
     requestedSize?.trim().toLowerCase() === 'auto';
   const resolution = normalizeImageResolutionTier(request.params?.resolution);
+  const usePromptRatio =
+    useAutomaticRatio &&
+    GPT_IMAGE_25_EXTENDED_MODEL_IDS.includes(model.toLowerCase());
   const background =
     request.background || getStringParam(request.params, 'background');
   const outputFormat = getStringFieldOrParam(
@@ -143,8 +149,17 @@ export function buildTuziGPTImageRequestOptions(
   }
 
   return {
-    size: useAutomaticRatio ? 'auto' : getResolvedOfficialSize(request, model),
+    size: usePromptRatio
+      ? resolveOfficialGPTImageSize(
+          model,
+          resolveGPTImagePromptAspectRatio(request.prompt),
+          request.params
+        )
+      : useAutomaticRatio ? 'auto' : getResolvedOfficialSize(request, model),
     imageSize: useAutomaticRatio ? resolution?.toUpperCase() : undefined,
+    resolution: GPT_IMAGE_25_EXTENDED_MODEL_IDS.includes(model.toLowerCase())
+      ? resolution?.toUpperCase()
+      : undefined,
     image:
       request.referenceImages && request.referenceImages.length > 0
         ? request.referenceImages
@@ -195,6 +210,10 @@ export function buildTuziGPTImageRequestBody(
 
   if (options.size) {
     body.size = options.size;
+  }
+  // Tuzi routes Image 2.5 tiers from resolution independently of auto size.
+  if (options.resolution) {
+    body.resolution = options.resolution;
   }
   // Auto controls aspect ratio only; retain the selected tier for Tuzi billing.
   if (options.imageSize) {

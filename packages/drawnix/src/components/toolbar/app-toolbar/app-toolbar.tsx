@@ -20,6 +20,7 @@ import {
   UserManual,
   VersionInfo,
   CleanInvalidLinks,
+  WorkflowModeMenuItem,
 } from './app-menu-items';
 import { GithubIcon } from '../../icons';
 import { LanguageSwitcherMenu } from './language-switcher-menu';
@@ -30,6 +31,9 @@ import { Z_INDEX } from '../../../constants/z-index';
 import { ToolbarSectionProps } from '../toolbar.types';
 import { useToolbarConfig } from '../../../hooks/use-toolbar-config';
 import { ToolbarContextMenu } from '../toolbar-context-menu';
+import MenuItem from '../../menu/menu-item';
+import { ImageDown } from 'lucide-react';
+import { OPEN_IMAGE_RECOVERY } from '../../image-recovery/recovery-events';
 
 export interface AppToolbarProps extends ToolbarSectionProps {
   onOpenBackupRestore?: () => void;
@@ -42,6 +46,7 @@ export const AppToolbar: React.FC<AppToolbarProps> = ({
   iconMode = false,
   onOpenBackupRestore,
   onOpenCloudSync,
+  onOpenWorkflowMode,
 }) => {
   const board = useBoard();
   const { t } = useI18n();
@@ -118,6 +123,8 @@ export const AppToolbar: React.FC<AppToolbarProps> = ({
               }}
             />
             <Settings />
+            {import.meta.env.VITE_OPENTU_DESKTOP === 'true' && onOpenWorkflowMode && <WorkflowModeMenuItem label={t('menu.infiniteCanvas')} onOpenWorkflowMode={onOpenWorkflowMode} />}
+            {import.meta.env.VITE_OPENTU_DESKTOP === 'true' && <MenuItem icon={<ImageDown size={18} />} onSelect={() => window.dispatchEvent(new Event(OPEN_IMAGE_RECOVERY))}>找回图片</MenuItem>}
             <MenuSeparator />
             <QuickCommands />
             <UserManual />

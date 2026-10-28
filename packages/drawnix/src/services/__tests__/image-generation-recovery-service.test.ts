@@ -7,6 +7,7 @@ import {
 } from '../../types/task.types';
 import { IMAGE_GENERATION_TIMEOUT_MS } from '../../constants/TASK_CONSTANTS';
 import { registerDocumentBatchTaskGuard } from '../media-executor/task-storage-writer';
+import { imageRecoveryCredentialIdentity } from '../image-recovery-credential';
 import {
   ImageGenerationRecoveryService,
   createImageSubmissionParams,
@@ -70,6 +71,7 @@ function createTask(
     executionPhase: TaskExecutionPhase.POLLING,
     invocationRoute: {
       operation: 'image',
+      imageRecoveryCredentialIdentity: imageRecoveryCredentialIdentity(requestId, plan.provider.baseUrl, plan.provider.apiKey),
       providerProfileId: 'tuzi-profile',
       providerType: 'openai-compatible',
       modelId: 'gpt-image-2',
@@ -179,7 +181,7 @@ describe('image generation recovery service', () => {
     );
   });
 
-  it('queries the configured provider first with auth and the same Request-ID header', async () => {
+  it('queries the configured provider first with auth and no submission header', async () => {
     const fetcher = vi.fn(async () =>
       Response.json({
         status: 'succeeded',
@@ -202,12 +204,12 @@ describe('image generation recovery service', () => {
 
     const [url, init] = fetcher.mock.calls[0] || [];
     expect(String(url)).toBe(
-      'https://bus.tu-zi.com/v1/images/generations/result?request_id=submission-1'
+      'https://bus.tu-zi.com/log/get-request?id=submission-1'
     );
     const headers = new Headers(init?.headers);
     expect(headers.get('Authorization')).toBe('Bearer secret-token');
     expect(headers.get('X-Custom')).toBe('keep-me');
-    expect(headers.get('X-Request-Id')).toBe('submission-1');
+    expect(headers.get('X-Request-Id')).toBeNull();
     expect(onSucceeded).toHaveBeenCalledWith(
       expect.objectContaining({
         requestId: 'submission-1',
@@ -246,11 +248,11 @@ describe('image generation recovery service', () => {
 
     const [url, init] = fetcher.mock.calls[0] || [];
     expect(String(url)).toBe(
-      'https://api.tu-zi.com/v1/images/generations/result?request_id=submission-main'
+      'https://api.tu-zi.com/log/get-request?id=submission-main'
     );
     const headers = new Headers(init?.headers);
     expect(headers.get('Authorization')).toBe('Bearer secret-token');
-    expect(headers.get('X-Request-Id')).toBe('submission-main');
+    expect(headers.get('X-Request-Id')).toBeNull();
   });
 
   it('re-resolves the same provider and model when a persisted binding ID no longer exists', async () => {
@@ -710,7 +712,7 @@ describe('image generation recovery service', () => {
     let stalledResponseReturned = false;
     const cancelBody = vi.fn();
     const fetcher = vi.fn<typeof fetch>(async (input) => {
-      const requestId = new URL(String(input)).searchParams.get('request_id');
+      const requestId = new URL(String(input)).searchParams.get('id');
       if (requestId === 'task-stalled-response' && !stalledResponseReturned) {
         stalledResponseReturned = true;
         return new Response(
@@ -760,7 +762,7 @@ describe('image generation recovery service', () => {
     let stalled = true;
     const cancelLateBody = vi.fn();
     const fetcher = vi.fn<typeof fetch>((input) => {
-      const requestId = new URL(String(input)).searchParams.get('request_id');
+      const requestId = new URL(String(input)).searchParams.get('id');
       if (requestId === 'task-stalled-fetch' && stalled) {
         stalled = false;
         return new Promise<Response>((resolve) => {
@@ -1062,6 +1064,17 @@ describe('image generation recovery service', () => {
       }),
       'route-unavailable'
     );
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it.each(['changed-key', 'missing-identity'] as const)('does not query when credential identity is %s', condition => {
+    const fetcher = vi.fn();
+    const plan = createPlan();
+    const task = createTask('task-credential-check');
+    if (condition === 'changed-key') plan.provider.apiKey = 'replacement-token';
+    else delete task.invocationRoute!.imageRecoveryCredentialIdentity;
+    const service = new ImageGenerationRecoveryService({ fetcher, resolveInvocationPlan: vi.fn(() => plan) });
+    expectRejectedStart(service.start(task, { onSucceeded: vi.fn(), onFailed: vi.fn() }), 'route-unavailable');
     expect(fetcher).not.toHaveBeenCalled();
   });
 

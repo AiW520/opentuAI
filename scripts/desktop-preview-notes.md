@@ -6,7 +6,17 @@
 - API 站需已部署配套渠道分析服务；渠道看板依原有日终规则汇总。渠道参数仅作分析，不改变定价或认证权限。
 - 保留 1.2.15 的存储清理、更新检查、下载进度及本地数据保护功能。
 
-This preview is signed for Tauri update integrity. macOS uses an ad-hoc application signature; Apple Developer ID signing, notarization and Windows Authenticode signing are not configured. Operating-system security warnings may appear. This is not a trusted stable release.
+本预览版仅具有 Tauri 更新完整性签名，macOS 使用临时签名，未经 Apple 公证，首次打开可能提示“已损坏”或“无法验证开发者”。Windows 未配置 Authenticode 签名。本预览版不是正式稳定版。
+
+macOS：核对下载来源与 SHA-256，将应用拖入“应用程序”后，在终端执行下面两行，仅放行此应用：
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Opentu.app"
+open "/Applications/Opentu.app"
+```
+
+如果安装在用户目录，请将路径改为 `$HOME/Applications/Opentu.app`；若提示权限不足，可在第一行 `xattr` 前添加 `sudo` 后重试。请勿关闭系统全局 Gatekeeper。此命令不会补办 Apple 签名或公证。
+
 
 Older installations without the updater plugin must install this preview manually once. Existing local data is stored separately from the application bundle. Back up important work before upgrading.
 

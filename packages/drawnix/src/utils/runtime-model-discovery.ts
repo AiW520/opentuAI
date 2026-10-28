@@ -44,6 +44,7 @@ import { sortModelsByDisplayPriority } from './model-sort';
 import { isTuziEmbeddedMode } from '../services/tuzi-embedded-config';
 import { hasTuziSystemToken } from '../services/tuzi-token-auth';
 import { isTauriEnvironment } from './tauri-env';
+import { fetchModelDiscovery } from '../services/model-discovery-fetch';
 
 const LEGACY_CACHE_KEY = 'drawnix-runtime-model-discovery';
 const MODEL_DISCOVERY_TIMEOUT_MS = 15_000;
@@ -195,22 +196,22 @@ async function fetchRemoteModelList(
   signal?.addEventListener('abort', abortFromCaller, { once: true });
   try {
     const requestUrl = getModelListRequestUrl(baseUrl, accountManaged);
-    const response = await fetch(requestUrl, {
+    const response = await fetchModelDiscovery(requestUrl, {
       headers: {
         Authorization: `Bearer ${apiKey}`,
         'Cache-Control': 'no-cache',
       },
       cache: 'no-store',
       ...(controller ? { signal: controller.signal } : {}),
-    });
+    }, MODEL_DISCOVERY_TIMEOUT_MS);
 
     const rawText = await response.text();
     if (!response.ok) {
+      const detail = extractDiscoveryErrorMessage(rawText, `获取模型列表失败: HTTP ${response.status}`);
       throw new Error(
-        extractDiscoveryErrorMessage(
-          rawText,
-          `获取模型列表失败: HTTP ${response.status}`
-        )
+        [401, 403].includes(response.status)
+          ? `API Key 无效或无模型访问权限（HTTP ${response.status}），请检查渠道和令牌配置：${detail}`
+          : detail
       );
     }
 

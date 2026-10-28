@@ -5,6 +5,9 @@ description: Implemented changes that still need manual verification
 
 ## Desktop channel attribution
 
+- 桌面模型配置：模型列表及 Tuzi 榜单改走原生只读请求，首次未配置时弹出渠道编辑；获取失败保留已有模型。需验收打包版、有效/无效 Key、取消与保存后重启，以及自定义 OpenAI/Gemini 接口。Mac 预览包提供单个应用隔离标记放行命令，正式版公证要求保留。
+
+
 - Signed desktop preview/production packages use Tuzi channel `ch=3`; local and unsigned builds remain `ch=0`. Verify both canvas request paths and channel analysis after the normal daily aggregate.
 - Real asynchronous terminal refunds/adjustments remain pending; text generation does not validate that flow.
 

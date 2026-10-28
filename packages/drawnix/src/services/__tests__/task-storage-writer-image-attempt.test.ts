@@ -403,6 +403,7 @@ describe('task-storage-writer image attempt guards', () => {
       operation: 'image' as const,
       providerProfileId: 'tuzi-profile',
       modelId: 'gpt-image-2',
+      imageRecoveryCredentialIdentity: 'test-credential-identity',
       binding: {
         id: 'tuzi-image-edit',
         protocol: 'openai.images.edits',

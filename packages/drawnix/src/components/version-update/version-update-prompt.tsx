@@ -6,12 +6,17 @@ import { RefreshIcon } from 'tdesign-icons-react';
 import type { DesktopUpdateState } from '../../utils/desktop-update-state';
 import './version-update-prompt.scss';
 
-export const VersionUpdatePrompt: React.FC = () => {
+export const VersionUpdatePrompt: React.FC<{
+  workflow?: boolean;
+  prepareDesktopUpdate?: () => Promise<void>;
+}> = ({ workflow = false, prepareDesktopUpdate }) => {
   const [updateAvailable, setUpdateAvailable] = useState<{
     version: string;
     changelog?: string[];
   } | DesktopUpdateState | null>(null);
   const [showChangelog, setShowChangelog] = useState(false);
+  const [preparing, setPreparing] = useState(false);
+  const [prepareError, setPrepareError] = useState('');
   const { activeTasks } = useTaskQueue();
 
   useEffect(() => {
@@ -93,10 +98,22 @@ export const VersionUpdatePrompt: React.FC = () => {
   const desktopUpdate = updateAvailable && 'desktop' in updateAvailable
     ? updateAvailable as DesktopUpdateState
     : null;
-  const busy = Boolean(desktopUpdate && ['downloading', 'installing', 'restarting'].includes(desktopUpdate.status));
+  const busy = preparing || Boolean(desktopUpdate && ['downloading', 'installing', 'restarting'].includes(desktopUpdate.status));
   const actionLabel = desktopUpdate?.downloadUrl ? '下载新版' : desktopUpdate?.status === 'error' ? desktopUpdate.restartOnly ? '重启应用' : '重试更新' : '立即更新';
-  const handleUpdate = () => {
+  const handleUpdate = async () => {
     if (busy || activeTasks.length > 0) return;
+    setPrepareError('');
+    if (desktopUpdate && !desktopUpdate.downloadUrl && prepareDesktopUpdate) {
+      setPreparing(true);
+      try {
+        await prepareDesktopUpdate();
+      } catch (error) {
+        setPrepareError(error instanceof Error ? error.message : '准备更新失败，请重试');
+        return;
+      } finally {
+        setPreparing(false);
+      }
+    }
     // Keep the prompt visible until the new SW actually takes over.
     // Otherwise a failed COMMIT_UPGRADE looks like a successful update.
     setShowChangelog(false);
@@ -111,7 +128,7 @@ export const VersionUpdatePrompt: React.FC = () => {
 
   return (
     <>
-      <div className="version-update-prompt">
+      <div className={`version-update-prompt${workflow ? ' version-update-prompt--workflow' : ''}`}>
         <div className="version-update-prompt__content">
           <span className="version-update-prompt__text">
             {desktopUpdate?.status === 'downloading'
@@ -121,7 +138,7 @@ export const VersionUpdatePrompt: React.FC = () => {
               : desktopUpdate?.status === 'restarting'
               ? '更新已安装，正在重启'
               : desktopUpdate?.status === 'error'
-              ? desktopUpdate.restartOnly ? '更新已安装，重启失败' : desktopUpdate.downloadUrl ? '下载页面打开失败，请重试' : '更新失败，请检查网络后重试'
+              ? desktopUpdate.errorMessage || (desktopUpdate.restartOnly ? '更新已安装，重启失败' : desktopUpdate.downloadUrl ? '下载页面打开失败，请重试' : '更新失败，请检查网络后重试')
               : `发现新版本 v${updateAvailable.version}`}
           </span>
           {updateAvailable.changelog && updateAvailable.changelog.length > 0 && (
@@ -144,6 +161,7 @@ export const VersionUpdatePrompt: React.FC = () => {
           >
             {actionLabel}
           </Button>
+          {prepareError && <span role="alert" className="version-update-prompt__text">{prepareError}</span>}
         </div>
       </div>
 

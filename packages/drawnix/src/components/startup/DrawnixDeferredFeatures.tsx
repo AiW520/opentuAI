@@ -26,11 +26,6 @@ const BackupRestoreDialog = lazy(() =>
     default: module.BackupRestoreDialog,
   }))
 );
-const VersionUpdatePrompt = lazy(() =>
-  import('../version-update/version-update-prompt').then((module) => ({
-    default: module.VersionUpdatePrompt,
-  }))
-);
 const PerformancePanel = lazy(() =>
   import('../performance-panel/PerformancePanel').then((module) => ({
     default: module.PerformancePanel,
@@ -61,7 +56,6 @@ interface DrawnixDeferredFeaturesProps {
   board: DrawnixBoard | null;
   value: PlaitElement[];
   containerRef: React.RefObject<HTMLDivElement>;
-  versionUpdateEnabled: boolean;
   performancePanelEnabled: boolean;
   toolWindowManagerEnabled: boolean;
   projectDrawerOpen: boolean;
@@ -93,7 +87,6 @@ export function DrawnixDeferredFeatures({
   board,
   value,
   containerRef,
-  versionUpdateEnabled,
   performancePanelEnabled,
   toolWindowManagerEnabled,
   projectDrawerOpen,
@@ -162,11 +155,6 @@ export function DrawnixDeferredFeatures({
             visible={cloudSyncOpen}
             onClose={() => setCloudSyncOpen(false)}
           />
-        </Suspense>
-      )}
-      {versionUpdateEnabled && (
-        <Suspense fallback={null}>
-          <VersionUpdatePrompt />
         </Suspense>
       )}
       {toolWindowManagerEnabled && (

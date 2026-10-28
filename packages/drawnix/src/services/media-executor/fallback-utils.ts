@@ -22,6 +22,7 @@ import {
 } from '../../utils/virtual-media-url';
 import type { TaskResultVisibility } from '../../types/task.types';
 import type { CacheWarning } from '../../types/cache-warning.types';
+import { IMAGE_DOWNLOAD_TIMEOUT_MS, ImageOperationTimeoutError, withImageOperationTimeout } from '../../utils/image-operation-timeout';
 import {
   convertLocalFilePathToAssetUrl,
   isDesktopAssetUrl,
@@ -339,7 +340,9 @@ function notifyCacheWarning(
   const normalized = text.toLowerCase();
   const resolvedReason =
     reasonCode ||
-    (normalized.includes('opaque') || normalized.includes('cors')
+    (error instanceof ImageOperationTimeoutError
+      ? 'network_error'
+      : normalized.includes('opaque') || normalized.includes('cors')
       ? 'cors_opaque'
       : normalized.includes('quota') || normalized.includes('storage')
       ? 'storage_error'
@@ -360,7 +363,7 @@ function notifyCacheWarning(
       status: 'failed',
       reasonCode: resolvedReason,
       message:
-        message ||
+        message || (error instanceof ImageOperationTimeoutError ? error.message : undefined) ||
         '该资源未能缓存到浏览器，原始链接可能会过期，请尽快下载保存。',
       detectedAt: Date.now(),
       expiresHint: '原始链接可能带有效期',
@@ -765,12 +768,21 @@ export async function cacheRemoteUrl(
         }
       }
 
-      const response = await fetch(normalizedUrl, {
-        credentials: 'omit',
-        cache: 'no-store',
-        referrerPolicy: 'no-referrer',
-        ...(options?.signal ? { signal: options.signal } : {}),
-      });
+      const download = async (signal?: AbortSignal) => {
+        const response = await fetch(normalizedUrl, {
+          credentials: 'omit',
+          cache: 'no-store',
+          referrerPolicy: 'no-referrer',
+          ...(signal ? { signal } : {}),
+        });
+        signal?.throwIfAborted();
+        const blob = response.ok ? await response.blob() : undefined;
+        signal?.throwIfAborted();
+        return { response, blob };
+      };
+      const { response, blob } = mediaType === 'image'
+        ? await withImageOperationTimeout(download, IMAGE_DOWNLOAD_TIMEOUT_MS, '图片下载超时，已保留原图地址，可重试插入', options?.signal, 'download')
+        : await download(options?.signal);
       options?.signal?.throwIfAborted();
       if (!response.ok) {
         notifyCacheWarning(
@@ -782,9 +794,7 @@ export async function cacheRemoteUrl(
         return normalizedUrl;
       }
 
-      const blob = await response.blob();
-      options?.signal?.throwIfAborted();
-      if (blob.size === 0) {
+      if (!blob || blob.size === 0) {
         notifyCacheWarning(
           options,
           new Error('empty response body'),

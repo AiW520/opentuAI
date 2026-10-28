@@ -883,7 +883,15 @@ describe('runtime-model-discovery', () => {
     'keeps %s model credentials on their own API route',
     async (profileId, requestBaseUrl, native) => {
       vi.stubGlobal('window', {
-        ...(native ? { __TAURI_INTERNALS__: {} } : {}),
+        ...(native ? {
+          __TAURI_INTERNALS__: {
+            invoke: vi.fn(async () => ({
+              status: 401,
+              body: JSON.stringify({ error: { message: '无效的令牌' } }),
+              content_type: 'application/json',
+            })),
+          },
+        } : {}),
         location: {
           origin: 'http://127.0.0.1:7200',
           href: 'http://127.0.0.1:7200/',
@@ -941,7 +949,15 @@ describe('runtime-model-discovery', () => {
           'invalid-key'
         )
       ).rejects.toThrow('无效的令牌');
-      expect(fetchMock).toHaveBeenCalledTimes(1);
+      if (native) {
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect(window.__TAURI_INTERNALS__.invoke).toHaveBeenCalledWith('query_model_list', {
+          url: `${requestBaseUrl}/v1/models`,
+          authorization: 'Bearer invalid-key',
+          googleApiKey: null,
+          timeoutMs: 15000,
+        });
+      } else expect(fetchMock).toHaveBeenCalledTimes(1);
     }
   );
 

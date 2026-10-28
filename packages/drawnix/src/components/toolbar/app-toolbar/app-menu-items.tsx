@@ -221,8 +221,10 @@ CloudSync.displayName = 'CloudSync';
 
 export const WorkflowModeMenuItem = ({
   onOpenWorkflowMode,
+  label,
 }: {
   onOpenWorkflowMode: () => void;
+  label?: string;
 }) => {
   const { t } = useI18n();
   return (
@@ -231,9 +233,9 @@ export const WorkflowModeMenuItem = ({
       data-testid="workflow-mode-button"
       data-track="toolbar_click_menu_workflow_mode"
       onSelect={onOpenWorkflowMode}
-      aria-label={t('menu.workflowMode')}
+      aria-label={label || t('menu.workflowMode')}
     >
-      {t('menu.workflowMode')}
+      {label || t('menu.workflowMode')}
     </MenuItem>
   );
 };

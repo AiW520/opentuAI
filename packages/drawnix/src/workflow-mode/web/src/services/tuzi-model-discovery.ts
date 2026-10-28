@@ -1,3 +1,5 @@
+import { fetchModelDiscovery } from '../../../../services/model-discovery-fetch';
+import { isTauriEnvironment } from '../../../../utils/tauri-env';
 import { guessCapability, type ChannelModel } from '@/stores/use-config-store';
 
 const TUZI_ORIGIN = 'https://api.tu-zi.com';
@@ -5,6 +7,7 @@ const TUZI_ORIGIN = 'https://api.tu-zi.com';
 export function tuziPricingUrl(origin = window.location.origin): string {
     // The public web endpoint omits CORS headers. Reuse the host's existing
     // Tuzi proxy (Vite/Netlify/Vercel); never attach account or model keys.
+    if (isTauriEnvironment()) return `${TUZI_ORIGIN}/api/pricing`;
     return origin === TUZI_ORIGIN ? '/api/pricing' : '/__opentu_tuzi_session__/api/pricing';
 }
 
@@ -33,7 +36,7 @@ export async function fetchTuziModels(mode: 'hot'|'all', signal?: AbortSignal): 
     const timer = setTimeout(abort,20000);
     try {
         signal?.throwIfAborted();
-        const response = await fetch(tuziPricingUrl(), {signal:controller.signal,credentials:'omit',redirect:'error'});
+        const response = await fetchModelDiscovery(tuziPricingUrl(), {signal:controller.signal,credentials:'omit',redirect:'error'}, 20000);
         if (!response.ok) throw new Error(`Tuzi 榜单接口返回 HTTP ${response.status}，请稍后重试`);
         if (!response.headers.get('content-type')?.toLowerCase().includes('application/json')) {
             throw new Error('榜单接口未返回 JSON，请检查站点的 Tuzi 同源代理配置');

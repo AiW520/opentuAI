@@ -288,6 +288,29 @@ describe('cacheRemoteUrl', () => {
     });
   });
 
+  it('aborts a stalled image download and preserves its source URL', async () => {
+    vi.useFakeTimers();
+    const warning = vi.fn();
+    let signal: AbortSignal | undefined;
+    vi.stubGlobal('fetch', vi.fn((_url, init?: RequestInit) => {
+      signal = init?.signal || undefined;
+      return new Promise<Response>(() => undefined);
+    }));
+    try {
+      const { cacheRemoteUrl } = await import('./fallback-utils');
+      const url = 'https://cdn.example.com/image.png';
+      const result = cacheRemoteUrl(url, 'stalled-image', 'image', 'png', undefined, { forceRemoteCache: true, onCacheWarning: warning });
+      await vi.advanceTimersByTimeAsync(30_000);
+      await expect(result).resolves.toBe(url);
+      expect(signal?.aborted).toBe(true);
+      expect(warning).toHaveBeenCalledWith(expect.objectContaining({ reasonCode: 'network_error', message: expect.stringContaining('超时') }));
+      expect(cacheMediaFromBlob).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
+
   it('caches raw base64 image payloads as content-addressed local URLs', async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       mediaResponse(PNG_SIGNATURE, 'image/png', {
@@ -1007,7 +1030,7 @@ describe('cacheRemoteUrl', () => {
     vi.unstubAllGlobals();
   });
 
-  it('passes the recovery abort signal to a remote cache fetch', async () => {
+  it('uses an abort signal for a remote cache fetch', async () => {
     const controller = new AbortController();
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       mediaResponse(PNG_SIGNATURE, 'image/png', {
@@ -1028,7 +1051,7 @@ describe('cacheRemoteUrl', () => {
 
     expect(fetchMock).toHaveBeenCalledWith(
       'https://cdn.example.com/generated/signal.png',
-      expect.objectContaining({ signal: controller.signal })
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
     );
     vi.unstubAllGlobals();
   });

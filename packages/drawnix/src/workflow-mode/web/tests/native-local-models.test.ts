@@ -159,7 +159,7 @@ describe("OpenTu complete local model parameters", () => {
         config.channels[0].baseUrl = "https://api.tu-zi.com";
         config.channels[0].apiKey = "tuzi-local-key";
         await requestLocalModelImage(config, "edit", [reference]);
-        expect(fetcher.mock.calls[1][0]).toBe("https://api.tu-zi.com/v1/images/generations");
+        expect(fetcher.mock.calls[1][0]).toBe("https://api.tu-zi.com/v1/images/generations?ch=2");
         expect(fetcher.mock.calls[1][1].headers.Authorization).toBe("Bearer tuzi-local-key");
         expect(JSON.parse(fetcher.mock.calls[1][1].body).image).toEqual([reference]);
     });

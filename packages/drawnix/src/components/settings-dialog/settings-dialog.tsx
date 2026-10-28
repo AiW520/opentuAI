@@ -1,3 +1,4 @@
+import { promptForApiKey } from '../../utils/gemini-api/auth';
 import { useDrawnix } from '../../hooks/use-drawnix';
 import { useDeviceType } from '../../hooks/useDeviceType';
 import './settings-dialog.scss';
@@ -2424,14 +2425,18 @@ export const SettingsDialog = ({
       }
     }
 
-    const trimmedApiKey = selectedProfile.apiKey.trim();
+    let trimmedApiKey = selectedProfile.apiKey.trim();
     const normalizedBaseUrl = normalizeModelApiBaseUrl(
       selectedProfile.baseUrl.trim() || TUZI_PROVIDER_DEFAULT_BASE_URL
     );
 
     if (!trimmedApiKey) {
-      MessagePlugin.warning('请先填写 API Key');
-      return;
+      const apiKey = await promptForApiKey({
+        contextId: selectedProfile.id, providerName: selectedProfile.name, showTuziGuide: isSelectedTuziProfile,
+        onSave: async (key) => { updateProfile(selectedProfile.id, (profile) => ({ ...profile, apiKey: key })); },
+      });
+      if (!apiKey) return;
+      trimmedApiKey = apiKey;
     }
 
     try {
@@ -3850,7 +3855,7 @@ export const SettingsDialog = ({
                   }}
                   onClick={handleFetchModels}
                   disabled={
-                    !canManageModels || runtimeState.status === 'loading'
+                    !selectedProfile || runtimeState.status === 'loading'
                   }
                 >
                   {runtimeState.status === 'loading' ? (

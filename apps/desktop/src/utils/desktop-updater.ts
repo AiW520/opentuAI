@@ -14,6 +14,7 @@ let update: Update | null = null;
 let available: DesktopUpdateState | undefined;
 let busy = false;
 let installed = false;
+let downloaded = false;
 let lastCheck = 0;
 const CHECK_INTERVAL = 6 * 60 * 60 * 1000;
 
@@ -29,18 +30,17 @@ async function install(): Promise<void> {
       return;
     }
     if (!update) return;
-    if (!installed) {
+    if (!installed && !downloaded) {
       publishDesktopUpdate({ ...available, status: 'downloading' });
       let total: number | undefined;
       let received = 0;
-      await update.downloadAndInstall((event) => {
+      await update.download((event) => {
         if (event.event === 'Started') {
           total = event.data.contentLength;
           received = 0;
         } else if (event.event === 'Progress') {
           received += event.data.chunkLength;
         } else if (event.event === 'Finished') {
-          publishDesktopUpdate({ ...available!, status: 'installing' });
           return;
         }
         publishDesktopUpdate({
@@ -48,14 +48,24 @@ async function install(): Promise<void> {
           progress: total ? Math.min(100, Math.floor(received / total * 100)) : undefined,
         });
       });
+      downloaded = true;
+    }
+    const prepare = window.__OPENTU_PREPARE_DESKTOP_UPDATE__;
+    if (!prepare) throw new Error('画布尚未准备好，请稍后重试更新');
+    await prepare();
+    if (!installed) {
+      publishDesktopUpdate({ ...available, status: 'installing' });
+      await update.install();
       installed = true;
+      await prepare();
     }
     publishDesktopUpdate({ ...available, status: 'restarting' });
     const { relaunch } = await import('@tauri-apps/plugin-process');
     await relaunch();
   } catch (error) {
     console.error('[Desktop Updater] 更新失败:', error);
-    publishDesktopUpdate({ ...available, status: 'error', restartOnly: installed });
+    publishDesktopUpdate({ ...available, status: 'error', restartOnly: installed,
+      errorMessage: error instanceof Error ? error.message : undefined });
   } finally {
     busy = false;
   }
@@ -86,6 +96,7 @@ async function runCheck(): Promise<void> {
     }
     if (update) await update.close();
     update = candidate;
+    downloaded = false;
     available = next;
     lastCheck = Date.now();
     window.__OPENTU_DESKTOP_UPDATER_ACTIVE__ = Boolean(candidate);

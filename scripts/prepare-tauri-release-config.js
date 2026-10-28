@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { checkMacSigning } = require('./check-macos-signing.cjs');
 
 const output = process.argv.find((value) => value.startsWith('--output='))?.slice(9);
 const pubkey = process.env.TAURI_UPDATER_PUBLIC_KEY;
@@ -31,6 +32,11 @@ const config = {
 
 if (windowsSignCommand) {
   config.bundle.windows = { signCommand: windowsSignCommand };
+}
+
+if (process.env.OPENTU_MACOS_NOTARIZATION_REQUIRED === '1' ||
+    (process.platform === 'darwin' && process.env.OPENTU_DESKTOP_RELEASE_PROFILE === 'production')) {
+  config.bundle.macOS = checkMacSigning();
 }
 
 const target = path.resolve(output);

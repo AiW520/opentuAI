@@ -54,6 +54,8 @@ jobs:
           for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID WINDOWS_CERTIFICATE WINDOWS_CERTIFICATE_PASSWORD TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD TAURI_UPDATER_PUBLIC_KEY; do
             [[ -n "${!name:-}" ]] || { echo "正式发布缺少 GitHub Secret: $name" >&2; exit 1; }
           done
+          node scripts/check-macos-signing.cjs
+          node --test scripts/macos-signing.test.cjs
           echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
       - name: Create draft release
         env:
@@ -179,16 +181,7 @@ jobs:
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-        run: |
-          CERTIFICATE_PATH="$RUNNER_TEMP/opentu-signing.p12"
-          KEYCHAIN_PATH="$RUNNER_TEMP/opentu-signing.keychain-db"
-          printf '%s' "$APPLE_CERTIFICATE" | base64 -D > "$CERTIFICATE_PATH"
-          security create-keychain -p "$RUNNER_TEMP" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "$RUNNER_TEMP" "$KEYCHAIN_PATH"
-          security import "$CERTIFICATE_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
-          security set-key-partition-list -S apple-tool:,apple: -k "$RUNNER_TEMP" "$KEYCHAIN_PATH"
-          security list-keychains -d user -s "$KEYCHAIN_PATH"
+        run: bash scripts/import-apple-certificate.sh
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -225,6 +218,7 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          OPENTU_MACOS_NOTARIZATION_REQUIRED: '1'
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
@@ -249,6 +243,14 @@ jobs:
           done
       - name: Verify production renderer attribution
         run: node scripts/verify-desktop-client-channel.cjs --expected=3
+      - name: Verify Developer ID, notarization and delivered applications
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          MAC_TARGET: ${{ matrix.target }}
+        run: |
+          arch=x86_64
+          if [[ "$MAC_TARGET" == aarch64-* ]]; then arch=arm64; fi
+          node scripts/verify-macos-installer.cjs "apps/desktop/src-tauri/target/$MAC_TARGET/release/bundle" --require-notarization --team="$APPLE_TEAM_ID" --arch="$arch"
       - name: Upload assets
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -262,26 +264,6 @@ jobs:
           if [ -d "$BUNDLE/dmg" ]; then
             find "$BUNDLE/dmg" -name "*.dmg" -exec sh -c 'cp "$1" "Opentu-macos-${ARCH}.dmg"' _ {} \;
             [[ -f "Opentu-macos-${ARCH}.dmg" ]] || { echo "缺少 macOS DMG 产物" >&2; exit 1; }
-            app_path="$(find "$BUNDLE/macos" -maxdepth 1 -name '*.app' -type d | head -n 1)"
-            mount_dir=""
-            cleanup_mount() {
-              [[ -n "$mount_dir" ]] || return 0
-              hdiutil detach "$mount_dir" >/dev/null 2>&1 || true
-              rmdir "$mount_dir" >/dev/null 2>&1 || true
-            }
-            if [[ -z "$app_path" ]]; then
-              mount_dir="$(mktemp -d "$RUNNER_TEMP/opentu-dmg.XXXXXX")"
-              trap cleanup_mount EXIT
-              hdiutil attach "Opentu-macos-${ARCH}.dmg" -mountpoint "$mount_dir" -nobrowse -readonly
-              app_path="$(find "$mount_dir" -maxdepth 1 -name '*.app' -type d | head -n 1)"
-            fi
-            [[ -n "$app_path" ]] || { echo "缺少 macOS app bundle" >&2; exit 1; }
-            codesign --verify --deep --strict --verbose=2 "$app_path"
-            spctl --assess --type execute --verbose=4 "$app_path"
-            xcrun stapler validate "$app_path"
-            cleanup_mount
-            trap - EXIT
-            hdiutil verify "Opentu-macos-${ARCH}.dmg"
             shasum -a 256 "Opentu-macos-${ARCH}.dmg" > "Opentu-macos-${ARCH}.dmg.sha256"
             gh release upload "$TAG" "Opentu-macos-${ARCH}.dmg" "Opentu-macos-${ARCH}.dmg.sha256" --clobber
           fi
@@ -292,6 +274,11 @@ jobs:
             cp "$updater_archive.sig" "Opentu-macos-${ARCH}.app.tar.gz.sig"
             gh release upload "$TAG" "Opentu-macos-${ARCH}.app.tar.gz" "Opentu-macos-${ARCH}.app.tar.gz.sig" --clobber
           fi
+      - name: Remove Apple signing materials
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/opentu-signing.keychain-db" || true
+          rm -f "$RUNNER_TEMP/opentu-signing.p12"
 
   build-windows:
     needs: create-release

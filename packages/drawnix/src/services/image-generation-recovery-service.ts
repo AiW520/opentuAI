@@ -8,6 +8,9 @@ import { TaskExecutionPhase, TaskStatus, TaskType } from '../types/task.types';
 import { CryptoUtils } from '../utils/crypto-utils';
 import { isDocumentBatchTaskScopeCurrent } from './media-executor/task-storage-writer';
 import { createModelRef } from '../utils/settings-manager';
+import { buildImageRecoveryUrl } from './image-generation-recovery-metadata';
+import { imageRecoveryCredentialIdentity } from './image-recovery-credential';
+import { fetchImageRecovery } from './image-recovery-fetch';
 import {
   providerTransport,
   resolveInvocationPlanFromRoute,
@@ -31,7 +34,6 @@ const DEFAULT_MAX_BACKOFF_MS = 60_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 20_000;
 const DEFAULT_JITTER_RATIO = 0.1;
 const TERMINAL_ABORT_GRACE_MS = 5_000;
-const RECOVERY_RESULT_PATH = '/images/generations/result';
 const MAX_RESPONSE_BYTES = 256 * 1024;
 const MAX_RESULT_URLS = 10;
 
@@ -130,6 +132,7 @@ interface RecoveryRouteDescriptor {
   modelId: string;
   bindingId?: string;
   binding: RecoveryBindingFingerprint;
+  credentialIdentity?: string;
 }
 
 interface RecoveryBindingFingerprint {
@@ -551,7 +554,7 @@ export class ImageGenerationRecoveryService {
     );
     this.now = options.now ?? Date.now;
     this.random = options.random ?? Math.random;
-    this.fetcher = options.fetcher ?? globalThis.fetch.bind(globalThis);
+    this.fetcher = options.fetcher ?? ((input, init) => fetchImageRecovery(String(input), init));
     this.resolveInvocationPlan =
       options.resolveInvocationPlan ?? resolveInvocationPlanFromRoute;
     this.transport = options.transport ?? providerTransport;
@@ -702,6 +705,7 @@ export class ImageGenerationRecoveryService {
         modelId,
         bindingId: normalizeRequiredString(route.binding?.id) || undefined,
         binding,
+        credentialIdentity: route.imageRecoveryCredentialIdentity,
       },
     };
   }
@@ -736,6 +740,8 @@ export class ImageGenerationRecoveryService {
       plan.modelRef.modelId !== task.route.modelId ||
       !plan.provider.apiKey?.trim() ||
       CryptoUtils.isEncrypted(plan.provider.apiKey.trim()) ||
+      !task.route.credentialIdentity ||
+      task.route.credentialIdentity !== imageRecoveryCredentialIdentity(task.requestId, plan.provider.baseUrl, plan.provider.apiKey) ||
       !isTuziRequestRecoveryBaseUrl(plan.provider.baseUrl) ||
       !isSynchronousImageBinding(resolvedBinding) ||
       !isSameRecoveryBinding(task.route.binding, resolvedBinding)
@@ -975,21 +981,21 @@ export class ImageGenerationRecoveryService {
     requestId: string,
     signal: AbortSignal
   ): PreparedProviderTransportRequest {
-    return this.transport.prepareRequest(
+    const url = buildImageRecoveryUrl(nodeUrl, requestId);
+    if (!url) throw new Error('Invalid image recovery URL');
+    const prepared = this.transport.prepareRequest(
       {
         ...plan.provider,
         baseUrl: nodeUrl,
         extraHeaders: stripRequestIdHeaders(plan.provider.extraHeaders),
       },
       {
-        path: RECOVERY_RESULT_PATH,
+        path: '/log/get-request',
         method: 'GET',
-        baseUrlStrategy: 'ensure-v1',
-        query: { request_id: requestId },
-        requestId,
         signal,
       }
     );
+    return { ...prepared, url };
   }
 
   private parseResponse(payload: unknown, requestId: string): PollOutcome {

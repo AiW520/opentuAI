@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { generateImageDirect, normalizeAspectRatio, sendChatWithGemini } from './services';
+import { providerTransport, readProviderResponseJson } from '../../services/provider-routing';
 
 const mocks = vi.hoisted(() => ({
   callApiWithRetry: vi.fn(),
@@ -163,5 +164,27 @@ describe('Nano Banana 2.1 generateContent', () => {
       )
     ).rejects.toThrow('14');
     expect(mocks.callGoogleGenerateContentRaw).not.toHaveBeenCalled();
+  });
+
+  it('infers a fixed Gemini tier while preserving request identity and cancellation', async () => {
+    const controller = new AbortController();
+    const model = 'gemini-3.1-flash-image-preview-4k';
+    await generateImageDirect('draw', { size: '16x9', requestId: 'request-123', signal: controller.signal }, model, undefined, { ...config, modelName: model });
+    const options = mocks.callGoogleGenerateContentRaw.mock.calls[0][2];
+    expect(options.generationConfig.imageConfig).toEqual({ aspectRatio: '16:9', imageSize: '4K' });
+    expect(options.requestId).toBe('request-123');
+    expect(options.signal).toBe(controller.signal);
+  });
+
+  it('sends the chosen tier and dimensions through an OpenAI-compatible provider', async () => {
+    vi.mocked(providerTransport.send).mockResolvedValue({ ok: true } as Response);
+    vi.mocked(readProviderResponseJson).mockResolvedValue({ data: [{ url: 'https://example.com/image.png' }] });
+    const model = 'gemini-3.1-flash-image-preview-4k';
+    const controller = new AbortController();
+    await generateImageDirect('draw', { size: '16x9', quality: '2k', requestId: 'request-456', signal: controller.signal }, model, undefined, { ...config, protocol: 'openai.images' as never, modelName: model });
+    const request = vi.mocked(providerTransport.send).mock.calls.at(-1)![1];
+    expect(JSON.parse(request.body as string)).toMatchObject({ model, size: '2048x1152', quality: '2k' });
+    expect(request.requestId).toBe('request-456');
+    expect(request.signal).toBe(controller.signal);
   });
 });

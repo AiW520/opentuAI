@@ -21,6 +21,7 @@ export class WorkflowRecoveryUnavailable extends Error {
 }
 
 const active = new Set<string>();
+export function hasActiveLocalWorkflowTasks(): boolean { return active.size > 0 || recovering.size > 0; }
 const recovering = new Map<string, Promise<GenerationResult | null>>();
 
 export async function workflowRouteIdentity(config: AiConfig, model: string, kind: ModelCapability) {
@@ -228,9 +229,10 @@ async function recoverStoredWorkflowTask(id: string, config: AiConfig): Promise<
         if (kind !== 'image' || route.apiFormat !== 'openai' || resolveModelScript(originalConfig, model, kind) || !isTuziRequestRecoveryBaseUrl(route.baseUrl)) {
             throw new WorkflowRecoveryUnavailable(kind === 'text' ? TEXT_RECOVERY_UNAVAILABLE_MESSAGE : '原任务没有可用查询标识，无法安全找回；不会自动重发');
         }
-        const payload = await queryWorkflowImageResult(route.baseUrl, route.apiKey, String(task.params.submissionRequestId || id));
+        const requestId = String(task.params.submissionRequestId || id);
+        const payload = await queryWorkflowImageResult(route.baseUrl, route.apiKey, requestId);
         if (getDocumentBatchScope() !== owner.scopeId) return null;
-        if (payload?.request_id && payload.request_id !== id || payload?.requestId && payload.requestId !== id) throw new Error('查询结果与原任务不匹配');
+        if (payload?.request_id && payload.request_id !== requestId || payload?.requestId && payload.requestId !== requestId) throw new Error('查询结果与原任务不匹配');
         if (payload?.status === 'failed') {
             const message = safeWorkflowErrorMessage(new Error(payload.error?.message || payload.message || '供应商确认生成失败'), [route.apiKey]);
             await taskStorageWriter.mutateWorkflowTask(id, owner.scopeId, current => {

@@ -70,6 +70,8 @@ jobs:
           workspaces: 'apps/desktop/src-tauri -> target'
           key: verification-${{ matrix.target }}
       - run: pnpm install --frozen-lockfile
+      - name: Test release signing guards
+        run: node --test scripts/macos-signing.test.cjs scripts/desktop-release-tools.test.cjs scripts/desktop-client-channel.test.cjs
       - name: Verify desktop TypeScript
         run: pnpm exec tsc -p apps/desktop/tsconfig.app.json --noEmit
       - name: Test native core

@@ -1,4 +1,4 @@
-import { App, Button, Form, Input, Modal, Progress, Select, Tabs } from "antd";
+import { App, Button, Form, Input, Modal, Progress, Select, Switch, Tabs } from "antd";
 import type { TFunction } from "i18next";
 import { Cloud, Download, Pencil, Plus, RefreshCw, Trash2, Upload, Wifi } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -64,6 +64,7 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
     const updateConfig = useConfigStore((state) => state.updateConfig);
     const updateWebdavConfig = useConfigStore((state) => state.updateWebdavConfig);
     const shouldPromptContinue = useConfigStore((state) => state.shouldPromptContinue);
+    const isConfigOpen = useConfigStore((state) => state.isConfigOpen);
     const setConfigDialogOpen = useConfigStore((state) => state.setConfigDialogOpen);
     const clearPromptContinue = useConfigStore((state) => state.clearPromptContinue);
     const webdavReady = Boolean(webdav.url.trim());
@@ -103,6 +104,15 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
         updateChannels([...config.channels, channel]);
         setEditingChannelId(channel.id);
     };
+
+    useEffect(() => {
+        if (!isConfigOpen || !shouldPromptContinue) return;
+        if (config.channels.some(channel => channel.opentuProfileId === undefined && channel.apiKey.trim() && channel.models.length)) return;
+        const channel = config.channels.find(channel => channel.opentuProfileId === undefined);
+        if (channel) setEditingChannelId(channel.id);
+        else addChannel();
+        // Run once when the missing-configuration dialog opens, preserving edits.
+    }, [isConfigOpen, shouldPromptContinue]);
 
     const deleteChannel = (id: string) => {
         if (config.channels.find((channel) => channel.id === id)?.opentuProfileId !== undefined) return;
@@ -271,6 +281,12 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
                                         />
                                     </Form.Item>
                                 </div>
+                                <Form.Item className="mb-4">
+                                    <div className="flex items-center justify-between gap-3">
+                                        <span className="text-sm">{t("config.preferences.autoFocusOnSelect")}</span>
+                                        <Switch aria-label={t("config.preferences.autoFocusOnSelect")} checked={config.autoFocusOnSelect} onChange={(checked) => updateConfig("autoFocusOnSelect", checked)} />
+                                    </div>
+                                </Form.Item>
                                 <Form.Item label={t("config.preferences.audioInstructions")} className="mb-4">
                                     <Input.TextArea rows={2} value={config.audioInstructions} placeholder={t("config.preferences.audioInstructionsPlaceholder")} onChange={(event) => updateConfig("audioInstructions", event.target.value)} />
                                 </Form.Item>
@@ -359,7 +375,7 @@ export function AppConfigModal() {
             title={
                 <div>
                     <div className="text-lg font-semibold">{t("config.title")}</div>
-                    <div className="mt-1 text-xs font-normal text-stone-500">{t("config.modalDescription")}</div>
+                    <div className="mt-1 text-xs font-normal text-stone-500">请填写渠道 API Key，并获取、选择模型后保存。</div>
                 </div>
             }
             open={isConfigOpen}

@@ -342,7 +342,9 @@ describe('Media Executor Module', () => {
         'gpt-image-2',
         { bindingId: 'tuzi-image-edit' }
       );
-      expect(onSubmissionAttempt).toHaveBeenCalledWith(actualInvocationRoute);
+      const { imageRecoveryCredentialIdentity } = await import('../image-recovery-credential');
+      expect(onSubmissionAttempt).toHaveBeenCalledWith({ ...actualInvocationRoute,
+        imageRecoveryCredentialIdentity: imageRecoveryCredentialIdentity('task-1', 'https://api.openai.com/v1', 'test-key') });
       expect(completeTask).toHaveBeenCalledWith(
         'task-1',
         {
@@ -597,7 +599,9 @@ describe('Media Executor Module', () => {
         },
         { bindingId: 'direct-image-binding' }
       );
-      expect(onSubmissionAttempt).toHaveBeenCalledWith(actualInvocationRoute);
+      const { imageRecoveryCredentialIdentity } = await import('../image-recovery-credential');
+      expect(onSubmissionAttempt).toHaveBeenCalledWith({ ...actualInvocationRoute,
+        imageRecoveryCredentialIdentity: imageRecoveryCredentialIdentity('task-direct-image-1', 'https://api.example.com/v1', 'test-key') });
     }, 15000);
 
     it('propagates an ambiguous adapter submission without failing it', async () => {

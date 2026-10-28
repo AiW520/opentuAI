@@ -99,7 +99,10 @@ case "$(echo "$FILE" | tr '[:upper:]' '[:lower:]')" in
     ditto "$app_path" "$dest_dir/$app_name"
     hdiutil detach "$MOUNT_DIR" -quiet || true
     echo "已安装到 $dest_dir/$app_name"
-    echo "应用已通过发布签名与完整性校验；若 macOS 拒绝启动，请停止使用并反馈 Release 信息。"
+    echo "下载文件的 SHA-256 校验通过；Apple 签名与公证请以系统验证结果为准。未公证预览包可能需要手动放行。"
+    echo '确认来源可信后，仅放行此应用：'
+    printf 'xattr -dr com.apple.quarantine "%s"\n' "$dest_dir/$app_name"
+    printf 'open "%s"\n' "$dest_dir/$app_name"
     ;;
   *.appimage)
     install_root="$HOME/.local/share/opentu"

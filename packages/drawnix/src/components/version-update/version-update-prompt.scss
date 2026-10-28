@@ -39,6 +39,13 @@
   }
 }
 
+.version-update-prompt--workflow {
+  z-index: 10001;
+  left: 12px;
+  top: 52px;
+  max-width: calc(100vw - 24px);
+}
+
 .aitu-toolbar-dock-right .version-update-prompt {
   left: auto;
   right: calc(100vw - var(--aitu-toolbar-left, 0px) + 10px);

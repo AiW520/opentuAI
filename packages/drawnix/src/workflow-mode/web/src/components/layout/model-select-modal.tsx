@@ -1,15 +1,16 @@
 import { Alert, App, Button, Checkbox, Input, Modal, Tabs } from "antd";
 import { RefreshCw, Search } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { fetchChannelModels } from "@/services/api/image";
 import type { ModelChannel } from "@/stores/use-config-store";
 
 // Channel model selector: fetch upstream models or add them manually, then include checked models in the channel list.
-export function ModelSelectModal({ open, channel, selectedNames, onConfirm, onClose }: { open: boolean; channel: ModelChannel | null; selectedNames: string[]; onConfirm: (names: string[]) => void; onClose: () => void }) {
+export function ModelSelectModal({ open, channel, selectedNames, onConfirm, onClose, onConfigureKey }: { onConfigureKey?: () => Promise<ModelChannel | null>; open: boolean; channel: ModelChannel | null; selectedNames: string[]; onConfirm: (names: string[]) => void; onClose: () => void }) {
     const { message } = App.useApp();
     const { t } = useTranslation();
+    const requestVersion = useRef(0);
     const [existing, setExisting] = useState<string[]>([]);
     const [fetched, setFetched] = useState<string[]>([]);
     const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -18,6 +19,8 @@ export function ModelSelectModal({ open, channel, selectedNames, onConfirm, onCl
     const [manual, setManual] = useState("");
     const [loading, setLoading] = useState(false);
     const [fetchError, setFetchError] = useState("");
+    const selectedNamesKey = JSON.stringify(selectedNames);
+    useEffect(() => { requestVersion.current++; setLoading(false); return () => { requestVersion.current++; }; }, [open, channel?.id]);
 
     useEffect(() => {
         if (!open) return;
@@ -28,7 +31,7 @@ export function ModelSelectModal({ open, channel, selectedNames, onConfirm, onCl
         setSearch("");
         setManual("");
         setFetchError("");
-    }, [open, selectedNames]);
+    }, [open, channel?.id, selectedNamesKey]);
 
     const currentList = activeTab === "new" ? fetched : existing;
     const visibleList = useMemo(() => {
@@ -63,21 +66,30 @@ export function ModelSelectModal({ open, channel, selectedNames, onConfirm, onCl
 
     const fetchModels = async () => {
         if (!channel) return;
-        if (channel.opentuProfileId === undefined && (!channel.baseUrl.trim() || !channel.apiKey.trim())) {
-            message.error(t("config.modelSelect.missingConfig"));
+        const version = ++requestVersion.current;
+        let requestChannel = channel;
+        if (channel.opentuProfileId === undefined && !channel.baseUrl.trim()) {
+            setFetchError("请先在渠道编辑中填写接口地址。");
             return;
+        }
+        if (channel.opentuProfileId === undefined && !channel.apiKey.trim()) {
+            const configured = await onConfigureKey?.();
+            if (!configured || version !== requestVersion.current) return;
+            requestChannel = configured;
         }
         setLoading(true);
         setFetchError("");
         try {
-            const models = await fetchChannelModels(channel);
+            const models = await fetchChannelModels(requestChannel);
+            if (version !== requestVersion.current) return;
             setFetched(models);
             setActiveTab("new");
             message.success(t("config.modelSelect.fetched", { count: models.length }));
         } catch (error) {
+            if (version !== requestVersion.current) return;
             setFetchError(error instanceof Error ? error.message : t("config.modelSelect.fetchFailed"));
         } finally {
-            setLoading(false);
+            if (version === requestVersion.current) setLoading(false);
         }
     };
 

@@ -1,9 +1,10 @@
 import { Component, lazy, Suspense, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowLeft, Maximize2, ImagePlus, Video, BookOpen, Images, Settings2, Rows3 } from 'lucide-react';
+import { ArrowLeft, Maximize2, ImagePlus, ImageDown, Video, BookOpen, Images, Settings2, Rows3 } from 'lucide-react';
 import { useSyncExternalStore } from 'react';
 import { navigateWorkflow, subscribeWorkflowNavigation } from './workflow-navigation';
 import './workflow-host.scss';
+import { OPEN_IMAGE_RECOVERY } from '../../components/image-recovery/recovery-events';
 
 const WorkflowApp = lazy(() => import('../web/src/WorkflowApp').then(module => ({ default: module.WorkflowApp })));
 const workflowNavigation = [
@@ -41,6 +42,7 @@ export function WorkflowModeHost({ open, onExit, onOpenProviderSettings }: {
             </button>
           ))}
         </nav>
+        {import.meta.env.VITE_OPENTU_DESKTOP === 'true' && <button type="button" onClick={() => window.dispatchEvent(new Event(OPEN_IMAGE_RECOVERY))} title="找回图片"><ImageDown size={16} /><span>找回图片</span></button>}
         <button className="workflow-host__back" type="button" onClick={onExit} title="返回普通画布" aria-label="返回画布">
           <ArrowLeft size={18} /><span>返回画布</span>
         </button>

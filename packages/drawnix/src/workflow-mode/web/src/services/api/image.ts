@@ -1,3 +1,6 @@
+import { normalizeModelApiBaseUrl } from '../../../../../utils/provider-base-url';
+import { fetchModelDiscovery } from '../../../../../services/model-discovery-fetch';
+import { isTauriEnvironment } from '../../../../../utils/tauri-env';
 import { requestLocalModelImage } from "./local-model";
 import { persistWorkflowText, runLocalWorkflowTask } from "../workflow-local-task";
 import { getDocumentBatchScope } from "../document-batch-scope";
@@ -132,7 +135,7 @@ const GEMINI_IMAGE_SIZE_BY_QUALITY: Record<string, string> = { low: "1K", medium
 function normalizeQuality(quality: string) {
     const value = quality.trim().toLowerCase();
     const normalized = QUALITY_ALIASES[value] || value;
-    return QUALITY_BASE[normalized] ? normalized : undefined;
+    return QUALITY_BASE[normalized] || normalized === "xhigh" || normalized === "max" ? normalized : undefined;
 }
 
 /** Only "transparent" is forwarded; any other value (incl. empty) means keep the default opaque background. */
@@ -232,7 +235,7 @@ function closestGeminiAspectRatio(value: string) {
 
 function resolveGeminiImageSize(quality: string, dimensions: { width: number; height: number } | null) {
     const normalizedQuality = normalizeQuality(quality);
-    if (normalizedQuality) return GEMINI_IMAGE_SIZE_BY_QUALITY[normalizedQuality];
+    if (normalizedQuality && GEMINI_IMAGE_SIZE_BY_QUALITY[normalizedQuality]) return GEMINI_IMAGE_SIZE_BY_QUALITY[normalizedQuality];
     if (!dimensions) return undefined;
     const size = `${dimensions.width}x${dimensions.height}`;
     const scale = inferMediaScale(size);
@@ -819,7 +822,7 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
                 config: requestConfig,
                 prompt: withSystemPrompt(requestConfig, prompt),
                 images: [],
-                params: { size: requestSize, quality, count: n, ...(background ? { background } : {}) },
+                params: { size: requestSize, resolution: inferMediaScale(requestSize || "auto"), quality, count: n, ...(background ? { background } : {}) },
                 signal: options?.signal,
             });
             return normalizePluginImages(result).map((dataUrl) => ({ id: nanoid(), dataUrl }));
@@ -888,7 +891,7 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
                 config: requestConfig,
                 prompt: withSystemPrompt(requestConfig, requestPrompt),
                 images: refs,
-                params: { size: requestSize, quality, count: n, ...(background ? { background } : {}) },
+                params: { size: requestSize, resolution: inferMediaScale(requestSize || "auto"), quality, count: n, ...(background ? { background } : {}) },
                 signal: options?.signal,
             });
             return normalizePluginImages(result).map((dataUrl) => ({ id: nanoid(), dataUrl }));
@@ -1014,29 +1017,42 @@ export async function requestImageQuestion(config: AiConfig, messages: AiTextMes
     }
 }
 
+async function readModelList<T>(url: string, headers: Record<string, string>): Promise<{ data: T }> {
+    if (!isTauriEnvironment()) return axios.get<T>(url, { headers });
+    const response = await fetchModelDiscovery(url, { headers });
+    const raw = await response.text();
+    if ([401, 403].includes(response.status)) {
+        throw new Error(`API Key 无效或无模型访问权限，请检查渠道和令牌配置（HTTP ${response.status}）`);
+    }
+    let data: { error?: { message?: string }; message?: string };
+    try { data = JSON.parse(raw); }
+    catch { throw new Error(`模型接口未返回 JSON（HTTP ${response.status}），请检查接口地址`); }
+    if (!response.ok) {
+        const reason = [401, 403].includes(response.status) ? 'API Key 无效或无模型访问权限，请检查渠道和令牌配置' : data?.error?.message || data?.message || '获取模型列表失败';
+        throw new Error(`${reason}（HTTP ${response.status}）`);
+    }
+    return { data: data as T };
+}
+
 export async function fetchImageModels(config: Pick<AiConfig, "baseUrl" | "apiKey" | "apiFormat">) {
     try {
         if (config.apiFormat === "gemini") {
-            const response = await axios.get<GeminiPayload>(geminiApiUrl({ ...defaultGeminiConfig, ...config }), { headers: geminiHeaders({ ...defaultGeminiConfig, ...config }) });
+            const response = await readModelList<GeminiPayload>(geminiApiUrl({ ...defaultGeminiConfig, ...config }), geminiHeaders({ ...defaultGeminiConfig, ...config }));
             validateGeminiPayload(response.data);
             return (response.data.models || [])
                 .map((model) => model.name?.replace(/^models\//, ""))
                 .filter((id): id is string => Boolean(id))
                 .sort((a, b) => a.localeCompare(b));
         }
-        let modelsUrl = buildApiUrl(config.baseUrl, "/models");
+        let modelsUrl = withLocalProxy(`${normalizeModelApiBaseUrl(config.baseUrl)}/models`);
         // The local OpenTu host already proxies this provider; its error responses omit CORS headers.
-        if (["localhost", "127.0.0.1", "[::1]"].includes(window.location.hostname)) {
+        if (!isTauriEnvironment() && ["localhost", "127.0.0.1", "[::1]"].includes(window.location.hostname)) {
             const target = new URL(modelsUrl, window.location.origin);
             if (target.origin === "https://api.tu-zi.com" && target.pathname === "/v1/models") {
                 modelsUrl = `/__opentu_tuzi_session__${target.pathname}`;
             }
         }
-        const response = await axios.get<{ data?: Array<{ id?: string }>; error?: { message?: string } }>(modelsUrl, {
-            headers: {
-                Authorization: `Bearer ${config.apiKey.trim()}`,
-            },
-        });
+        const response = await readModelList<{ data?: Array<{ id?: string }>; error?: { message?: string } }>(modelsUrl, { Authorization: `Bearer ${config.apiKey.trim()}` });
         if (!Array.isArray(response.data?.data)) throw new Error("模型列表响应格式不正确，请检查接口地址和协议。");
         return response.data.data
             .map((model) => model.id)

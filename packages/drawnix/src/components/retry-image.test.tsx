@@ -24,6 +24,25 @@ vi.mock('../services/unified-cache-service', () => ({
 }));
 
 describe('RetryImage', () => {
+  it('times out an eager preview and ignores a late cache result', async () => {
+    vi.useFakeTimers();
+    let resolveCache!: (blob: Blob | null) => void;
+    vi.mocked(unifiedCacheService.getCachedImageBlobWithThumbnailFallback)
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveCache = resolve; }));
+    const createObjectURL = vi.fn(() => 'blob:late');
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectURL });
+    const failure = vi.fn();
+    render(<RetryImage src="https://example.com/slow.png" alt="slow" eager preferCachedBlob
+      loadTimeoutMs={1000} onLoadFailure={failure} fallback={<span>unavailable</span>} />);
+    await act(async () => { vi.advanceTimersByTime(1000); });
+    expect(screen.getByText('unavailable')).toBeTruthy();
+    expect(failure).toHaveBeenCalledOnce();
+    await act(async () => { resolveCache(new Blob(['image'])); });
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:late');
+    expect(screen.getByText('unavailable')).toBeTruthy();
+  });
   it('defers virtual media cache reads offscreen even if the Service Worker is unavailable', async () => {
     const readCache = vi.mocked(unifiedCacheService.getCachedImageBlobWithThumbnailFallback);
     readCache.mockClear().mockResolvedValue(null);

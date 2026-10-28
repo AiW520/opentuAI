@@ -1,4 +1,4 @@
-import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type ConnectionHandle } from "@/types/canvas";
+import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type ConnectionHandle, type ViewportTransform } from "@/types/canvas";
 
 export function nodeBounds(nodes: CanvasNodeData[]) {
     return nodes.reduce(
@@ -148,4 +148,18 @@ export function normalizeConnection(firstNodeId: string, secondNodeId: string, n
     if (first.type === CanvasNodeType.Config && firstHandleType === "target") return { fromNodeId: second.id, toNodeId: first.id };
     if (first.type === CanvasNodeType.Config) return { fromNodeId: first.id, toNodeId: second.id };
     return { fromNodeId: first.id, toNodeId: second.id };
+}
+
+export function focusViewportForNode(node: Pick<CanvasNodeData, "position" | "width" | "height">, size: { width: number; height: number }, frame: { above?: number; below?: number; bottomInset?: number } = {}): ViewportTransform {
+    const above = Math.max(0, frame.above ?? 0);
+    const below = Math.max(0, frame.below ?? 0);
+    const usableBottom = Math.max(0, size.height - (frame.bottomInset ?? 0));
+    const centerX = node.position.x + node.width / 2;
+    const centerY = node.position.y + node.height / 2;
+    const verticalRoom = usableBottom * 0.92 - above - below;
+    const k = Math.min(Math.max(Math.min((size.width * 0.6) / node.width, (size.height * 0.6) / node.height, verticalRoom / node.height), 0.05), 1);
+    const groupHeight = above + node.height * k + below;
+    const slack = usableBottom - groupHeight;
+    const groupTop = slack * (below > 0 && slack > 0 ? 0.75 : 0.5);
+    return { x: size.width / 2 - centerX * k, y: groupTop + groupHeight / 2 - centerY * k - (below - above) / 2, k };
 }

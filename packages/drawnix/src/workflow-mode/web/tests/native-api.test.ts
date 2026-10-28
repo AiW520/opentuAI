@@ -1,11 +1,12 @@
 import "fake-indexeddb/auto";
+import axios from "axios";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { defaultConfig, resolveModelChannel, resolveModelScript, type AiConfig, type ModelCapability } from "../src/stores/use-config-store";
-import { requestGeneration, requestImageQuestion } from "../src/services/api/image";
+import { requestEdit, requestGeneration, requestImageQuestion } from "../src/services/api/image";
 import { createVideoGenerationTask } from "../src/services/api/video";
 import { requestAudioGeneration, storeGeneratedAudioResult } from "../src/services/api/audio";
 import { isNativeResult, requestNative } from "../src/services/api/opentu";
-import { runModelPlugin } from "../src/services/api/model-plugin";
+import { normalizePluginImages, runModelPlugin } from "../src/services/api/model-plugin";
 import { uploadMediaFile } from "../src/services/file-storage";
 import { audioResultNodes } from "../src/lib/canvas/canvas-audio-results";
 import { CanvasNodeType } from "../src/types/canvas";
@@ -35,6 +36,30 @@ describe("native API execution", () => {
         const result = await requestGeneration(config, "image");
         expect(requestNative).toHaveBeenCalledWith(config, "native::model", { capability: "image", prompt: "image", images: [], params: { size: "adaptive", quality: "2K" } }, undefined, undefined);
         expect(result).toHaveLength(2);
+    });
+
+    it.each([
+        ["high", "1:1", "2880x2880", "4k"],
+        ["2k", "1:1", "2048x2048", "2k"],
+        ["xhigh", "2048x2048", "2048x2048", "2k"],
+        ["max", "auto", undefined, "auto"],
+    ])("passes image plugin resolution with quality %s and size %s", async (quality, size, expectedSize, resolution) => {
+        const config = { ...configFor("image", []), quality, size };
+        config.channels[0].models[0].script = "return []";
+        vi.mocked(runModelPlugin).mockResolvedValue([]);
+        vi.mocked(normalizePluginImages).mockReturnValue([]);
+        await requestGeneration(config, "image");
+        expect(runModelPlugin).toHaveBeenLastCalledWith(expect.objectContaining({ params: expect.objectContaining({ size: expectedSize, resolution, quality: quality === "2k" ? "medium" : quality }) }));
+        await requestEdit(config, "image", []);
+        expect(runModelPlugin).toHaveBeenLastCalledWith(expect.objectContaining({ params: expect.objectContaining({ size: expectedSize, resolution }) }));
+    });
+
+    it("uses explicit Gemini dimensions when the new quality has no legacy size mapping", async () => {
+        const config = { ...defaultConfig, model: "custom::gemini-3-custom", size: "2048x2048", quality: "xhigh", channels: [{ id: "custom", name: "Custom", baseUrl: "https://example.test", apiKey: "test", apiFormat: "gemini" as const, models: [{ name: "gemini-3-custom", capability: "image" as const }] }] };
+        const post = vi.spyOn(axios, "post").mockResolvedValue({ data: { candidates: [{ content: { parts: [{ inlineData: { mimeType: "image/png", data: "aGVsbG8=" } }] } }] } });
+        await requestGeneration(config, "image");
+        expect(post).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ generationConfig: expect.objectContaining({ imageConfig: { aspectRatio: "1:1", imageSize: "2K" } }) }), expect.anything());
+        post.mockRestore();
     });
 
     it("preserves MiniMax resolution, duration, ratio and API version", async () => {

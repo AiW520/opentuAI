@@ -41,6 +41,7 @@ import {
   createTaskInvocationRouteSnapshot,
   shouldUseStrictTaskInvocationRoute,
 } from './task-invocation-route';
+import { imageRecoveryCredentialIdentity } from './image-recovery-credential';
 import { getImageSubmissionRequestId } from './image-generation-recovery-service';
 import { isImageSubmissionOutcomeUnknownError } from './provider-routing';
 import {
@@ -486,7 +487,11 @@ class GenerationAPIService {
           taskQueueService.markImageSubmissionAttempted(
             taskId,
             submissionRequestId,
-            invocationRoute
+            { ...invocationRoute, imageRecoveryCredentialIdentity: imageRecoveryCredentialIdentity(
+              submissionRequestId,
+              (adapterContext.provider || adapterContext).baseUrl,
+              (adapterContext.provider || adapterContext).apiKey || ''
+            ) }
           ),
         signal,
       };

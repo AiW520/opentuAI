@@ -95,6 +95,7 @@ export interface Translations {
   'menu.backupRestore': string;
   'menu.cloudSync': string;
   'menu.workflowMode': string;
+  'menu.infiniteCanvas': string;
   'menu.debugPanel': string;
   'menu.version': string;
   'menu.more': string;
@@ -297,6 +298,7 @@ const translations: Record<Language, Translations> = {
     'menu.backupRestore': '备份 / 恢复',
     'menu.cloudSync': '云端同步',
     'menu.workflowMode': '工作流模式',
+    'menu.infiniteCanvas': '无限画布',
     'menu.debugPanel': '日志 / 调试',
     'menu.version': '版本',
     'menu.more': '更多',
@@ -496,6 +498,7 @@ const translations: Record<Language, Translations> = {
     'menu.backupRestore': 'Backup / Restore',
     'menu.cloudSync': 'Cloud Sync',
     'menu.workflowMode': 'Workflow Mode',
+    'menu.infiniteCanvas': 'Infinite Canvas',
     'menu.debugPanel': 'Log / Debug',
     'menu.version': 'Version',
     'menu.more': 'More',

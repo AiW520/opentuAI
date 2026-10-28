@@ -82,6 +82,7 @@ import {
   executeVideoViaAdapter,
 } from './fallback-adapter-routes';
 import { IMAGE_GENERATION_TIMEOUT_MS } from '../../constants/TASK_CONSTANTS';
+import { imageRecoveryCredentialIdentity } from '../image-recovery-credential';
 import {
   assertTaskInvocationRouteAvailable,
   createTaskInvocationRouteSnapshot,
@@ -478,9 +479,11 @@ export class FallbackMediaExecutor implements IMediaExecutor {
             bindingId: imagePlan.binding.id,
           })
         : undefined;
-      await options?.onSubmissionAttempt?.(invocationRoute);
+      const provider = buildProviderContext(config.imageConfig);
+      await options?.onSubmissionAttempt?.(invocationRoute ? { ...invocationRoute,
+        imageRecoveryCredentialIdentity: imageRecoveryCredentialIdentity(requestId, provider.baseUrl, provider.apiKey) } : undefined);
       const response = await providerTransport.send(
-        buildProviderContext(config.imageConfig),
+        provider,
         {
           path: '/images/generations',
           method: 'POST',

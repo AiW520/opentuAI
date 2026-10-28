@@ -273,7 +273,7 @@ export function useTaskExecutor(isTaskStorageReady = true): void {
         code: expired ? 'RECOVERY_TIMEOUT' : 'RECOVERY_ROUTE_UNAVAILABLE',
         message: expired
           ? '图片结果恢复超时'
-          : '原供应商配置不可用，无法继续恢复图片结果',
+          : '无法确认原渠道或 Key，请使用“找回图片”并选择原渠道手动查询',
         details: {
           originalError: expired
             ? 'Image recovery deadline expired'

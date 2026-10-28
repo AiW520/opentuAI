@@ -138,6 +138,20 @@ describe('insertImageFromUrl', () => {
     ]);
   });
 
+  it('reports cache failure while inserting a usable remote image', async () => {
+    const remoteUrl = 'https://cdn.example.com/generated/image.png';
+    mocks.cacheRemoteUrl.mockImplementation(async (url, _id, _type, _format, _index, options) => {
+      options.onCacheWarning({});
+      return url;
+    });
+    const onCacheFailure = vi.fn();
+    const { insertImageFromUrl } = await import('./image');
+    const board = createBoard([]) as PlaitBoard;
+    await insertImageFromUrl(board, remoteUrl, [10, 20], false, { width: 320, height: 180 }, true, true, true, true, undefined, undefined, onCacheFailure);
+    expect(onCacheFailure).toHaveBeenCalledOnce();
+    expect(mocks.insertImage).toHaveBeenCalledWith(board, { url: remoteUrl, width: 320, height: 180 }, [10, 20]);
+  });
+
   it('等待加载时，缓存不可用则不插入空白节点', async () => {
     const remoteUrl = 'https://cdn.example.com/generated/missing.png';
     const localUrl = '/__aitu_cache__/image/missing.png';

@@ -42,6 +42,8 @@ pub fn run() {
             commands::storage::set_local,
             commands::storage::remove_local,
             commands::storage::get_stats,
+            commands::recovery::query_image_recovery,
+            commands::model_discovery::query_model_list,
             commands::cleanup::inspect_media_storage,
             commands::cleanup::open_media_location,
             commands::cleanup::delete_inspected_media,

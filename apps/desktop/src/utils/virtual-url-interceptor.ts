@@ -1,4 +1,4 @@
-import { unifiedCacheService } from '@drawnix/drawnix';
+import { unifiedCacheService } from '../../../../packages/drawnix/src/services/unified-cache-service';
 
 const ASSET_LIBRARY_URL_PREFIX = '/asset-library/';
 const CACHE_URL_PREFIX = '/__aitu_cache__/';

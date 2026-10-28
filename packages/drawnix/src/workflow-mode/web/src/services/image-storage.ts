@@ -15,6 +15,7 @@ export type UploadedImage = {
     height: number;
     bytes: number;
     mimeType: string;
+    remoteOnly?: boolean;
 };
 
 const store = localforage.createInstance({ name: "infinite-canvas", storeName: "image_files" });
@@ -43,7 +44,7 @@ const IMAGE_TIMEOUT_ERROR = "ImageTimeoutError";
 
 type StoredImagePreview = { version: number; blob?: Blob };
 
-type ImageReadOptions = { signal?: AbortSignal };
+type ImageReadOptions = { signal?: AbortSignal; remoteFallbackOnCacheFailure?: boolean };
 
 function writePreview(key: string, operation: () => Promise<unknown>) {
     const request = (previewWrites.get(key) || Promise.resolve()).catch(() => undefined).then(operation);
@@ -74,20 +75,23 @@ export async function uploadImage(input: string | Blob, options?: ImageReadOptio
         if (options?.signal?.aborted || isNamedError(error, IMAGE_RESPONSE_ERROR) || isNamedError(error, IMAGE_TIMEOUT_ERROR) || !/^https?:\/\//i.test(input)) throw error;
         const meta = await loadImageMeta(input, options, IMAGE_REMOTE_LOAD_TIMEOUT_MS);
         if (!meta) throw error;
-        return { url: input, width: meta.width, height: meta.height, bytes: 0, mimeType: "" };
+        return { url: input, width: meta.width, height: meta.height, bytes: 0, mimeType: "", remoteOnly: true };
     }
-    return storeImage(blob, options);
+    return storeImage(blob, options, /^https?:\/\//i.test(input) ? input : undefined);
 }
 
-async function storeImage(blob: Blob, options?: ImageReadOptions): Promise<UploadedImage> {
+async function storeImage(blob: Blob, options?: ImageReadOptions, remoteUrl?: string): Promise<UploadedImage> {
     const storageKey = `image:${nanoid()}`;
     const url = URL.createObjectURL(blob);
     const releaseUpload = retainUpload(storageKey);
+    let meta: { width: number; height: number } | null = null;
+    let cacheWriteFailed = false;
     try {
-        const meta = await loadImageMeta(url, options);
+        meta = await loadImageMeta(url, options);
         if (!meta) throw new Error(i18n.t("common.imageReadFailed"));
         throwIfAborted(options?.signal);
-        await writeGuard.run(storageKey, () => store.setItem(storageKey, blob));
+        try { await writeGuard.run(storageKey, () => store.setItem(storageKey, blob)); }
+        catch (error) { cacheWriteFailed = true; throw error; }
         throwIfAborted(options?.signal);
         objectUrls.set(storageKey, url);
         await storeImagePreview(storageKey, blob);
@@ -98,6 +102,9 @@ async function storeImage(blob: Blob, options?: ImageReadOptions): Promise<Uploa
         objectUrls.delete(storageKey);
         await deleteImagePreview(storageKey);
         await store.removeItem(storageKey).catch(() => undefined);
+        if (cacheWriteFailed && !options?.signal?.aborted && options?.remoteFallbackOnCacheFailure && remoteUrl && meta) {
+            return { url: remoteUrl, width: meta.width, height: meta.height, bytes: 0, mimeType: blob.type, remoteOnly: true };
+        }
         throw error;
     } finally { releaseUpload(); }
 }

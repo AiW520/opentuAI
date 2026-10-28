@@ -1,3 +1,4 @@
+import { promptForApiKey } from '../../../../../utils/gemini-api/auth';
 import { Button, Drawer, Input, Segmented, Select, Space } from "antd";
 import { ListPlus, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -164,7 +165,15 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
                 )}
             </div>
 
-            <ModelSelectModal open={selectOpen} channel={draft} selectedNames={draft.models.map((model) => model.name)} onConfirm={applySelection} onClose={() => setSelectOpen(false)} />
+            <ModelSelectModal onConfigureKey={async () => {
+                const apiKey = await promptForApiKey({
+                    contextId: `workflow:${draft.id}`, providerName: draft.name,
+                    showTuziGuide: /^https:\/\/api\.tu-zi\.com(?:\/|$)/.test(draft.baseUrl),
+                    container: Array.from(document.querySelectorAll<HTMLElement>(".ant-modal-container")).at(-1),
+                    onSave: async (key) => { patchCredentials({ apiKey: key }); },
+                });
+                return apiKey ? { ...draft, apiKey } : null;
+            }} open={selectOpen} channel={draft} selectedNames={draft.models.map((model) => model.name)} onConfirm={applySelection} onClose={() => setSelectOpen(false)} />
 
             <ModelScriptEditor
                 open={Boolean(scriptTarget)}

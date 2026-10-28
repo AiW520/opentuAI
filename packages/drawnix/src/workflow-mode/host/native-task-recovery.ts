@@ -8,10 +8,12 @@ import { generateNative } from './native-generation';
 import type { GenerationRequest, GenerationResult } from '../shared/generation-bridge';
 import { getDocumentBatchScope, subscribeDocumentBatchScope } from '../web/src/services/document-batch-scope';
 import { imageGenerationRecoveryService } from '../../services/image-generation-recovery-service';
+import { imageRecoveryCredentialIdentity } from '../../services/image-recovery-credential';
 import { TaskExecutionPhase, type Task } from '../../types/task.types';
 import { SubmissionPersistenceError } from '../../services/submission-persistence';
 
 const active = new Map<string, Promise<GenerationResult | null>>();
+export function hasActiveNativeWorkflowTasks(): boolean { return active.size > 0; }
 
 const contextIdentity = (context: AdapterContext) => JSON.stringify([context.baseUrl, context.apiKey, context.authType, context.extraHeaders, context.binding]);
 const routeOptions = (request: GenerationRequest) => request.capability === 'image' && request.images.length ? { preferredRequestSchema: GPT_IMAGE_EDIT_REQUEST_SCHEMAS } : {};
@@ -141,7 +143,8 @@ async function recoverPreparedTask(id: string): Promise<GenerationResult | null>
   if (task.status !== 'processing') return null;
   const request = task.params.nativeRequest as GenerationRequest;
   const owner = task.params.workflow as { scopeId: string; routeIdentity: string };
-  if ((await routeIdentity(request)).fingerprint !== owner.routeIdentity) throw new WorkflowRecoveryUnavailable('等待原配置：原渠道或 Key 已修改');
+  const originalRoute = await routeIdentity(request);
+  if (originalRoute.fingerprint !== owner.routeIdentity) throw new WorkflowRecoveryUnavailable('等待原配置：原渠道或 Key 已修改');
   assertTaskInvocationRouteAvailable(request.capability, task as unknown as Task);
   if (getDocumentBatchScope() !== owner.scopeId) return null;
   const assertAvailable = async () => {
@@ -171,7 +174,10 @@ async function recoverPreparedTask(id: string): Promise<GenerationResult | null>
       // reload, give the query-only recovery its own polling window so a task
       // that is still generating is not discarded before the provider is
       // queried. The original request id and route remain unchanged.
-      const restored = { ...task, startedAt: Date.now(), executionPhase: TaskExecutionPhase.POLLING } as unknown as Task;
+      const context = getAdapterContextFromSettings(request.capability, originalRoute.modelRef, routeOptions(request));
+      const provider = context.provider || context;
+      const restored = { ...task, startedAt: Date.now(), executionPhase: TaskExecutionPhase.POLLING,
+        invocationRoute: { ...task.invocationRoute, imageRecoveryCredentialIdentity: imageRecoveryCredentialIdentity(String(task.params.submissionRequestId), provider.baseUrl, provider.apiKey || '') } } as unknown as Task;
       let unsubscribe = () => { /* Bound before recovery starts. */ };
       const output = await new Promise<GenerationResult | null>((resolve, reject) => {
         const stop = () => { imageGenerationRecoveryService.stop(id); resolve(null); };

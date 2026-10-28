@@ -1,3 +1,4 @@
+import { isTauriEnvironment } from '../../../../../utils/tauri-env';
 import type { ReactNode } from "react";
 import { useEffect, useRef } from "react";
 import { App } from "antd";
@@ -6,6 +7,8 @@ import { useTranslation } from "react-i18next";
 import { useConfigStore } from "@/stores/use-config-store";
 import { usePromptSourceScheduler } from "@/hooks/use-prompt-source-scheduler";
 import { useOpenTuModelDefaults } from "@/integration/opentu-model-defaults";
+
+let desktopSetupShown = false;
 
 export function ClientRootInit({ children }: { children: ReactNode }) {
     const { message } = App.useApp();
@@ -16,6 +19,15 @@ export function ClientRootInit({ children }: { children: ReactNode }) {
 
     usePromptSourceScheduler();
     useOpenTuModelDefaults();
+
+    useEffect(() => {
+        if (!isTauriEnvironment() || desktopSetupShown) return;
+        desktopSetupShown = true;
+        const { config } = useConfigStore.getState();
+        if (!config.channels.some(channel => channel.opentuProfileId === undefined && channel.baseUrl.trim() && channel.apiKey.trim() && channel.models.length)) {
+            openConfigDialog(true, "channels");
+        }
+    }, [openConfigDialog]);
 
     useEffect(() => {
         if (handledConfigParams.current) return;

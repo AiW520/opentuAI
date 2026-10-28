@@ -15,6 +15,7 @@ import type { ExecutionOptions } from './types';
 import { taskStorageWriter } from './task-storage-writer';
 import { SubmissionPersistenceError } from '../submission-persistence';
 import { createTaskInvocationRouteSnapshot } from '../task-invocation-route';
+import { imageRecoveryCredentialIdentity } from '../image-recovery-credential';
 import {
   startLLMApiLog,
   completeLLMApiLog,
@@ -200,7 +201,9 @@ export async function executeImageViaAdapter(
         ...adapterContext,
         requestId: submissionRequestId,
         onSubmissionAttempt: async () => {
-          await options?.onSubmissionAttempt?.(invocationRoute);
+          const provider = adapterContext.provider || adapterContext;
+          await options?.onSubmissionAttempt?.({ ...invocationRoute,
+            imageRecoveryCredentialIdentity: imageRecoveryCredentialIdentity(submissionRequestId, provider.baseUrl, provider.apiKey || '') });
         },
         signal: options?.signal,
         onResponse: (response) => {

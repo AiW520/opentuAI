@@ -129,6 +129,26 @@ describe('callGoogleGenerateContentRaw', () => {
     ).toEqual([{ b64_json: 'AAAA', mime_type: 'image/png' }]);
   });
 
+  it('recognizes PNG bytes in a binary reference while retaining order', async () => {
+    const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jK1sAAAAASUVORK5CYII=';
+    await callGoogleGenerateContentRaw(
+      { apiKey: 'test-key', baseUrl: 'https://api.tu-zi.com/v1', modelName: 'gemini-nano-banana-2.1', protocol: 'google.generateContent', authType: 'bearer' },
+      [{ role: 'user', content: [{ type: 'text', text: 'combine' }, { type: 'image_url', image_url: { url: `data:application/octet-stream;base64,${png}` } }] }],
+      { stream: false, generationConfig: { responseModalities: ['IMAGE'] } }
+    );
+    const parts = JSON.parse(sendMock.mock.calls[0][1].body).contents[0].parts;
+    expect(parts).toEqual([{ text: 'combine' }, { inline_data: { mime_type: 'image/png', data: png } }]);
+  });
+
+  it('rejects non-image binary reference content before sending', async () => {
+    await expect(callGoogleGenerateContentRaw(
+      { apiKey: 'test-key', baseUrl: 'https://api.tu-zi.com/v1', modelName: 'gemini-nano-banana-2.1', protocol: 'google.generateContent', authType: 'bearer' },
+      [{ role: 'user', content: [{ type: 'image_url', image_url: { url: `data:application/octet-stream;base64,${btoa('<html>error</html>')}` } }] }],
+      { stream: false, generationConfig: { responseModalities: ['IMAGE'] } }
+    )).rejects.toThrow(/第 1 张参考图/);
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+
   it('forwards AbortSignal through non-stream manual HTTP calls', async () => {
     const controller = new AbortController();
     sendMock.mockResolvedValue(

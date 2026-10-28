@@ -1,5 +1,5 @@
 import React from 'react';
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { VersionUpdatePrompt } from './version-update-prompt';
 import { publishDesktopUpdate, publishDesktopUpdateCheck } from '../../utils/desktop-update-state';
@@ -49,6 +49,37 @@ describe('desktop update prompt', () => {
       render(<VersionUpdatePrompt />);
       fireEvent.click(screen.getByRole('button', { name: '下载新版' }));
       expect(confirm).toHaveBeenCalledTimes(1);
+    } finally {
+      window.removeEventListener('user-confirmed-upgrade', confirm);
+    }
+  });
+
+  it('blocks installation when preparing the canvases fails', async () => {
+    const confirm = vi.fn();
+    window.addEventListener('user-confirmed-upgrade', confirm);
+    try {
+      publishDesktopUpdate({ version: '1.2.15', desktop: true, status: 'ready' });
+      render(<VersionUpdatePrompt workflow prepareDesktopUpdate={vi.fn().mockRejectedValue(new Error('画布保存失败'))} />);
+      fireEvent.click(screen.getByRole('button', { name: '立即更新' }));
+      expect((await screen.findByRole('alert')).textContent).toContain('画布保存失败');
+      expect(confirm).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener('user-confirmed-upgrade', confirm);
+    }
+  });
+
+  it('waits for canvas preparation before starting installation', async () => {
+    let finish!: () => void;
+    const prepare = vi.fn(() => new Promise<void>(resolve => { finish = resolve; }));
+    const confirm = vi.fn();
+    window.addEventListener('user-confirmed-upgrade', confirm);
+    try {
+      publishDesktopUpdate({ version: '1.2.15', desktop: true, status: 'ready' });
+      render(<VersionUpdatePrompt workflow prepareDesktopUpdate={prepare} />);
+      fireEvent.click(screen.getByRole('button', { name: '立即更新' }));
+      expect(confirm).not.toHaveBeenCalled();
+      await act(async () => finish());
+      await waitFor(() => expect(confirm).toHaveBeenCalledTimes(1));
     } finally {
       window.removeEventListener('user-confirmed-upgrade', confirm);
     }

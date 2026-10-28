@@ -59,9 +59,10 @@ describe('tuzi GPT image adapter', () => {
         expect(buildTuziGPTImageRequestBody(request)).toEqual({
           model: request.model,
           prompt: 'Test',
-          size: 'auto',
+          size: '1920x1920',
           quality: 'high',
           background,
+          resolution: '2K',
           generationConfig: { imageConfig: { imageSize: '2K' } },
           ...(referenceImages ? { image: referenceImages } : {}),
         });
@@ -154,6 +155,7 @@ describe('tuzi GPT image adapter', () => {
           model,
           prompt: 'Test',
           size,
+          resolution: '2K',
           quality: 'medium',
         });
         const [width, height] = size.split('x').map(Number);
@@ -345,6 +347,7 @@ describe('tuzi GPT image adapter', () => {
         model: 'gpt-image-2.5-vip',
         prompt: 'Draw a clean product photo',
         size: sizes[resolution as keyof typeof sizes],
+        resolution: resolution.toUpperCase(),
         quality: 'high',
       });
     }
@@ -376,9 +379,10 @@ describe('tuzi GPT image adapter', () => {
         ).toEqual({
           model,
           prompt: 'Draw a clean product photo',
-          size: 'auto',
+          size: model.startsWith('gpt-image-2.5') ? { '1k': '1024x1024', '2k': '1920x1920', '4k': '2880x2880', auto: '1024x1024' }[resolution] : 'auto',
           quality: 'medium',
           ...(referenceImages ? { image: referenceImages } : {}),
+          ...(model.startsWith('gpt-image-2.5') && resolution !== 'auto' ? { resolution: resolution.toUpperCase() } : {}),
           ...(resolution === 'auto'
             ? {}
             : {
@@ -405,8 +409,9 @@ describe('tuzi GPT image adapter', () => {
     ).toEqual({
       model: 'gpt-image-2.5',
       prompt: 'Test',
-      size: 'auto',
+      size: '2880x2880',
       quality: 'high',
+      resolution: '4K',
       generationConfig: { imageConfig: { imageSize: '4K' } },
     });
   });
@@ -453,9 +458,21 @@ describe('tuzi GPT image adapter', () => {
       model: modelId,
       prompt: 'Draw a clean product photo',
       size: '3840x2160',
+      resolution: '4K',
       quality: 'max',
     });
   });
+
+  it.each(['gpt-image-2.5', 'gpt-image-2.5-vip', 'gpt-image-2.5-sunburst', 'gpt-image-2.5-flare'])(
+    'uses prompt ratio and preserves explicit ratio for %s', (model) => {
+      for (const [resolution, expected] of [['1k', '1360x768'], ['2k', '2560x1440'], ['4k', '3840x2160']]) {
+        const request = { model, prompt: 'Poster 16:9', size: 'auto', params: { resolution, quality: 'high' } };
+        expect(buildTuziGPTImageRequestBody(request)).toMatchObject({ size: expected, resolution: resolution.toUpperCase() });
+        expect(buildTuziGPTImageRequestBody({ ...request, size: '1x1' }).size).not.toBe(expected);
+      }
+      expect(buildTuziGPTImageRequestBody({ model, prompt: 'No ratio', size: 'auto', params: { resolution: 'auto' } })).toMatchObject({ size: '1024x1024' });
+    }
+  );
 
   it('does not send Sunburst and Flare quality values to older GPT Image models', () => {
     expect(

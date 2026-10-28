@@ -137,6 +137,7 @@ import { SelectionMode } from './types/asset.types';
 import { WorkflowModeHost } from './workflow-mode/host/WorkflowModeHost';
 import { queueProviderSettingsNavigation } from './components/settings-dialog/provider-settings-navigation';
 import { useWorkflowRoute } from './workflow-mode/host/use-workflow-route';
+import { OPEN_IMAGE_RECOVERY, insertWorkflowRecoveredImage } from './components/image-recovery/recovery-events';
 const PopupToolbar = lazy(() =>
   import('./components/toolbar/popup-toolbar/popup-toolbar').then((module) => ({
     default: module.PopupToolbar,
@@ -221,6 +222,14 @@ const DrawnixDeferredRuntime = lazy(() =>
   import('./components/startup/DrawnixDeferredRuntime').then((module) => ({
     default: module.DrawnixDeferredRuntime,
   }))
+);
+const VersionUpdatePrompt = lazy(() =>
+  import('./components/version-update/version-update-prompt').then((module) => ({
+    default: module.VersionUpdatePrompt,
+  }))
+);
+const ManualImageRecovery = lazy(() =>
+  import('./components/image-recovery/manual-image-recovery').then(module => ({ default: module.ManualImageRecovery }))
 );
 const TTDDialog = lazy(() =>
   import('./components/ttd-dialog/ttd-dialog').then((module) => ({
@@ -325,6 +334,8 @@ export const Drawnix: React.FC<DrawnixProps> = ({
   currentBoardId,
 }) => {
   const workflowRoute = useWorkflowRoute(currentBoardId);
+  const workflowVisited = useRef(workflowRoute.open);
+  if (workflowRoute.open) workflowVisited.current = true;
   const options: PlaitBoardOptions = {
     readonly: false,
     hideScrollbar: false,
@@ -359,6 +370,12 @@ export const Drawnix: React.FC<DrawnixProps> = ({
   const [cloudSyncOpen, setCloudSyncOpen] = useState(false);
   const [deferredRuntimeEnabled, setDeferredRuntimeEnabled] = useState(false);
   const [versionUpdateEnabled, setVersionUpdateEnabled] = useState(false);
+  const [imageRecoveryOpen, setImageRecoveryOpen] = useState(false);
+  useEffect(() => {
+    const show = () => setImageRecoveryOpen(true);
+    window.addEventListener(OPEN_IMAGE_RECOVERY, show);
+    return () => window.removeEventListener(OPEN_IMAGE_RECOVERY, show);
+  }, []);
   const [performancePanelEnabled, setPerformancePanelEnabled] = useState(false);
   const [toolWindowManagerEnabled, setToolWindowManagerEnabled] =
     useState(false);
@@ -848,6 +865,53 @@ export const Drawnix: React.FC<DrawnixProps> = ({
     }
   }, [onChange, saveBoard]);
 
+  const prepareDesktopUpdate = useCallback(async () => {
+    const [{ hasActiveLLMTasks }, native, local] = await Promise.all([
+      import('./utils/active-tasks'),
+      import('./workflow-mode/host/native-task-recovery'),
+      import('./workflow-mode/web/src/services/workflow-local-task'),
+    ]);
+    const hasActiveTasks = async () => native.hasActiveNativeWorkflowTasks() ||
+      local.hasActiveLocalWorkflowTasks() || await hasActiveLLMTasks();
+    if (await hasActiveTasks()) throw new Error('请等待正在进行的生成任务完成后再更新');
+    if (boardRef.current) {
+      const current = boardRef.current;
+      const saved = await saveBoard({ children: current.children || [], viewport: current.viewport, theme: current.theme });
+      if (!saved) throw new Error('画布保存失败，请重试');
+    }
+    if (workflowVisited.current) {
+      const { flushCanvasStorage, useCanvasStore } = await import('./workflow-mode/web/src/stores/canvas/use-canvas-store');
+      if (!useCanvasStore.getState().hydrated) throw new Error('画布仍在加载，请稍后重试更新');
+      await flushCanvasStorage();
+    }
+    if (await hasActiveTasks()) throw new Error('请等待正在进行的生成任务完成后再更新');
+  }, [saveBoard]);
+
+  useEffect(() => {
+    window.__OPENTU_PREPARE_DESKTOP_UPDATE__ = prepareDesktopUpdate;
+    return () => {
+      if (window.__OPENTU_PREPARE_DESKTOP_UPDATE__ === prepareDesktopUpdate) delete window.__OPENTU_PREPARE_DESKTOP_UPDATE__;
+    };
+  }, [prepareDesktopUpdate]);
+
+  const insertRecoveredImage = useCallback(async (url: string) => {
+    if (workflowRoute.open) {
+      return await insertWorkflowRecoveredImage(url);
+    }
+    const target = boardRef.current;
+    const targetId = currentBoardId;
+    if (!target || !targetId) throw new Error('画布尚未加载');
+    const [{ insertImageFromUrl }, { workspaceService }] = await Promise.all([
+      import('./data/image'), import('./services/workspace-service'),
+    ]);
+    const guard = () => boardRef.current === target && workspaceService.getCurrentBoard()?.id === targetId && !window.location.pathname.startsWith('/workflow');
+    if (!guard()) throw new Error('画布已切换');
+    let remoteOnly = false;
+    const inserted = await insertImageFromUrl(target, url, undefined, undefined, undefined, undefined, undefined, undefined, undefined, guard, undefined, () => { remoteOnly = true; });
+    if (!inserted) throw new Error('图片未插入');
+    return { remoteOnly };
+  }, [currentBoardId, workflowRoute.open]);
+
   // 创建新项目并刷新页面（用于释放内存）
   const handleCreateProjectForMemory = useCallback(async () => {
     // 先保存当前画布
@@ -910,7 +974,6 @@ export const Drawnix: React.FC<DrawnixProps> = ({
   );
 
   const shouldRenderDeferredFeatures =
-    versionUpdateEnabled ||
     performancePanelEnabled ||
     toolWindowManagerEnabled ||
     appState.openCommandPalette ||
@@ -930,6 +993,12 @@ export const Drawnix: React.FC<DrawnixProps> = ({
               <CacheQuotaProvider onOpenMediaLibrary={handleOpenMediaLibrary}>
                 <ChatDrawerProvider>
                   <DrawnixContext.Provider value={contextValue}>
+                    {imageRecoveryOpen && <Suspense fallback={null}><ManualImageRecovery onInsert={insertRecoveredImage} onClose={() => setImageRecoveryOpen(false)} /></Suspense>}
+                    {versionUpdateEnabled && (
+                      <Suspense fallback={null}>
+                        <VersionUpdatePrompt workflow={workflowRoute.open} prepareDesktopUpdate={prepareDesktopUpdate} />
+                      </Suspense>
+                    )}
                     {workflowRoute.open ? (
                       <>
                         <WorkflowModeHost open={!appState.openSettings} onExit={workflowRoute.exit} onOpenProviderSettings={(profileId) => {
@@ -988,7 +1057,6 @@ export const Drawnix: React.FC<DrawnixProps> = ({
                       shouldRenderDeferredFeatures={
                         shouldRenderDeferredFeatures
                       }
-                      versionUpdateEnabled={versionUpdateEnabled}
                       performancePanelEnabled={performancePanelEnabled}
                       toolWindowManagerEnabled={toolWindowManagerEnabled}
                       minimizedToolsBarEnabled={minimizedToolsBarEnabled}
@@ -1026,7 +1094,6 @@ interface DrawnixContentProps {
   backupRestoreOpen: boolean;
   deferredRuntimeEnabled: boolean;
   shouldRenderDeferredFeatures: boolean;
-  versionUpdateEnabled: boolean;
   performancePanelEnabled: boolean;
   toolWindowManagerEnabled: boolean;
   minimizedToolsBarEnabled: boolean;
@@ -1079,7 +1146,6 @@ const DrawnixContent: React.FC<DrawnixContentProps> = ({
   backupRestoreOpen,
   deferredRuntimeEnabled,
   shouldRenderDeferredFeatures,
-  versionUpdateEnabled,
   performancePanelEnabled,
   toolWindowManagerEnabled,
   minimizedToolsBarEnabled,
@@ -1940,7 +2006,6 @@ const DrawnixContent: React.FC<DrawnixContentProps> = ({
               board={board}
               value={value}
               containerRef={containerRef}
-              versionUpdateEnabled={versionUpdateEnabled}
               performancePanelEnabled={performancePanelEnabled}
               toolWindowManagerEnabled={toolWindowManagerEnabled}
               projectDrawerOpen={projectDrawerOpen}

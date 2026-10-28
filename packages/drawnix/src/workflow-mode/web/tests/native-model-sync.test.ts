@@ -47,6 +47,13 @@ describe('configured workflow model sources', () => {
         expect(empty.config.channels).toEqual([]);
         expect(empty.config.models).toEqual([]);
     });
+    it('restores auto-focus only when explicitly enabled in persisted preferences', () => {
+        const merge = useConfigStore.persist.getOptions().merge!;
+        const current = useConfigStore.getState();
+        expect(merge({ config: { channels: [] } }, current).config.autoFocusOnSelect).toBe(false);
+        expect(merge({ config: { channels: [], autoFocusOnSelect: true } }, current).config.autoFocusOnSelect).toBe(true);
+        expect(merge({ config: { channels: [], autoFocusOnSelect: 'false' } }, current).config.autoFocusOnSelect).toBe(false);
+    });
     it('does not mutate after the caller becomes inactive' , async () => {
         const original = useConfigStore.getState().config;
         await syncOpenTuModels(() => false);

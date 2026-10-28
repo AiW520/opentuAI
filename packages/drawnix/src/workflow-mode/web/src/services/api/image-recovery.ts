@@ -2,6 +2,9 @@ import axios from 'axios';
 import { providerTransport } from '../../../../../services/provider-routing/provider-transport';
 import { isTrustedTuziApiBaseUrl, isTuziRequestRecoveryBaseUrl, loadTuziApiEndpointBaseUrls, normalizeTuziApiEndpointUrl } from '../../../../../services/provider-routing/tuzi-api-endpoints';
 import { withLocalProxy } from '@/stores/use-config-store';
+import { buildImageRecoveryUrl } from '../../../../../services/image-generation-recovery-metadata';
+import { fetchImageRecovery } from '../../../../../services/image-recovery-fetch';
+import { isTauriEnvironment } from '../../../../../utils/tauri-env';
 
 /** Match canvas recovery: query the original provider, then trusted shared nodes on transport failure. */
 export async function queryWorkflowImageResult(baseUrl: string, apiKey: string, requestId: string) {
@@ -11,13 +14,26 @@ export async function queryWorkflowImageResult(baseUrl: string, apiKey: string, 
     let lastError: unknown;
     for (const target of targets) {
         try {
+            const url = buildImageRecoveryUrl(target, requestId);
+            if (!url) throw new Error('无效的图片结果查询地址');
             const prepared = providerTransport.prepareRequest({ profileId: 'workflow-local', profileName: 'Workflow', providerType: 'custom', baseUrl: target, apiKey, authType: 'bearer' }, {
-                path: '/images/generations/result', method: 'GET', baseUrlStrategy: 'ensure-v1', query: { request_id: requestId }, requestId,
+                path: '/log/get-request', method: 'GET',
             });
             const headers: Record<string, string> = {};
             new Headers(prepared.init.headers).forEach((value, name) => { headers[name] = value; });
-            const response = await axios.get(withLocalProxy(prepared.url, true), { headers, timeout: 20_000 });
-            const payload = response.data;
+            let payload: any;
+            if (isTauriEnvironment()) {
+                const response = await fetchImageRecovery(url, { headers, signal: AbortSignal.timeout(20_000) });
+                if (!response.ok) throw Object.assign(new Error('Recovery request failed'), { response: { status: response.status } });
+                payload = await response.json();
+            } else {
+                const response = await axios.get(withLocalProxy(url, true), { headers, timeout: 20_000 });
+                payload = response.data;
+            }
+            const echoedId = payload?.request_id ?? payload?.requestId;
+            if (echoedId != null && (typeof echoedId !== 'string' || echoedId.trim() !== requestId.trim())) {
+                return { status: 'processing_or_not_found' };
+            }
             if (payload && ['succeeded', 'failed', 'processing_or_not_found'].includes(payload.status)) return payload;
             lastError = new Error('结果查询返回无效响应，结果待确认');
         } catch (error) {

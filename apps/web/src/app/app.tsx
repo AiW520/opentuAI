@@ -50,6 +50,7 @@ const VIEWPORT_SAVE_DEBOUNCE = 500;
 // URL 参数名
 const BOARD_URL_PARAM = 'board';
 const BOARD_CLOSE_SNAPSHOT_KEY = 'aitu_board_close_snapshot_v1';
+const DESKTOP_LAST_BOARD_KEY = 'opentu-desktop-last-board-v1';
 
 // Global flag to prevent duplicate initialization in StrictMode
 let appInitialized = false;
@@ -135,7 +136,13 @@ async function waitForTuziStartup(
  */
 function getBoardIdFromUrl(): string | null {
   const params = new URLSearchParams(window.location.search);
-  return params.get(BOARD_URL_PARAM);
+  const boardId = params.get(BOARD_URL_PARAM);
+  if (boardId || import.meta.env.VITE_OPENTU_DESKTOP !== 'true') return boardId;
+  try {
+    return localStorage.getItem(DESKTOP_LAST_BOARD_KEY);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -151,6 +158,13 @@ function updateBoardIdInUrl(
   if (url.pathname === '/workflow' || url.pathname.startsWith('/workflow/')) return;
   if (boardId) {
     url.searchParams.set(BOARD_URL_PARAM, boardId);
+    if (import.meta.env.VITE_OPENTU_DESKTOP === 'true') {
+      try {
+        localStorage.setItem(DESKTOP_LAST_BOARD_KEY, boardId);
+      } catch {
+        // The current board remains available for this session.
+      }
+    }
   } else {
     url.searchParams.delete(BOARD_URL_PARAM);
   }

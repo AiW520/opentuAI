@@ -2,8 +2,10 @@ import '../../web/src/utils/permissions-policy-fix';
 import 'tdesign-react/es/style/css';
 import { isTauriEnvironment } from './utils/tauri-api';
 import { initializeVirtualUrlInterceptor } from './utils/virtual-url-interceptor';
+import { initializeDesktopModelSetup } from './utils/desktop-model-setup';
 import { initializeDesktopUpdater } from './utils/desktop-updater';
 import { initializeDesktopAnalytics } from './utils/desktop-analytics';
+import { initializeDesktopCanvasNavigation } from './utils/canvas-navigation';
 import { writeFile } from '@tauri-apps/plugin-fs';
 
 declare const __APP_VERSION__: string;
@@ -48,6 +50,7 @@ function hideBootScreen() {
 }
 
 if (isTauriEnvironment()) {
+  initializeDesktopCanvasNavigation();
   console.log('[Desktop] Early initialize virtual URL interceptor');
   initializeVirtualUrlInterceptor();
 }
@@ -56,9 +59,10 @@ async function bootstrap() {
   updateBootProgress(30);
 
   if (isTauriEnvironment()) {
-    const { setDesktopBinaryWriter, setSaveLocationFn } = await import(
-      '@drawnix/drawnix'
-    );
+    const [{ setDesktopBinaryWriter }, { setSaveLocationFn }] = await Promise.all([
+      import('../../../packages/drawnix/src/utils/desktop-binary-writer'),
+      import('../../../packages/drawnix/src/utils/download-utils'),
+    ]);
     setDesktopBinaryWriter(async (path, payload) => {
       const data =
         payload instanceof Blob && typeof payload.stream === 'function'
@@ -82,6 +86,7 @@ async function bootstrap() {
       if (isTauriEnvironment()) {
         initializeVirtualUrlInterceptor();
         void initializeDesktopUpdater();
+        void initializeDesktopModelSetup().catch(() => console.warn('[Desktop] 无法加载模型配置，请在设置中配置 API Key'));
       }
 
       setTimeout(hideBootScreen, 200);

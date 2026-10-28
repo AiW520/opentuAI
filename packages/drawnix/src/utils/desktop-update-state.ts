@@ -6,6 +6,7 @@ export interface DesktopUpdateState {
   progress?: number;
   restartOnly?: boolean;
   downloadUrl?: string;
+  errorMessage?: string;
 }
 
 export const DESKTOP_DOWNLOAD_PAGE = 'https://aiw520.github.io/opentuAI/download.html';
@@ -19,6 +20,7 @@ declare global {
     __OPENTU_DESKTOP_UPDATER_ACTIVE__?: boolean;
     __OPENTU_DESKTOP_UPDATE_EVENT__?: DesktopUpdateState;
     __OPENTU_DESKTOP_UPDATE_CHECK__?: DesktopUpdateCheckState;
+    __OPENTU_PREPARE_DESKTOP_UPDATE__?: () => Promise<void>;
   }
 }
 

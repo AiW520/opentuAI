@@ -9,6 +9,7 @@ import { initializeDesktopCanvasNavigation } from './utils/canvas-navigation';
 import { writeFile } from '@tauri-apps/plugin-fs';
 
 declare const __APP_VERSION__: string;
+declare const __OPENTU_DESKTOP_CHANNEL_PROOF__: string;
 
 // index.html 中的 `%__APP_VERSION__%` 占位符 Vite 不会替换，
 // 这里在引导阶段把构建时注入的版本号写回 meta，供菜单读取。
@@ -30,6 +31,13 @@ function injectAppVersionMeta() {
 }
 
 injectAppVersionMeta();
+// Keep the build channel visible for packaged-renderer verification and support.
+// Request routing reads the same build constant; the optimizer can otherwise
+// fold its comparison and remove the literal from the JavaScript bundle.
+const channelMeta = document.createElement('meta');
+channelMeta.name = 'opentu-desktop-client-channel';
+channelMeta.content = __OPENTU_DESKTOP_CHANNEL_PROOF__;
+document.head.appendChild(channelMeta);
 initializeDesktopAnalytics();
 
 function updateBootProgress(progress: number) {

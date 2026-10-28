@@ -1,196 +1,196 @@
 {
-  "tag_name": "v1.2.16-preview.1",
-  "name": "OpenTu Desktop v1.2.16-preview.1",
+  "tag_name": "v1.2.16-preview.2",
+  "name": "OpenTu Desktop v1.2.16-preview.2",
   "draft": false,
   "prerelease": true,
-  "published_at": "2026-10-26T09:30:45Z",
-  "body": "## OpenTu Desktop 1.2.16 Preview\n\n- 新增 API 站桌面渠道分析支持：签名发布包的 Tuzi 模型请求携带单一 `ch=3`。\n- 覆盖共享传输、文本、图片/视频/音频、工作流及模型插件请求边界；保留正文、鉴权、取消信号和其他查询参数。\n- 素材下载、模型元数据及第三方 API 不增加渠道参数。本地开发或未签名构建使用 `ch=0`。\n- API 站需已部署配套渠道分析服务；渠道看板依原有日终规则汇总。渠道参数仅作分析，不改变定价或认证权限。\n- 保留 1.2.15 的存储清理、更新检查、下载进度及本地数据保护功能。\n\nThis preview is signed for Tauri update integrity. macOS uses an ad-hoc application signature; Apple Developer ID signing, notarization and Windows Authenticode signing are not configured. Operating-system security warnings may appear. This is not a trusted stable release.\n\nOlder installations without the updater plugin must install this preview manually once. Existing local data is stored separately from the application bundle. Back up important work before upgrading.\n\nDownload the installer matching your OS and architecture and verify its SHA-256 checksum. `.app.tar.gz`, `.nsis.zip`, `.AppImage.tar.gz` and their `.sig` files are updater payloads, not the normal manual installers.\n",
+  "published_at": "2026-10-28T15:56:27Z",
+  "body": "## OpenTu Desktop 1.2.16 Preview\n\n- 修复普通画布与工作流的模型获取：桌面端通过原生请求访问模型 API；缺少 API Key 时提示填写，鉴权失败时显示明确错误，并保留保存后的配置。\n- 更新双画布的导航、图片恢复和上游兼容；启动恢复上次画布。\n- 桌面版与网页版分别检查各自更新，避免显示另一端的更新提示。\n- 新增 API 站桌面渠道分析支持：签名发布包的 Tuzi 模型请求携带单一 `ch=3`。\n- 覆盖共享传输、文本、图片/视频/音频、工作流及模型插件请求边界；保留正文、鉴权、取消信号和其他查询参数。\n- 素材下载、模型元数据及第三方 API 不增加渠道参数。本地开发或未签名构建使用 `ch=0`。\n- API 站需已部署配套渠道分析服务；渠道看板依原有日终规则汇总。渠道参数仅作分析，不改变定价或认证权限。\n- 保留 1.2.15 的存储清理、更新检查、下载进度及本地数据保护功能。\n\n本预览版仅具有 Tauri 更新完整性签名，macOS 使用临时签名，未经 Apple 公证，首次打开可能提示“已损坏”或“无法验证开发者”。Windows 未配置 Authenticode 签名。本预览版不是正式稳定版。\n\nmacOS：核对下载来源与 SHA-256，将应用拖入“应用程序”后，在终端执行下面两行，仅放行此应用：\n\n```bash\nxattr -dr com.apple.quarantine \"/Applications/Opentu.app\"\nopen \"/Applications/Opentu.app\"\n```\n\n如果安装在用户目录，请将路径改为 `$HOME/Applications/Opentu.app`；若提示权限不足，可在第一行 `xattr` 前添加 `sudo` 后重试。请勿关闭系统全局 Gatekeeper。此命令不会补办 Apple 签名或公证。\n\n\n应用版本号保持 **1.2.16**。已经安装 1.2.16（包括 preview.1）的用户需要手动下载并安装本次修复包；相同版本号不会触发自动升级提醒。低于 1.2.16 且已接入此更新渠道的版本可检查新版；未接入更新插件的旧版本需手动安装一次。本地数据存储在应用包之外，升级前请备份重要作品。\n\nDownload the installer matching your OS and architecture and verify its SHA-256 checksum. `.app.tar.gz`, `.nsis.zip`, `.AppImage.tar.gz` and their `.sig` files are updater payloads, not the normal manual installers.\n",
   "repository_visibility": "public",
   "assets": [
     {
       "name": "BUILD-NOTES.txt",
       "size": 215,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.1/BUILD-NOTES.txt"
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.2/BUILD-NOTES.txt"
     },
     {
       "name": "latest.json",
       "size": 4389,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.1/latest.json"
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.2/latest.json"
     },
     {
       "name": "manifest-linux-aarch64.json",
       "size": 611,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.1/manifest-linux-aarch64.json"
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.2/manifest-linux-aarch64.json"
     },
     {
       "name": "manifest-linux-x86_64.json",
       "size": 607,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.1/manifest-linux-x86_64.json"
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.2/manifest-linux-x86_64.json"
     },
     {
       "name": "manifest-macos-aarch64.json",
       "size": 432,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.1/manifest-macos-aarch64.json"
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.2/manifest-macos-aarch64.json"
     },
     {
       "name": "manifest-macos-x86_64.json",
       "size": 429,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.1/manifest-macos-x86_64.json"
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.2/manifest-macos-x86_64.json"
     },
     {
       "name": "manifest-windows-x86_64.json",
       "size": 612,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.1/manifest-windows-x86_64.json"
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.2/manifest-windows-x86_64.json"
     },
     {
       "name": "Opentu-1.2.16-linux-aarch64.AppImage",
-      "size": 90982920,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.1/Opentu-1.2.16-linux-aarch64.AppImage"
+      "size": 91056648,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.2/Opentu-1.2.16-linux-aarch64.AppImage"
     },
     {
       "name": "Opentu-1.2.16-linux-aarch64.AppImage.sha256",
       "size": 103,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.1/Opentu-1.2.16-linux-aarch64.AppImage.sha256"
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.2/Opentu-1.2.16-linux-aarch64.AppImage.sha256"
     },
     {
       "name": "Opentu-1.2.16-linux-aarch64.deb",
-      "size": 15026600,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.1/Opentu-1.2.16-linux-aarch64.deb"
+      "size": 15095790,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.2/Opentu-1.2.16-linux-aarch64.deb"
     },
     {
       "name": "Opentu-1.2.16-linux-aarch64.deb.sha256",
       "size": 98,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.1/Opentu-1.2.16-linux-aarch64.deb.sha256"
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.2/Opentu-1.2.16-linux-aarch64.deb.sha256"
     },
     {
       "name": "Opentu-1.2.16-linux-x86_64.AppImage",
-      "size": 92789240,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.1/Opentu-1.2.16-linux-x86_64.AppImage"
+      "size": 92850680,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.2/Opentu-1.2.16-linux-x86_64.AppImage"
     },
     {
       "name": "Opentu-1.2.16-linux-x86_64.AppImage.sha256",
       "size": 102,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.1/Opentu-1.2.16-linux-x86_64.AppImage.sha256"
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.2/Opentu-1.2.16-linux-x86_64.AppImage.sha256"
     },
     {
       "name": "Opentu-1.2.16-linux-x86_64.deb",
-      "size": 14841224,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.1/Opentu-1.2.16-linux-x86_64.deb"
+      "size": 14907142,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.2/Opentu-1.2.16-linux-x86_64.deb"
     },
     {
       "name": "Opentu-1.2.16-linux-x86_64.deb.sha256",
       "size": 97,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.1/Opentu-1.2.16-linux-x86_64.deb.sha256"
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.2/Opentu-1.2.16-linux-x86_64.deb.sha256"
     },
     {
       "name": "Opentu-1.2.16-macos-aarch64.dmg",
-      "size": 13287019,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.1/Opentu-1.2.16-macos-aarch64.dmg"
+      "size": 13385425,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.2/Opentu-1.2.16-macos-aarch64.dmg"
     },
     {
       "name": "Opentu-1.2.16-macos-aarch64.dmg.sha256",
       "size": 98,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.1/Opentu-1.2.16-macos-aarch64.dmg.sha256"
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.2/Opentu-1.2.16-macos-aarch64.dmg.sha256"
     },
     {
       "name": "Opentu-1.2.16-macos-x86_64.dmg",
-      "size": 13674719,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.1/Opentu-1.2.16-macos-x86_64.dmg"
+      "size": 13735498,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.2/Opentu-1.2.16-macos-x86_64.dmg"
     },
     {
       "name": "Opentu-1.2.16-macos-x86_64.dmg.sha256",
       "size": 97,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.1/Opentu-1.2.16-macos-x86_64.dmg.sha256"
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.2/Opentu-1.2.16-macos-x86_64.dmg.sha256"
     },
     {
       "name": "Opentu-1.2.16-windows-x86_64-setup.exe",
-      "size": 11277632,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.1/Opentu-1.2.16-windows-x86_64-setup.exe"
+      "size": 11368488,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.2/Opentu-1.2.16-windows-x86_64-setup.exe"
     },
     {
       "name": "Opentu-1.2.16-windows-x86_64-setup.exe.sha256",
       "size": 105,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.1/Opentu-1.2.16-windows-x86_64-setup.exe.sha256"
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.2/Opentu-1.2.16-windows-x86_64-setup.exe.sha256"
     },
     {
       "name": "Opentu-1.2.16-windows-x86_64.msi",
-      "size": 13484032,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.1/Opentu-1.2.16-windows-x86_64.msi"
+      "size": 13561856,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.2/Opentu-1.2.16-windows-x86_64.msi"
     },
     {
       "name": "Opentu-1.2.16-windows-x86_64.msi.sha256",
       "size": 99,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.1/Opentu-1.2.16-windows-x86_64.msi.sha256"
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.2/Opentu-1.2.16-windows-x86_64.msi.sha256"
     },
     {
       "name": "Opentu-linux-aarch64.AppImage.tar.gz",
-      "size": 90359908,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.1/Opentu-linux-aarch64.AppImage.tar.gz"
+      "size": 90434941,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.2/Opentu-linux-aarch64.AppImage.tar.gz"
     },
     {
       "name": "Opentu-linux-aarch64.AppImage.tar.gz.sig",
       "size": 452,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.1/Opentu-linux-aarch64.AppImage.tar.gz.sig"
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.2/Opentu-linux-aarch64.AppImage.tar.gz.sig"
     },
     {
       "name": "Opentu-linux-aarch64.deb",
-      "size": 15026600,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.1/Opentu-linux-aarch64.deb"
+      "size": 15095790,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.2/Opentu-linux-aarch64.deb"
     },
     {
       "name": "Opentu-linux-aarch64.deb.sig",
       "size": 432,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.1/Opentu-linux-aarch64.deb.sig"
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.2/Opentu-linux-aarch64.deb.sig"
     },
     {
       "name": "Opentu-linux-x86_64.AppImage.tar.gz",
-      "size": 92109975,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.1/Opentu-linux-x86_64.AppImage.tar.gz"
+      "size": 92174824,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.2/Opentu-linux-x86_64.AppImage.tar.gz"
     },
     {
       "name": "Opentu-linux-x86_64.AppImage.tar.gz.sig",
       "size": 448,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.1/Opentu-linux-x86_64.AppImage.tar.gz.sig"
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.2/Opentu-linux-x86_64.AppImage.tar.gz.sig"
     },
     {
       "name": "Opentu-linux-x86_64.deb",
-      "size": 14841224,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.1/Opentu-linux-x86_64.deb"
+      "size": 14907142,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.2/Opentu-linux-x86_64.deb"
     },
     {
       "name": "Opentu-linux-x86_64.deb.sig",
       "size": 432,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.1/Opentu-linux-x86_64.deb.sig"
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.2/Opentu-linux-x86_64.deb.sig"
     },
     {
       "name": "Opentu-macos-aarch64.app.tar.gz",
-      "size": 13442089,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.1/Opentu-macos-aarch64.app.tar.gz"
+      "size": 13516925,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.2/Opentu-macos-aarch64.app.tar.gz"
     },
     {
       "name": "Opentu-macos-aarch64.app.tar.gz.sig",
       "size": 424,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.1/Opentu-macos-aarch64.app.tar.gz.sig"
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.2/Opentu-macos-aarch64.app.tar.gz.sig"
     },
     {
       "name": "Opentu-macos-x86_64.app.tar.gz",
-      "size": 13765829,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.1/Opentu-macos-x86_64.app.tar.gz"
+      "size": 13826575,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.2/Opentu-macos-x86_64.app.tar.gz"
     },
     {
       "name": "Opentu-macos-x86_64.app.tar.gz.sig",
       "size": 424,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.1/Opentu-macos-x86_64.app.tar.gz.sig"
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.2/Opentu-macos-x86_64.app.tar.gz.sig"
     },
     {
       "name": "Opentu-windows-x86_64.nsis.zip",
-      "size": 11277784,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.1/Opentu-windows-x86_64.nsis.zip"
+      "size": 11368640,
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.2/Opentu-windows-x86_64.nsis.zip"
     },
     {
       "name": "Opentu-windows-x86_64.nsis.zip.sig",
       "size": 444,
-      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.1/Opentu-windows-x86_64.nsis.zip.sig"
+      "browser_download_url": "https://github.com/AiW520/opentuAI/releases/download/v1.2.16-preview.2/Opentu-windows-x86_64.nsis.zip.sig"
     }
   ]
 }

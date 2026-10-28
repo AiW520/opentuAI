@@ -4,6 +4,7 @@ import { Button, Dialog } from 'tdesign-react';
 import { useTaskQueue } from '../../hooks/useTaskQueue';
 import { RefreshIcon } from 'tdesign-icons-react';
 import type { DesktopUpdateState } from '../../utils/desktop-update-state';
+import { isTauriEnvironment } from '../../utils/tauri-env';
 import './version-update-prompt.scss';
 
 export const VersionUpdatePrompt: React.FC<{
@@ -24,6 +25,7 @@ export const VersionUpdatePrompt: React.FC<{
       const customEvent = event as CustomEvent;
       const newVersion = customEvent.detail?.version;
       const isDesktopUpdate = customEvent.detail?.desktop === true;
+      if (isDesktopUpdate !== isTauriEnvironment()) return;
       if (isDesktopUpdate && newVersion) {
         setUpdateAvailable(customEvent.detail);
         return;

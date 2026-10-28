@@ -5,7 +5,9 @@ import { VersionUpdatePrompt } from './version-update-prompt';
 import { publishDesktopUpdate, publishDesktopUpdateCheck } from '../../utils/desktop-update-state';
 
 const tasks = vi.hoisted(() => ({ activeTasks: [] as unknown[] }));
+const runtime = vi.hoisted(() => ({ desktop: true }));
 vi.mock('../../hooks/useTaskQueue', () => ({ useTaskQueue: () => tasks }));
+vi.mock('../../utils/tauri-env', () => ({ isTauriEnvironment: () => runtime.desktop }));
 vi.mock('tdesign-react', () => ({
   Button: ({ children, onClick, disabled }: { children: React.ReactNode; onClick: () => void; disabled?: boolean }) => <button onClick={onClick} disabled={disabled}>{children}</button>,
   Dialog: () => null,
@@ -13,11 +15,40 @@ vi.mock('tdesign-react', () => ({
 
 describe('desktop update prompt', () => {
   beforeEach(() => {
+    runtime.desktop = true;
     tasks.activeTasks = [];
     delete window.__OPENTU_DESKTOP_UPDATE_EVENT__;
     delete window.__OPENTU_DESKTOP_UPDATE_CHECK__;
   });
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  it('ignores web update events in the desktop app', () => {
+    const fetch = vi.fn();
+    vi.stubGlobal('fetch', fetch);
+    render(<VersionUpdatePrompt />);
+    act(() => window.dispatchEvent(new CustomEvent('sw-update-available', { detail: { version: '9.9.9' } })));
+    expect(screen.queryByText('发现新版本 v9.9.9')).toBeNull();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('ignores queued and live desktop update events on the web', () => {
+    runtime.desktop = false;
+    publishDesktopUpdate({ version: '9.9.9', desktop: true, status: 'ready' });
+    render(<VersionUpdatePrompt />);
+    act(() => publishDesktopUpdate({ version: '9.9.10', desktop: true, status: 'ready' }));
+    expect(screen.queryByText(/发现新版本/)).toBeNull();
+  });
+
+  it('continues to show web updates in the browser', async () => {
+    runtime.desktop = false;
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ version: '9.9.9' }) }));
+    render(<VersionUpdatePrompt />);
+    act(() => window.dispatchEvent(new CustomEvent('sw-update-available', { detail: { version: '9.9.9' } })));
+    expect(await screen.findByText('发现新版本 v9.9.9')).toBeTruthy();
+  });
 
   it('replays early updates and waits for generation tasks to finish', () => {
     publishDesktopUpdate({ version: '1.2.15', desktop: true, status: 'ready' });

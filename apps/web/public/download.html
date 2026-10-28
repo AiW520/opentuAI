@@ -87,6 +87,7 @@
       .detail { padding: 22px 0; border-top: 1px solid var(--line); }
       .detail strong { display: block; margin-bottom: 5px; font-size: 15px; }
       .detail p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.55; }
+      .detail pre { margin: 10px 0; padding: 12px; overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; font-size: 12px; line-height: 1.6; }
       .footer { display: flex; justify-content: space-between; gap: 18px; padding: 28px 0 40px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
       .footer a { text-decoration: none; }
       .footer a:hover { color: var(--ink); }
@@ -146,9 +147,10 @@
           </div>
         </div>
         <div class="details">
-          <article class="detail"><strong>macOS 首次安装</strong><p>打开 DMG，将 Opentu 拖到“应用程序”后启动。预览版尚未完成 Apple 公证；如被拦截，请在“系统设置 → 隐私与安全性”中确认“仍要打开”。</p></article>
+          <article class="detail"><strong>macOS 首次安装</strong><p>打开 DMG，将 Opentu 拖到“应用程序”后启动。预览版尚未完成 Apple 公证；如提示“已损坏”或“无法验证开发者”，核对下载来源与 SHA-256 后，在终端执行：</p><pre><code>xattr -dr com.apple.quarantine "/Applications/Opentu.app"
+open "/Applications/Opentu.app"</code></pre><p>安装路径不同时，请替换实际路径。这仅手动放行此应用，不代表已通过 Apple 公证。</p></article>
           <article class="detail"><strong>文件完整性</strong><p>提供校验文件的安装包会显示 SHA-256 链接。未提供时会明确标注。</p></article>
-          <article class="detail"><strong>开源透明</strong><p>源代码、更新日志和所有历史产物都保留在 GitHub，版本来源清晰可查。</p></article>
+          <article class="detail"><strong>版本更新</strong><p>应用会检查更高版本。已安装 1.2.16 的用户升级本次预览修复包时，请手动下载并安装；相同版本号不会触发自动升级提醒。源代码、更新日志和历史产物可在 GitHub 查看。</p></article>
         </div>
       </section>
     </main>

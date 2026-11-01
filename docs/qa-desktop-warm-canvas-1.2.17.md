@@ -32,3 +32,17 @@ No new data fields, migrations, paid generation, or upstream synchronization are
 Use `.github/workflows/desktop-update-preview.yml` on the public repository's main branch. The workflow builds five platform/architecture targets, checks native core and desktop tests, verifies updater signatures and installer checksums, and publishes the updater/download manifests only after complete artifact validation.
 
 This remains a preview release: Tauri updater integrity signatures are configured; Apple Developer ID notarization and Windows Authenticode are not. No real in-place native upgrade or real provider generation has been verified for this revision. Do not report those scenarios as passed.
+
+## Published result
+
+- Published `v1.2.17-preview.1` from source `91e2dedf06df1c852cdf70a92fba751837a6db93` in `AiW520/opentuAI` on 2026-11-01.
+- Update-signed preview workflow `41269194436` succeeded: validation, all five platform builds, complete-asset/signature verification, publication and Pages deployment.
+- Independent Desktop Verification Build `41269181873` also succeeded.
+- Download channel commit: `48f14a9ae5fa5bcce7ad5590ad06af2b72688db5`.
+- Post-publication checks verified all five build manifests against the source/version/channel/profile, eight installer HTTP 200 responses and lengths, GitHub asset SHA-256 digests against each manifest/checksum file, and all seven updater signature strings against the published update manifest. Signing key IDs match `v1.2.16-preview.2`.
+- Live Pages download metadata points to `v1.2.17-preview.1`; live `latest.json` matches the release manifest and advertises `1.2.17`. The redesigned download page is live.
+- Evidence is retained locally in `outputs/desktop-release-1.2.17/published-verification.json` and accompanying public release metadata/logs. Machine-specific preview scripts, logs and dependency links were not published as source.
+
+## Separate general CI failures
+
+General Web CI run `41269181822` is not a passing product-wide regression acceptance. Its Linux browser-install steps failed because `ubuntu-latest` supplied Ubuntu 26.04 while the locked Playwright 1.57.0 does not support that OS. The independent macOS visual-regression job passed 38 tests and failed two: a 720x509 versus 720x510 input screenshot and the mobile-landscape snapshot. The mobile-landscape failure also appears in previous run `40709750953`. These checks and snapshot baselines were not disabled or relaxed. The successful desktop release workflow is separate from those unresolved Web checks.

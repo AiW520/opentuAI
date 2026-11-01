@@ -92,6 +92,8 @@ import { ToolbarConfigProvider } from './hooks/use-toolbar-config';
 import { CacheQuotaProvider } from './components/cache-quota-provider/CacheQuotaProvider';
 import { RecentColorsProvider } from './components/unified-color-picker';
 import { usePencilCursor } from './hooks/usePencilCursor';
+import { useDesktopCanvasBackground } from './hooks/useDesktopCanvasBackground';
+import { isTauriEnvironment } from './utils/tauri-env';
 import { withArrowLineAutoCompleteExtend } from './plugins/with-arrow-line-auto-complete-extend';
 import { withFlowchartShortcut } from './plugins/with-flowchart-shortcut';
 import { withFrame } from './plugins/with-frame';
@@ -1198,6 +1200,7 @@ const DrawnixContent: React.FC<DrawnixContentProps> = ({
 
   // 画笔自定义光标
   usePencilCursor({ board, pointer: appState.pointer });
+  useDesktopCanvasBackground(board);
 
   // 标签页同步
   useTabSync({
@@ -1834,6 +1837,7 @@ const DrawnixContent: React.FC<DrawnixContentProps> = ({
           onValueChange={onValueChange}
         >
           <Board
+            className={isTauriEnvironment() ? 'desktop-warm-canvas' : undefined}
             afterInit={(board) => {
               setBoard(board as DrawnixBoard);
               // 挂载 board 实例到 window，供知识库等外部模块访问

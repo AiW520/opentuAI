@@ -37,6 +37,16 @@
     'PingFang SC', 'Noto Sans', 'Noto Sans CJK SC', 'Microsoft Yahei',
     'Hiragino Sans GB', Arial, sans-serif;
 
+  // Desktop default/light canvas only; preserve explicitly selected color themes.
+  .desktop-warm-canvas:is(.theme-default, .theme-colorful) {
+    background-color: #fcfaf6;
+    background-image: radial-gradient(circle, #d8cebf var(--desktop-dot-size, .7px), transparent calc(var(--desktop-dot-size, .7px) + .15px));
+    background-size: var(--desktop-dot-gap, 24px) var(--desktop-dot-gap, 24px);
+    background-position: var(--desktop-dot-position, -12px -12px);
+
+    .board-host-svg { background-color: transparent; }
+  }
+
   // Sidebar layout mode
   &--with-sidebar {
     display: flex;

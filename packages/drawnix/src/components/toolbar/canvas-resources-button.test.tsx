@@ -3,6 +3,9 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CanvasResourcesButton, CANVAS_RESOURCES_ACK_KEY } from './canvas-resources-button';
 
+const runtime = vi.hoisted(() => ({ desktop: false }));
+vi.mock('../../utils/tauri-env', () => ({ isTauriEnvironment: () => runtime.desktop }));
+
 vi.mock('@plait-board/react-board', () => ({ useBoard: () => ({}) }));
 vi.mock('@plait/core', () => ({
   PlaitBoard: { getBoardContainer: () => document.body },
@@ -11,6 +14,7 @@ vi.mock('../../i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }));
 vi.mock('lucide-react', () => ({
   ArrowUpRight: () => null,
   Download: () => null,
+  BookOpen: () => null,
   ExternalLink: () => null,
   X: () => null,
 }));
@@ -31,6 +35,7 @@ describe('CanvasResourcesButton', () => {
   let root: Root;
 
   beforeEach(() => {
+    runtime.desktop = false;
     localStorage.removeItem(CANVAS_RESOURCES_ACK_KEY);
     container = document.createElement('div');
     document.body.append(container);
@@ -92,6 +97,19 @@ describe('CanvasResourcesButton', () => {
       expect(link.target).toBe('_blank');
       expect(link.rel).toBe('noopener noreferrer');
     });
+  });
+
+  it('keeps desktop resources manual and omits the desktop download promotion', async () => {
+    runtime.desktop = true;
+    await render();
+    expect(panel()).toBeNull();
+    expect(localStorage.getItem(CANVAS_RESOURCES_ACK_KEY)).toBeNull();
+    await click('[data-testid="toolbar-resources"]');
+    expect(Array.from(panel()!.querySelectorAll('a'), link => link.href)).toEqual([
+      'https://x.com/shuidiyuAI',
+    ]);
+    await click('[aria-label="resources.close"]');
+    expect(panel()).toBeNull();
   });
 
   it('does not announce an acknowledged release and dismisses reopened panels', async () => {

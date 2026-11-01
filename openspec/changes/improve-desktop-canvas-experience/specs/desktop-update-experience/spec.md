@@ -8,6 +8,11 @@ The desktop app SHALL own one shared update notification/check surface outside c
 - **THEN** the discovered version SHALL remain available and the update action SHALL be visible in both canvas modes when safe
 - **AND** the app SHALL NOT download/install/relaunch without user confirmation
 
+#### Scenario: Update discovered during generation
+- **WHEN** a desktop update is available while the shared task queue contains active generation tasks
+- **THEN** the release notification SHALL remain visible with an explanation that generation must finish
+- **AND** the install action SHALL remain disabled until those tasks finish, without automatically starting installation afterward
+
 ### Requirement: Update relaunch preserves active work
 Update install/relaunch SHALL account for active generation/recovery and pending durable writes from both canvases, flush required data before relaunch, and expose actionable failure without reporting a successful restart prematurely.
 

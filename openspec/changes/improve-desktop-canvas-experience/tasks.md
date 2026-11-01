@@ -31,6 +31,8 @@
 - [ ] 5.5 Update changelog/pending-test/QA and prepare reviewable artifacts; publish only after actual checks and release authorization.
 
 ## Progress notes
+- Warm-white fine-dot follow-up verification: 28 focused tests, desktop typecheck, strict spec validation and diff checks passed. Browser checks verified world-aligned dots, pan/zoom/resize/theme switching, byte-identical PNG exports and opening the existing batch generation tool. Evidence is in `outputs/desktop-warm-canvas-qa/`; Tauri bridge was mocked, no generation was submitted and no native release/upgrade was performed.
+- User selected the warm-white fine-dot free-canvas design and explicitly requested reuse of the existing batch generation tool. The follow-up is limited to the default desktop background, redundant promotion removal and visible-but-blocked update reminders during generation. No batch tool redesign or version publication is included.
 - Added desktop last-canvas navigation and last free-board preference; native restoration and the newer local shell still require end-to-end verification.
 - Narrowed desktop startup imports and changed both existing query paths to `/log/get-request?id=`. No startup latency improvement has yet been measured.
 - Focused recovery, desktop navigation and updater unit tests and desktop renderer build/typecheck passed. The shared update prompt was checked in both canvas views in an isolated browser; native upgrade and cross-runtime guard acceptance remain open.

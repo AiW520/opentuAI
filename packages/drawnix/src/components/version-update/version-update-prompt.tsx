@@ -123,8 +123,8 @@ export const VersionUpdatePrompt: React.FC<{
     window.dispatchEvent(new CustomEvent('user-confirmed-upgrade'));
   };
 
-  // Only show if update is available AND no active tasks
-  if (!updateAvailable || (activeTasks.length > 0 && !busy)) {
+  // Desktop users can see a release while generating; installation still waits.
+  if (!updateAvailable || (!desktopUpdate && activeTasks.length > 0 && !busy)) {
     return null;
   }
 
@@ -157,12 +157,15 @@ export const VersionUpdatePrompt: React.FC<{
             theme="primary" 
             size="small" 
             onClick={handleUpdate}
-            disabled={busy}
+            disabled={busy || activeTasks.length > 0}
             loading={busy}
             icon={<RefreshIcon />}
           >
             {actionLabel}
           </Button>
+          {desktopUpdate && activeTasks.length > 0 && !busy && (
+            <span className="version-update-prompt__text">生成任务进行中，完成后可更新</span>
+          )}
           {prepareError && <span role="alert" className="version-update-prompt__text">{prepareError}</span>}
         </div>
       </div>

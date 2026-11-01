@@ -1,5 +1,24 @@
 ## ADDED Requirements
 
+### Requirement: Desktop free canvas uses the approved warm-white dot background
+The desktop default/colorful free-canvas theme SHALL use the approved warm-white fine-dot design (#fcfaf6 background, #d8cebf dots, 24 world-unit spacing). The pattern SHALL track viewport pan/zoom as an HTML-only presentation layer, preserve explicit alternative themes and web styling, and SHALL NOT alter document elements, exports, the existing toolbar/input layout, or the existing batch image generation tool.
+
+#### Scenario: Pan, zoom and export
+- **WHEN** the user pans or zooms the desktop free canvas
+- **THEN** the dot grid SHALL remain anchored to canvas coordinates
+- **AND** exporting or saving canvas content SHALL NOT include the decorative dots
+
+#### Scenario: Existing generation workflow
+- **WHEN** the user opens batch image generation
+- **THEN** the existing tool, task queue, imports and exports SHALL be reused without a replacement side panel
+
+### Requirement: Desktop omits redundant download promotion
+The desktop resource menu SHALL omit the desktop-download card and automatic first-run promotional popup while keeping the remaining resources manually accessible. The web download promotion SHALL remain available.
+
+#### Scenario: Desktop resource menu
+- **WHEN** a desktop canvas opens and the user later opens its resources manually
+- **THEN** no download promotion SHALL be shown and the author resource link SHALL remain available
+
 ### Requirement: Desktop enters the user's canvas directly
 The desktop app SHALL restore the last valid free/infinite canvas and project, default to free canvas on first use, and omit featured-home entry and return navigation. It SHALL preserve project selection, settings, tasks and switching between both canvases without changing the web homepage.
 

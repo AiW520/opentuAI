@@ -51,15 +51,42 @@ describe('desktop update prompt', () => {
   });
 
   it('replays early updates and waits for generation tasks to finish', () => {
-    publishDesktopUpdate({ version: '1.2.15', desktop: true, status: 'ready' });
+    const confirm = vi.fn();
+    window.addEventListener('user-confirmed-upgrade', confirm);
+    try {
+      publishDesktopUpdate({ version: '1.2.15', desktop: true, status: 'ready' });
+      tasks.activeTasks = [{}];
+      const view = render(<VersionUpdatePrompt />);
+      expect(screen.getByText('发现新版本 v1.2.15')).toBeTruthy();
+      expect(screen.getByText('生成任务进行中，完成后可更新')).toBeTruthy();
+      const updateButton = screen.getByRole('button', { name: '立即更新' }) as HTMLButtonElement;
+      expect(updateButton.disabled).toBe(true);
+      fireEvent.click(updateButton);
+      expect(confirm).not.toHaveBeenCalled();
+      tasks.activeTasks = [];
+      view.rerender(<VersionUpdatePrompt />);
+      expect(screen.getByText('发现新版本 v1.2.15')).toBeTruthy();
+      expect(updateButton.disabled).toBe(false);
+      expect(confirm).not.toHaveBeenCalled();
+      fireEvent.click(updateButton);
+      expect(confirm).toHaveBeenCalledTimes(1);
+      act(() => publishDesktopUpdateCheck({ status: 'current' }));
+      expect(screen.queryByText('发现新版本 v1.2.15')).toBeNull();
+    } finally {
+      window.removeEventListener('user-confirmed-upgrade', confirm);
+    }
+  });
+
+  it('keeps web update prompts hidden while generation is active', async () => {
+    runtime.desktop = false;
     tasks.activeTasks = [{}];
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ version: '9.9.9' }) }));
     const view = render(<VersionUpdatePrompt />);
-    expect(screen.queryByText('发现新版本 v1.2.15')).toBeNull();
+    await act(async () => window.dispatchEvent(new CustomEvent('sw-update-available', { detail: { version: '9.9.9' } })));
+    expect(screen.queryByText('发现新版本 v9.9.9')).toBeNull();
     tasks.activeTasks = [];
     view.rerender(<VersionUpdatePrompt />);
-    expect(screen.getByText('发现新版本 v1.2.15')).toBeTruthy();
-    act(() => publishDesktopUpdateCheck({ status: 'current' }));
-    expect(screen.queryByText('发现新版本 v1.2.15')).toBeNull();
+    expect(screen.getByText('发现新版本 v9.9.9')).toBeTruthy();
   });
 
   it('disables repeated installation and keeps failed restart visible', () => {

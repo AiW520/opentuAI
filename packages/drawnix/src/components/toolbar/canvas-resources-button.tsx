@@ -1,7 +1,8 @@
 import React, { useId, useState } from 'react';
 import { useBoard } from '@plait-board/react-board';
 import { PlaitBoard } from '@plait/core';
-import { ArrowUpRight, Download, X } from 'lucide-react';
+import { ArrowUpRight, BookOpen, Download, X } from 'lucide-react';
+import { isTauriEnvironment } from '../../utils/tauri-env';
 import { useI18n } from '../../i18n';
 import { ToolButton } from '../tool-button';
 import { Popover, PopoverContent, PopoverTrigger } from '../popover/popover';
@@ -33,8 +34,9 @@ export const CanvasResourcesButton: React.FC = () => {
   const board = useBoard();
   const { t } = useI18n();
   const titleId = useId();
+  const desktop = isTauriEnvironment();
   const [needsAcknowledgement, setNeedsAcknowledgement] = useState(
-    () => !isAcknowledged()
+    () => !desktop && !isAcknowledged()
   );
   const [open, setOpen] = useState(needsAcknowledgement);
 
@@ -64,7 +66,7 @@ export const CanvasResourcesButton: React.FC = () => {
       <PopoverTrigger asChild>
         <ToolButton
           type="icon"
-          icon={<Download size={20} />}
+          icon={desktop ? <BookOpen size={20} /> : <Download size={20} />}
           className="canvas-resources-trigger"
           aria-label={t('resources.title')}
           tooltip={t('resources.title')}
@@ -96,21 +98,23 @@ export const CanvasResourcesButton: React.FC = () => {
             <X size={18} />
           </button>
         </div>
-        <a
-          className="canvas-resources__link"
-          href="https://aiw520.github.io/opentuAI/download.html"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <span className="canvas-resources__icon canvas-resources__icon--download">
-            <Download size={20} />
-          </span>
-          <span className="canvas-resources__text">
-            <strong>{t('resources.download')}</strong>
-            <span>{t('resources.downloadDescription')}</span>
-          </span>
-          <ArrowUpRight size={17} aria-hidden="true" />
-        </a>
+        {!desktop && (
+          <a
+            className="canvas-resources__link"
+            href="https://aiw520.github.io/opentuAI/download.html"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            <span className="canvas-resources__icon canvas-resources__icon--download">
+              <Download size={20} />
+            </span>
+            <span className="canvas-resources__text">
+              <strong>{t('resources.download')}</strong>
+              <span>{t('resources.downloadDescription')}</span>
+            </span>
+            <ArrowUpRight size={17} aria-hidden="true" />
+          </a>
+        )}
         <a
           className="canvas-resources__link"
           href="https://x.com/shuidiyuAI"

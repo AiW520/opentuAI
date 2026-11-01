@@ -140,7 +140,7 @@ export const VersionUpdatePrompt: React.FC<{
               : desktopUpdate?.status === 'restarting'
               ? '更新已安装，正在重启'
               : desktopUpdate?.status === 'error'
-              ? desktopUpdate.errorMessage || (desktopUpdate.restartOnly ? '更新已安装，重启失败' : desktopUpdate.downloadUrl ? '下载页面打开失败，请重试' : '更新失败，请检查网络后重试')
+              ? desktopUpdate.errorMessage || (desktopUpdate.restartOnly ? '更新已安装，重启失败' : desktopUpdate.downloadUrl ? '下载页面打开失败，请重试' : '更新未完成，请重试或手动安装新版')
               : `发现新版本 v${updateAvailable.version}`}
           </span>
           {updateAvailable.changelog && updateAvailable.changelog.length > 0 && (

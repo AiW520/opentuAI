@@ -1,4 +1,8 @@
-## OpenTu Desktop 1.2.17 Preview
+## OpenTu Desktop 1.2.17 Preview 2
+
+- 修复更新包下载继承 15 秒检查超时的问题，下载超时独立调整为 30 分钟。
+- 保留原生更新错误详情，区分下载校验、安装准备、安装和重启失败；只读磁盘和权限错误提供对应处理方法。
+- 应用版本保持 **1.2.17**。已安装 1.2.17 的用户不会收到同版本修订的自动升级提醒，请手动下载本次安装包，退出应用后覆盖安装。
 
 - 桌面自由画布采用暖白细点背景，点阵随平移、缩放变化；导出图片不包含装饰点阵。
 - 继续复用已有批量生图工具及工作流程。
@@ -19,6 +23,6 @@ open "/Applications/Opentu.app"
 如果安装在用户目录，请将路径改为 `$HOME/Applications/Opentu.app`；若提示权限不足，可在第一行 `xattr` 前添加 `sudo` 后重试。请勿关闭系统全局 Gatekeeper。此命令不会补办 Apple 签名或公证。
 
 
-应用版本号升至 **1.2.17**。已安装 1.2.16（包括 preview.1 / preview.2）及更早版本、且已接入此更新渠道的客户端可检查新版；未接入更新插件的旧版本需手动安装一次。本地数据存储在应用包之外，升级前请备份重要作品。
+已安装 1.2.16（包括 preview.1 / preview.2）及更早版本、且已接入此更新渠道的客户端可检查新版；但旧客户端仍可能受原有下载超时影响，遇到失败请手动安装。未接入更新插件的旧版本也需手动安装一次。macOS 请将应用拖入“应用程序”，从那里启动，不要直接从只读 DMG 内运行后尝试更新。本地数据存储在应用包之外，升级前请备份重要作品。
 
 Download the installer matching your OS and architecture and verify its SHA-256 checksum. `.app.tar.gz`, `.nsis.zip`, `.AppImage.tar.gz` and their `.sig` files are updater payloads, not the normal manual installers.

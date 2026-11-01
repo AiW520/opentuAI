@@ -75,6 +75,32 @@ describe('desktop updater', () => {
     expect(download).toHaveBeenCalledTimes(2);
   });
 
+  it('allows a slow download to finish after the metadata-check timeout', async () => {
+    vi.useFakeTimers();
+    try {
+      const download = vi.fn((_callback, options?: { timeout?: number }) => {
+        const timeout = options?.timeout ?? 15000;
+        return new Promise<void>((resolve, reject) => {
+          setTimeout(() => timeout < 20000 ? reject('request timed out') : resolve(), Math.min(timeout, 20000));
+        });
+      });
+      const install = vi.fn().mockResolvedValue(undefined);
+      mocks.check.mockResolvedValue({ version: '1.2.17', download, install });
+      const { initializeDesktopUpdater } = await import('./desktop-updater');
+      await initializeDesktopUpdater();
+      expect(mocks.check).toHaveBeenCalledWith({ timeout: 15000 });
+      confirm();
+      await vi.advanceTimersByTimeAsync(16000);
+      expect(window.__OPENTU_DESKTOP_UPDATE_EVENT__?.status).toBe('downloading');
+      expect(install).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(4000);
+      await vi.waitFor(() => expect(mocks.relaunch).toHaveBeenCalledTimes(1));
+      expect(install).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('retries only restart after the update was installed', async () => {
     const download = vi.fn().mockResolvedValue(undefined);
     const install = vi.fn().mockResolvedValue(undefined);
@@ -88,6 +114,47 @@ describe('desktop updater', () => {
     await vi.waitFor(() => expect(mocks.relaunch).toHaveBeenCalledTimes(2));
     expect(download).toHaveBeenCalledTimes(1);
     expect(install).toHaveBeenCalledTimes(1);
+  });
+
+  it('explains native string errors from a read-only installation without redownloading', async () => {
+    const download = vi.fn().mockResolvedValue(undefined);
+    const install = vi.fn().mockRejectedValue('Read-only file system (os error 30)');
+    mocks.check.mockResolvedValue({ version: '1.2.17', download, install });
+    const { initializeDesktopUpdater } = await import('./desktop-updater');
+    await initializeDesktopUpdater();
+    confirm();
+    await vi.waitFor(() => expect(window.__OPENTU_DESKTOP_UPDATE_EVENT__?.errorMessage).toContain('只读'));
+    expect(window.__OPENTU_DESKTOP_UPDATE_EVENT__?.errorMessage).toContain('应用程序');
+    expect(window.__OPENTU_DESKTOP_UPDATE_EVENT__?.restartOnly).toBe(false);
+    expect(mocks.relaunch).not.toHaveBeenCalled();
+    confirm();
+    await vi.waitFor(() => expect(install).toHaveBeenCalledTimes(2));
+    expect(download).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['network error while downloading', '更新包下载或校验失败：network error while downloading'],
+    [{ message: 'signature verification failed' }, '更新包下载或校验失败：signature verification failed'],
+    [null, '更新包下载或校验失败，请重试或手动安装新版'],
+  ])('preserves download error details and stage for %j', async (error, expected) => {
+    const install = vi.fn();
+    mocks.check.mockResolvedValue({ version: '1.2.17', download: vi.fn().mockRejectedValue(error), install });
+    const { initializeDesktopUpdater } = await import('./desktop-updater');
+    await initializeDesktopUpdater();
+    confirm();
+    await vi.waitFor(() => expect(window.__OPENTU_DESKTOP_UPDATE_EVENT__?.errorMessage).toBe(expected));
+    expect(install).not.toHaveBeenCalled();
+    expect(mocks.relaunch).not.toHaveBeenCalled();
+  });
+
+  it('explains permission failures without reporting them as a network error', async () => {
+    mocks.check.mockResolvedValue({ version: '1.2.17', download: vi.fn().mockResolvedValue(undefined),
+      install: vi.fn().mockRejectedValue(new Error('Permission denied (os error 13)')) });
+    const { initializeDesktopUpdater } = await import('./desktop-updater');
+    await initializeDesktopUpdater();
+    confirm();
+    await vi.waitFor(() => expect(window.__OPENTU_DESKTOP_UPDATE_EVENT__?.errorMessage).toContain('写入权限'));
+    expect(mocks.relaunch).not.toHaveBeenCalled();
   });
 
   it('does not announce automatic updates when the plugin is unavailable', async () => {

@@ -21,6 +21,8 @@ const {
   requestContextMock,
   queueNavigationMock,
   saveActiveGroupMock,
+  useModelPriceMock,
+  useModelPriceTextMock,
 } = vi.hoisted(() => ({
   discoverMock: vi.fn(),
   applySelectionMock: vi.fn(),
@@ -30,6 +32,8 @@ const {
   requestContextMock: vi.fn(),
   queueNavigationMock: vi.fn(),
   saveActiveGroupMock: vi.fn(),
+  useModelPriceMock: vi.fn(),
+  useModelPriceTextMock: vi.fn(),
 }));
 
 vi.mock('../../utils/runtime-model-discovery', () => ({
@@ -99,7 +103,8 @@ vi.mock('../../utils/settings-manager', () => ({
 
 vi.mock('../../hooks/use-model-pricing', () => ({
   useFormattedModelPrice: () => '',
-  useModelPriceText: () => ({ summary: '', detail: '' }),
+  useModelPrice: useModelPriceMock,
+  useModelPriceText: useModelPriceTextMock,
   useModelMeta: () => null,
 }));
 
@@ -119,6 +124,10 @@ vi.mock('../shared/ModelBenchmarkBadge', () => ({
 
 describe('ModelDropdown', () => {
   beforeEach(() => {
+    useModelPriceMock.mockClear();
+    useModelPriceTextMock.mockClear();
+    useModelPriceMock.mockReturnValue(null);
+    useModelPriceTextMock.mockReturnValue({ summary: '', detail: '' });
     isTuziEmbeddedModeMock.mockReturnValue(false);
     requestContextMock.mockResolvedValue(null);
     discoverMock.mockResolvedValue([]);
@@ -153,6 +162,150 @@ describe('ModelDropdown', () => {
     sourceProfileName: 'Tuzi Provider',
     selectionKey: 'tuzi-provider::gpt-image-2',
   };
+
+  const sunoModels: ModelConfig[] = [
+    { id: 'suno_act_unknown', label: 'suno_act_unknown' },
+    { id: 'suno_persona_unknown', label: 'Suno Persona' },
+    { id: 'suno/persona', label: '音色创建' },
+    { id: 'suno_music', label: 'Suno 音乐' },
+  ].map((model) => ({ ...baseModel, ...model, type: 'audio', vendor: ModelVendor.SUNO,
+    shortCode: undefined, selectionKey: `tuzi-provider::${model.id}` }));
+
+  function enableMenuLayout() {
+    // JSDOM has no layout; a nonzero trigger width makes the portal accessible.
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+      x: 0, y: 0, left: 0, top: 0, right: 400, bottom: 32, width: 400, height: 32,
+      toJSON: () => ({}),
+    });
+  }
+
+  it('hides token input/output prices without hiding the model', () => {
+    enableMenuLayout();
+    useModelPriceMock.mockReturnValue({ billingType: 'token' });
+    const summary = '输入 ¥3.50 · 补全 ¥7.00 / 1M Tokens';
+    useModelPriceTextMock.mockReturnValue({ summary, detail: summary });
+    const onSelect = vi.fn();
+    render(<ModelDropdown selectedModel={baseModel.id} models={[baseModel]}
+      onSelect={onSelect} isOpen />);
+    expect(screen.queryByText(summary)).toBeNull();
+    const option = screen.getByRole('option', { name: /GPT Image 2/ });
+    fireEvent.click(option);
+    expect(onSelect).toHaveBeenCalledWith(baseModel.id, {
+      profileId: 'tuzi-provider', modelId: baseModel.id,
+    });
+  });
+
+  it.each([
+    ['flat', '¥0.03/次'],
+    ['per-second', '¥0.50/秒'],
+    ['tiered', '720p ¥0.50/秒'],
+  ])('hides %s prices in the model list', (billingType, summary) => {
+    enableMenuLayout();
+    useModelPriceMock.mockReturnValue({ billingType });
+    useModelPriceTextMock.mockReturnValue({ summary, detail: summary });
+    render(<ModelDropdown selectedModel={baseModel.id} models={[baseModel]}
+      onSelect={vi.fn()} isOpen />);
+    expect(screen.queryByText(summary)).toBeNull();
+    expect(useModelPriceMock).not.toHaveBeenCalled();
+    expect(useModelPriceTextMock).not.toHaveBeenCalled();
+  });
+
+  it('uses the built-in introduction instead of marketplace promotions', () => {
+    enableMenuLayout();
+    const description = '量大可以享有专享折扣（低至 0.01 元/张），1 万张/日额度。';
+    const model = { ...baseModel, description };
+    render(<ModelDropdown selectedModel={model.id} models={[model]}
+      onSelect={vi.fn()} isOpen />);
+    expect(screen.queryByText(description)).toBeNull();
+    expect(screen.getByText(/OpenAI GPT Image 2 图片生成模型/)).toBeTruthy();
+  });
+
+  it('uses a neutral introduction when a dynamic model only has promotional text', () => {
+    enableMenuLayout();
+    const description = '量大可以享有专享折扣（低至 0.01 元/张），1 万张/日额度。';
+    const model = { ...baseModel, id: 'custom-image', description };
+    render(<ModelDropdown selectedModel={model.id} models={[model]}
+      onSelect={vi.fn()} isOpen />);
+    expect(screen.queryByText(description)).toBeNull();
+    expect(screen.getByText('OpenAI 图片模型')).toBeTruthy();
+  });
+
+  it('keeps a short capability introduction without raw emphasis or later pricing paragraphs', () => {
+    enableMenuLayout();
+    const model = { ...baseModel, id: 'custom-image',
+      description: '**Custom Image** 支持图像生成和编辑。\n\n价格 ¥0.03/次，专享折扣。' };
+    render(<ModelDropdown selectedModel={model.id} models={[model]}
+      onSelect={vi.fn()} isOpen />);
+    expect(screen.getByText('Custom Image 支持图像生成和编辑。')).toBeTruthy();
+    expect(screen.queryByText(/专享折扣/)).toBeNull();
+  });
+
+  it('shows native Suno IDs and hides unsupported entries without silently replacing a saved selection', () => {
+    enableMenuLayout();
+    const onSelect = vi.fn();
+    render(<ModelDropdown selectedModel="suno_act_unknown" selectedSelectionKey="tuzi-provider::suno_act_unknown"
+      models={sunoModels} onSelect={onSelect} isOpen />);
+    expect(screen.getByRole('status').textContent).toContain('suno_act_unknown 尚未接入');
+    expect(screen.queryByRole('option', { name: /suno_act_unknown/ })).toBeNull();
+    expect(screen.queryByRole('option', { name: /Suno Persona/ })).toBeNull();
+    expect(screen.getByText('suno/persona')).toBeTruthy();
+    expect(screen.getByRole('option', { name: /Suno 音乐/ })).toBeTruthy();
+    expect(onSelect).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('option', { name: /音色创建/ }));
+    expect(onSelect).toHaveBeenCalledWith('suno/persona', { profileId: 'tuzi-provider', modelId: 'suno/persona' });
+  });
+
+  it('keeps unsupported entries inspectable but disabled for clicks and keyboard selection', () => {
+    enableMenuLayout();
+    const onSelect = vi.fn();
+    render(<ModelDropdown selectedModel="suno/persona" selectedSelectionKey="tuzi-provider::suno/persona"
+      models={sunoModels.filter((model) => model.id !== 'suno_music')} onSelect={onSelect} isOpen />);
+    fireEvent.click(screen.getByRole('checkbox', { name: '显示未接入的 Suno 入口（2）' }));
+    const unsupported = screen.getByRole('option', { name: /suno_act_unknown/ });
+    expect(unsupported.getAttribute('aria-disabled')).toBe('true');
+    fireEvent.click(unsupported);
+    expect(onSelect).not.toHaveBeenCalled();
+    const search = screen.getByPlaceholderText('搜索模型名 / 展示名 / 供应商');
+    fireEvent.keyDown(search, { key: 'ArrowDown' });
+    fireEvent.keyDown(search, { key: 'Enter' });
+    expect(onSelect).toHaveBeenCalledWith('suno/persona', { profileId: 'tuzi-provider', modelId: 'suno/persona' });
+  });
+
+  it('searches supported Suno actions by exact ID and does not reintroduce hidden legacy entries', () => {
+    enableMenuLayout();
+    render(<ModelDropdown selectedModel="suno/persona" selectedSelectionKey="tuzi-provider::suno/persona"
+      models={sunoModels} onSelect={vi.fn()} isOpen />);
+    const search = screen.getByPlaceholderText('搜索模型名 / 展示名 / 供应商');
+    fireEvent.change(search, { target: { value: 'persona' } });
+    expect(screen.getAllByRole('option')).toHaveLength(1);
+    expect(screen.getByRole('option', { name: /suno\/persona/ })).toBeTruthy();
+    fireEvent.click(screen.getByRole('checkbox', { name: '显示未接入的 Suno 入口（2）' }));
+    expect(screen.getAllByRole('option')).toHaveLength(2);
+  });
+
+  it('enables documented native MP4 and Persona entries with complete model IDs', () => {
+    enableMenuLayout(); const onSelect = vi.fn();
+    const models = ['suno_act_mp4', 'suno_persona_create'].map((id) => ({ ...baseModel, id, label: id, type: 'audio' as const, vendor: ModelVendor.SUNO, selectionKey: `tuzi-provider::${id}` }));
+    render(<ModelDropdown selectedModel="suno_act_mp4" models={models} onSelect={onSelect} isOpen />);
+    const mp4 = screen.getByRole('option', { name: /suno_act_mp4/ });
+    expect(mp4.getAttribute('aria-disabled')).not.toBe('true');
+    fireEvent.click(mp4);
+    expect(onSelect).toHaveBeenCalledWith('suno_act_mp4', { profileId: 'tuzi-provider', modelId: 'suno_act_mp4' });
+  });
+
+  it('hides the three excluded v2 models and keeps inspected entries disabled', () => {
+    enableMenuLayout(); const onSelect = vi.fn();
+    const ids = ['suno/create-voice', 'suno/add-instrumental', 'suno/add-vocals'];
+    const models = [...ids, 'suno/music'].map((id) => ({ ...baseModel, id, label: id, type: 'audio' as const, vendor: ModelVendor.SUNO, selectionKey: `tuzi-provider::${id}` }));
+    render(<ModelDropdown selectedModel="suno/music" models={models} onSelect={onSelect} isOpen />);
+    for (const id of ids) expect(screen.queryByRole('option', { name: new RegExp(id) })).toBeNull();
+    fireEvent.click(screen.getByRole('checkbox', { name: '显示未接入的 Suno 入口（3）' }));
+    for (const id of ids) {
+      const option = screen.getByRole('option', { name: new RegExp(id) });
+      expect(option.getAttribute('aria-disabled')).toBe('true'); fireEvent.click(option);
+    }
+    expect(onSelect).not.toHaveBeenCalled();
+  });
 
   it('shows the Tuzi add-group action and opens group management', async () => {
     const managedModel: ModelConfig = {

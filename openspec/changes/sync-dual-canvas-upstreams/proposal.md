@@ -54,3 +54,26 @@ the required native and upgrade checks.
 ## Approval
 
 Option B approved by the user on 2026-10-28 for this two-upstream synchronization.
+
+## OpenTu continuation — 2026-11-02
+
+The user requested the latest `ljquan/opentu` features and continued the existing
+synchronization. `main` remains `f57c21235d3b2e970131ed0a583a0f0f8aa2b054`,
+already an ancestor of the desktop. The feature branch `develop` was fetched at
+`f6a3e0cf` (1.2.5). Continue the already-approved option B for this source;
+independent Infinite Canvas updates remain tracked separately above.
+
+| Approach | Benefits / suitable use | Costs and risks |
+| --- | --- | --- |
+| Merge upstream develop wholesale | Records ancestry; suitable for matching products | Also removes the desktop workflow and its dependency graph; broad conflicts in storage, media and desktop release behavior |
+| Continue approved incremental adaptation | Preserves desktop integration while importing applicable user features | Requires source mapping, compatibility checks and a recorded pin; ongoing maintenance of intentional differences |
+
+Import the shared free-canvas delta from verified 1.1.28 through 1.2.5, including
+reference fidelity, Suno workflows, mask editing, image tools, source links,
+model authentication, batch import and historical date filtering. Keep the
+existing warm-white desktop dot implementation, desktop update/channel guards,
+native storage/virtual media routing and independent workflow. Optional new
+fields must hydrate old projects and settings safely. Do not copy web version
+metadata onto the desktop, publish installers or update the verified upstream
+descriptor before checks pass. No additional approval gate is introduced beyond
+the approved synchronization method and the user's continuation request.

@@ -1,10 +1,10 @@
 ## 1. Inventory and approval
 - [x] 1.1 Obtain complete upstream source at the pinned revisions; verify hashes and licenses.
 - [ ] 1.2 Establish actual local baselines and document per-feature changes, dependencies and explicit exclusions.
-- [ ] 1.3 Validate the proposal and record approval for the synchronization method (option B approved on 2026-10-28; strict validation pending).
+- [x] 1.3 Validate the proposal and record approval for the synchronization method (option B approved on 2026-10-28; strict validation passed on 2026-11-02).
 
 ## 2. Integration
-- [ ] 2.1 Integrate applicable free-canvas changes while retaining desktop functionality.
+- [x] 2.1 Integrate applicable free-canvas changes while retaining desktop functionality (OpenTu develop 1.2.5).
 - [ ] 2.2 Integrate applicable infinite-canvas changes while retaining host, provider and data integration.
 - [ ] 2.3 Handle any new fields and existing-data compatibility; update parity ledger.
 
@@ -28,3 +28,14 @@
 - Isolated Chromium verification: a text node could be focused, multi-selection disabled the focus button, auto-focus persisted across reload, and its open panel stayed above the bottom toolbar. No page errors observed. This does not substitute for native desktop acceptance.
 - Focused text card, generation-mode, reference preview, Gemini MIME, native recovery, storage and fallback tests passed; desktop renderer build and drawnix type check passed. An isolated browser uploaded a PNG, verified list and grid thumbnails, and confirmed image and grid-mode restoration after reload. Grid thumbnails use the same lazy, leased storage path as list thumbnails, including storage-key-only records. Native desktop UI, full parity and signed upgrades are still unverified.
 - Other upstream commits, including image editing and quality/resolution preferences, remain to be mapped, integrated and validated. This is not full parity and is not release-ready.
+
+## OpenTu 1.2.5 continuation — 2026-11-02
+
+- [x] Verify local 1.1.28 baseline and latest `develop` target `f6a3e0cf1b1e1a66d271ceb57eb4bbf6bd029114`; `main` is already integrated.
+- [x] Integrate applicable shared source, including the Web App persistence callbacks used by desktop; retain independent workflow, native storage/media, update/channel guards and warm dots.
+- [x] Audit optional fields, defaults and existing-data compatibility; record commit mapping and explicit exclusions in `docs/desktop-upstream-sync-1.2.5.md`.
+- [x] Run Drawnix regression and isolated pre-sync comparison; run 539 workflow, 29 desktop and 10 App persistence tests, native reference regressions, desktop/workflow type checks and renderer build checks.
+- [x] Verify batch import/export, checked-row capacity/filling, completed result insertion, date filters, keep-original controls and workflow round-trip in isolated Chromium, with native bridge mocked and no paid submissions.
+- [x] Fix stale board DOM access on return from workflow and add lifecycle regression coverage.
+- [x] Update the OpenTu source descriptor after verification; keep desktop numeric version 1.2.17 and existing release artifacts.
+- Native acceptance, signed upgrades, independent Infinite Canvas parity and complete two-upstream release readiness remain open under 1.2, 2.2, 2.3 and 3.1–3.3 above. The continuation's automated checks do not close these broader tasks.

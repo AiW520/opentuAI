@@ -55,6 +55,13 @@ function createFollowStorage(initialValue?: string) {
 }
 
 describe('target-bound-taskbar-state', () => {
+  it('本地缩放图片复用来源提示词，同时优先保留自身的生成提示词', () => {
+    const localImageOperation = { type: 'resize', sourcePrompt: '  原图风景提示词  ' };
+    expect(readBoundTargetGenerationPrompt({ localImageOperation }, 'image')).toBe('原图风景提示词');
+    expect(readBoundTargetGenerationPrompt({ localImageOperation, generationPrompt: '新生成提示词' }, 'image')).toBe('新生成提示词');
+    expect(readBoundTargetGenerationPrompt({ localImageOperation }, 'video')).toBe('');
+    expect(readBoundTargetGenerationPrompt({ localImageOperation: { sourcePrompt: 123 } }, 'image')).toBe('');
+  });
   it('跨媒体目标只读取明确的生成提示词元数据', () => {
     expect(
       readBoundTargetGenerationPrompt(
@@ -693,5 +700,15 @@ describe('target-bound-taskbar-state', () => {
         5
       )
     ).toBeNull();
+  });
+
+  it('绑定图片带蒙版时保留编辑模式、匹配原图和原位替换参数', () => {
+    expect(buildBoundTargetGenerationParams({
+      elementId: 'image-a', prompt: '旧提示词', generationTaskId: 'old-task',
+    }, 1, { url: '/asset-library/source.png', maskImage: '/__aitu_cache__/mask.png' })).toMatchObject({
+      generationMode: 'image_edit', replaceElementId: 'image-a',
+      targetElementId: 'image-a', sourceTaskId: 'old-task',
+      referenceImages: ['/asset-library/source.png'], maskImage: '/__aitu_cache__/mask.png',
+    });
   });
 });

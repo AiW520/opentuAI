@@ -1,5 +1,6 @@
 import {
   createTestingBoard,
+  fakeNodeWeakMap,
   IS_BOARD_ALIVE,
   PlaitHistoryBoard,
   RectangleClient,
@@ -7,8 +8,10 @@ import {
   withHistory,
   type PlaitElement,
 } from '@plait/core';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ArrowLineShape } from '@plait/draw';
+import { withLockedElement } from './with-locked-element';
+import { IMAGE_TOOLBAR_PREFERENCES_KEY } from '../utils/image-toolbar-preferences';
 import {
   canInsertCanvasAssociationsOnBoard,
   createCanvasAssociationLines,
@@ -22,6 +25,15 @@ import {
   retargetCanvasAssociationLines,
   withCanvasAssociation,
 } from './canvas-association';
+
+beforeEach(() => {
+  localStorage.setItem(
+    IMAGE_TOOLBAR_PREFERENCES_KEY,
+    JSON.stringify({ referenceLines: true })
+  );
+});
+
+afterEach(() => localStorage.removeItem(IMAGE_TOOLBAR_PREFERENCES_KEY));
 
 interface TestingElement extends PlaitElement {
   points: [[number, number], [number, number]];
@@ -239,7 +251,7 @@ describe('canvas association', () => {
     expect(board.history.undos).toHaveLength(0);
   });
 
-  it('migrates persisted association lines to the managed black curve style without undo history', () => {
+  it('migrates persisted association lines to the managed muted curve style without undo history', () => {
     const persistedBoard = createBoard([
       createElement('source-1', [
         [0, 0],
@@ -259,6 +271,7 @@ describe('canvas association', () => {
       element.id === persistedLine.id
         ? {
             ...element,
+            locked: true,
             shape: ArrowLineShape.straight,
             strokeColor: '#8b8b8b',
             strokeWidth: 1,
@@ -271,9 +284,10 @@ describe('canvas association', () => {
     );
     const line = board.children.find(isCanvasAssociationLine);
 
-    expect(line?.strokeColor).toBe('#000000');
-    expect(line?.strokeWidth).toBe(2);
+    expect(line?.strokeColor).toBe('#9ca3af');
+    expect(line?.strokeWidth).toBe(1.5);
     expect(line?.shape).toBe(ArrowLineShape.curve);
+    expect(line?.locked).toBe(false);
     expect(board.history.undos).toHaveLength(0);
   });
 
@@ -295,7 +309,7 @@ describe('canvas association', () => {
     });
     const loadedChildren = persistedBoard.children.map((element) =>
       element.id === persistedLine.id
-        ? { ...element, strokeColor: '#8b8b8b', strokeWidth: 1 }
+        ? { ...element, locked: true, strokeColor: '#000000', strokeWidth: 2 }
         : element
     );
     const board = createHistoryBoard([
@@ -308,8 +322,9 @@ describe('canvas association', () => {
     board.children = loadedChildren;
     const line = board.children.find(isCanvasAssociationLine);
 
-    expect(line?.strokeColor).toBe('#000000');
-    expect(line?.strokeWidth).toBe(2);
+    expect(line?.strokeColor).toBe('#9ca3af');
+    expect(line?.strokeWidth).toBe(1.5);
+    expect(line?.locked).toBe(false);
     expect(board.history.undos).toHaveLength(0);
   });
 
@@ -379,9 +394,9 @@ describe('canvas association', () => {
 
     expect(board.children).toContain(line);
     expect(isCanvasAssociationLine(line)).toBe(true);
-    expect(line.locked).toBe(true);
-    expect(line.strokeColor).toBe('#000000');
-    expect(line.strokeWidth).toBe(2);
+    expect(line.locked).toBe(false);
+    expect(line.strokeColor).toBe('#9ca3af');
+    expect(line.strokeWidth).toBe(1.5);
     expect(line.shape).toBe(ArrowLineShape.curve);
     expect(line.source.boundId).toBeUndefined();
     expect(line.target.boundId).toBeUndefined();
@@ -393,6 +408,72 @@ describe('canvas association', () => {
       taskId: 'task-1',
     });
   });
+
+  it.each([false, true])(
+    'allows hit testing and deleting a link without deleting its endpoints (persisted locked=%s)',
+    async (persistedLocked) => {
+      const persistedBoard = createBoard([
+        createElement('source-1', [
+          [0, 0],
+          [100, 100],
+        ]),
+        createElement('result-1', [
+          [300, 200],
+          [400, 300],
+        ]),
+      ]);
+      const [createdLine] = createCanvasAssociationLines(persistedBoard, {
+        boardId: 'board-1',
+        sourceElementIds: ['source-1'],
+        resultElementId: 'result-1',
+      });
+      const board = createHistoryBoard(
+        persistedBoard.children.map((element) =>
+          element.id === createdLine.id
+            ? { ...element, locked: persistedLocked }
+            : element
+        ) as TestingElement[]
+      );
+      withLockedElement(board);
+      fakeNodeWeakMap(board);
+
+      const line = board.children.find(isCanvasAssociationLine);
+      if (!line) throw new Error('Expected an association line');
+      expect(board.isHit(line, [200, 150])).toBe(true);
+      expect(board.isHit(line, [200, 220])).toBe(false);
+      expect(board.history.undos).toHaveLength(0);
+
+      board.deleteFragment([line]);
+      await flushBoardChanges();
+      expect(board.children.map((element) => element.id)).toEqual([
+        'source-1',
+        'result-1',
+      ]);
+      expect(board.children).toEqual(persistedBoard.children.slice(0, 2));
+
+      board.undo();
+      await flushBoardChanges();
+      expect(board.children.find(isCanvasAssociationLine)?.id).toBe(
+        createdLine.id
+      );
+      expect(board.children.find(isCanvasAssociationLine)?.locked).toBe(false);
+
+      board.redo();
+      await flushBoardChanges();
+      Transforms.setNode(
+        board,
+        {
+          points: [
+            [0, 100],
+            [100, 200],
+          ],
+        },
+        [0]
+      );
+      await flushBoardChanges();
+      expect(board.children.filter(isCanvasAssociationLine)).toHaveLength(0);
+    }
+  );
 
   it('is idempotent for duplicate sources and completion retries', () => {
     const board = createBoard([
@@ -478,7 +559,7 @@ describe('canvas association', () => {
     ).toBe(false);
     expect(
       persistedLines.every(
-        (line) => line.strokeColor === '#000000' && line.strokeWidth === 2
+        (line) => line.strokeColor === '#9ca3af' && line.strokeWidth === 1.5
       )
     ).toBe(true);
   });

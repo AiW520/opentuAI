@@ -220,7 +220,7 @@ describe('image generation recovery service', () => {
   });
 
   it('queries a main Tuzi task directly after page recovery', async () => {
-    vi.stubGlobal('location', { hostname: 'opentu.ai' });
+    vi.stubGlobal('location', new URL('https://opentu.ai'));
     const plan = createPlan();
     plan.provider.baseUrl = 'https://api.tu-zi.com/v1';
     const fetcher = vi.fn(async () =>

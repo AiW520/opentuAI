@@ -1,4 +1,9 @@
+import { resizeCanvasImage } from '../../../services/canvas-operations/resize-canvas-image';
 import Stack from '../../stack';
+import { ImageToolbarContents } from './image-toolbar-contents';
+import type { ImageToolMode } from './canvas-image-tools-dialog';
+import { getCanvasBoardBinding, type CanvasBoardBinding } from '../../../services/canvas-operations/canvas-board-ref';
+import { insertSplitImages } from '../../../services/canvas-operations/insert-split-images';
 import { FontColorIcon, PropertySettingsIcon } from '../../icons';
 import {
   ATTACHED_ELEMENT_CLASS_NAME,
@@ -99,7 +104,8 @@ import {
   Scaling,
   RefreshCw,
   PaintBucket,
-  Layers3,
+  Orbit,
+  Ungroup,
 } from 'lucide-react';
 import { useDrawnix, DialogType } from '../../../hooks/use-drawnix';
 import { useI18n } from '../../../i18n';
@@ -186,6 +192,8 @@ import {
   isMaskBrushEligibleImage,
 } from '../../../utils/ai-mask-brush';
 
+const CanvasImageToolsDialog = lazy(() => import('./canvas-image-tools-dialog').then(module => ({ default: module.CanvasImageToolsDialog })));
+
 const ImageEditor = lazy(() =>
   import('../../image-editor').then((module) => ({
     default: module.ImageEditor,
@@ -240,6 +248,10 @@ export const PopupToolbar = () => {
 
   // 图片编辑器状态
   const [showImageEditor, setShowImageEditor] = useState(false);
+  const [editingImageBinding, setEditingImageBinding] = useState<CanvasBoardBinding | null>(null);
+  const [imageToolMode, setImageToolMode] = useState<ImageToolMode | null>(null);
+  const imageToolSelectionKey = selectedElements.map(element => element.id).join(',');
+  useEffect(() => { setImageToolMode(null); }, [imageToolSelectionKey]);
   const [editingImageUrl, setEditingImageUrl] = useState('');
   const [editingImageElement, setEditingImageElement] =
     useState<PlaitDrawElement | null>(null);
@@ -1342,6 +1354,7 @@ export const PopupToolbar = () => {
           data-testid="popup-toolbar"
         >
           <Stack.Row gap={1}>
+            <ImageToolbarContents enabled={!!state.hasImageEdit} container={PlaitBoard.getBoardContainer(board)}>
             {/* ========== 左侧：公共属性图标（样式相关，位置相对固定） ========== */}
             {state.hasFill && (
               <PopupFillButton
@@ -1877,7 +1890,7 @@ export const PopupToolbar = () => {
                 className="ai-layer-decomposition"
                 key="ai-layer-decomposition"
                 type="icon"
-                icon={<Layers3 size={16} />}
+                icon={<Ungroup size={16} />}
                 visible={true}
                 tooltip={language === 'zh' ? 'AI 分层' : 'AI Layers'}
                 aria-label={language === 'zh' ? 'AI 分层' : 'AI Layers'}
@@ -1944,6 +1957,13 @@ export const PopupToolbar = () => {
                 }}
               />
             )}
+            {state.hasImageEdit && (['angle'] as const).map((mode) => (
+              <ToolButton key={`local-image-${mode}`} className={`local-image-${mode}`} type="icon" visible
+                icon={<Orbit size={16} />}
+                aria-label="AI 视角编辑"
+                tooltip="AI 视角编辑"
+                onClick={() => setImageToolMode(mode)} />
+            ))}
             {state.hasImageEdit && (
               <ToolButton
                 className="image-edit"
@@ -1962,6 +1982,7 @@ export const PopupToolbar = () => {
                   ) {
                     setEditingImageUrl(imageElement.url);
                     setEditingImageElement(imageElement);
+                    setEditingImageBinding(getCanvasBoardBinding());
                     setShowImageEditor(true);
                   }
                 }}
@@ -2697,6 +2718,7 @@ export const PopupToolbar = () => {
               <PopupImageDetailsButton
                 key={`generation-details-${generationDetailsSource.kind}-${generationDetailsSource.id}-${generationDetailsSource.url}-${generationDetailsSource.generationTaskId}`}
                 image={generationDetailsSource}
+                board={board}
                 language={language}
                 selectionRect={selectionRect}
                 autoOpenRequest={imageDetailsRequest?.id === generationDetailsSource.id &&
@@ -2705,6 +2727,7 @@ export const PopupToolbar = () => {
                   ? imageDetailsRequest.sequence : 0}
               />
             )}
+            </ImageToolbarContents>
           </Stack.Row>
         </Island>
       )}
@@ -2736,6 +2759,10 @@ export const PopupToolbar = () => {
         />
       )}
 
+      {imageToolMode && state.hasImageEdit && selectedElements[0] && <Suspense fallback={null}>
+        <CanvasImageToolsDialog key={`${selectedElements[0].id}-${imageToolMode}`} board={board} element={selectedElements[0]} mode={imageToolMode} onClose={() => setImageToolMode(null)} />
+      </Suspense>}
+
       {/* 图片编辑器 */}
       {showImageEditor && editingImageUrl && (
         <Suspense fallback={null}>
@@ -2743,10 +2770,19 @@ export const PopupToolbar = () => {
             visible={showImageEditor}
             imageUrl={editingImageUrl}
             showOverwrite={!!editingImageElement}
+            onResize={async (options, onStage, signal) => {
+              if (!editingImageBinding || !editingImageElement) throw new Error('画布已切换，请重新选择图片。');
+              return resizeCanvasImage(editingImageBinding, editingImageElement, options, onStage, signal);
+            }}
+            onSplit={async (images) => {
+              if (!editingImageBinding || !editingImageElement) throw new Error('画布已切换，请重新选择图片。');
+              await insertSplitImages(editingImageBinding, editingImageElement, images);
+            }}
             onClose={() => {
               setShowImageEditor(false);
               setEditingImageUrl('');
               setEditingImageElement(null);
+              setEditingImageBinding(null);
             }}
             onOverwrite={async (editedImageUrl: string) => {
               if (editingImageElement) {

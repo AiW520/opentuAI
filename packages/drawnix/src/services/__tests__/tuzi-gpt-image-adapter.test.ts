@@ -1,18 +1,246 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  buildTuziGPTImageEditFormData,
   buildTuziGPTImageRequestBody,
   tuziGPTImageAdapter,
 } from '../model-adapters/tuzi-gpt-image-adapter';
 
 const mocks = vi.hoisted(() => ({
   sendAdapterRequest: vi.fn(),
+  getCachedBlob: vi.fn(),
 }));
+
+const tinyPngDataUrl =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==';
 
 vi.mock('../model-adapters/context', () => ({
   sendAdapterRequest: mocks.sendAdapterRequest,
 }));
 
+vi.mock('../unified-cache-service', () => ({
+  unifiedCacheService: { getCachedBlob: mocks.getCachedBlob },
+}));
+
 describe('tuzi GPT image adapter', () => {
+  it('uploads original local cache blobs including large sources and alpha masks', async () => {
+    const sourceBlob = new Blob([new Uint8Array(2 * 1024 * 1024)], { type: 'image/png' });
+    const maskBlob = new Blob([new Uint8Array([1, 2, 3, 0])], { type: 'image/png' });
+    mocks.getCachedBlob.mockResolvedValueOnce(sourceBlob).mockResolvedValueOnce(maskBlob);
+    const fetcher = vi.fn<typeof fetch>();
+    const form = await buildTuziGPTImageEditFormData({
+      model: 'gpt-image-2', prompt: 'Edit',
+      referenceImages: ['/asset-library/source.png'],
+      maskImage: '/__aitu_cache__/image/ai-mask.png',
+    }, undefined, fetcher);
+    expect(mocks.getCachedBlob).toHaveBeenNthCalledWith(1, '/asset-library/source.png', { allowNetwork: false });
+    expect(mocks.getCachedBlob).toHaveBeenNthCalledWith(2, '/__aitu_cache__/image/ai-mask.png', { allowNetwork: false });
+    expect((form.get('image[]') as Blob).size).toBe(sourceBlob.size);
+    const readBytes = (blob: Blob) => new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(blob);
+    });
+    expect(await readBytes(form.get('mask') as Blob)).toBe(await readBytes(maskBlob));
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it('fails without submitting when the local mask cache is missing', async () => {
+    mocks.getCachedBlob.mockResolvedValue(null);
+    const fetcher = vi.fn<typeof fetch>();
+    await expect(tuziGPTImageAdapter.generateImage({
+      baseUrl: 'https://api.tu-zi.com/v1', fetcher,
+    }, {
+      model: 'gpt-image-2', prompt: 'Edit', referenceImages: [tinyPngDataUrl],
+      maskImage: '/__aitu_cache__/image/missing.png',
+    })).rejects.toThrow('本地图片缓存已失效');
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(mocks.sendAdapterRequest).not.toHaveBeenCalled();
+  });
+
+  it('builds masked edit files without losing Tuzi output options or auto resolution', async () => {
+    const form = await buildTuziGPTImageEditFormData({
+      model: 'gpt-image-2.5-sunburst',
+      prompt: 'Replace the masked region',
+      size: 'auto',
+      referenceImages: [tinyPngDataUrl, tinyPngDataUrl],
+      maskImage: tinyPngDataUrl,
+      inputFidelity: 'high',
+      outputFormat: 'webp',
+      outputCompression: 0,
+      background: 'opaque',
+      params: {
+        resolution: '2k', quality: 'high', n: 2,
+        response_format: 'b64_json', moderation: 'low', user: 'test-user',
+        unrelated: 'not forwarded',
+      },
+    });
+    expect(form.get('model')).toBe('gpt-image-2.5-sunburst');
+    expect(form.get('prompt')).toBe('Replace the masked region');
+    expect(form.get('size')).toBe('1920x1920');
+    expect(form.get('resolution')).toBe('2K');
+    expect(JSON.parse(String(form.get('generationConfig')))).toEqual({
+      imageConfig: { imageSize: '2K' },
+    });
+    expect(form.get('quality')).toBe('high');
+    expect(form.get('n')).toBe('2');
+    expect(form.get('response_format')).toBe('b64_json');
+    expect(form.get('input_fidelity')).toBe('high');
+    expect(form.get('output_format')).toBe('webp');
+    expect(form.get('output_compression')).toBe('0');
+    expect(form.get('background')).toBe('opaque');
+    expect(form.get('moderation')).toBe('low');
+    expect(form.get('user')).toBe('test-user');
+    expect(form.get('image')).toBeNull();
+    expect(form.get('unrelated')).toBeNull();
+    expect(form.getAll('image[]')).toHaveLength(2);
+    expect(form.get('image[]')).toBeInstanceOf(Blob);
+    const mask = form.get('mask') as Blob;
+    expect(mask.type).toBe('image/png');
+    expect(mask.size).toBe(atob(tinyPngDataUrl.split(',')[1]).length);
+  });
+
+  it.each(['maskImage', 'mask_image'])(
+    'accepts the saved %s mask parameter and preserves the binding model',
+    async (key) => {
+      const form = await buildTuziGPTImageEditFormData({
+        model: 'image2', prompt: 'Edit', size: '16x9',
+        referenceImages: [tinyPngDataUrl],
+        params: { [key]: tinyPngDataUrl, resolution: '2k', input_fidelity: 'low' },
+      }, 'gpt-image-2');
+      expect(form.get('model')).toBe('gpt-image-2');
+      expect(form.get('size')).toBe('2560x1440');
+      expect(form.get('input_fidelity')).toBe('low');
+      expect(form.get('mask')).toBeInstanceOf(Blob);
+    }
+  );
+
+  it('fails before submission when a masked edit has no source image', async () => {
+    await expect(tuziGPTImageAdapter.generateImage(
+      { baseUrl: 'https://api.tu-zi.com/v1' },
+      { model: 'gpt-image-2', prompt: 'Edit', maskImage: tinyPngDataUrl }
+    )).rejects.toThrow('缺少参考图片');
+    expect(mocks.sendAdapterRequest).not.toHaveBeenCalled();
+  });
+
+  it('requires a mask when building a masked edit form', async () => {
+    await expect(buildTuziGPTImageEditFormData({
+      model: 'gpt-image-2', prompt: 'Edit', referenceImages: [tinyPngDataUrl],
+    })).rejects.toThrow('缺少蒙版');
+  });
+
+  it('fetches source and mask URLs with the task signal and submits multipart edits', async () => {
+    const controller = new AbortController();
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async () =>
+      ({
+        ok: true,
+        blob: async () => new Blob([new Uint8Array([1, 2, 3])], { type: 'image/png' }),
+      } as Response)
+    );
+    mocks.sendAdapterRequest.mockResolvedValue(new Response(JSON.stringify({
+      data: [{ b64_json: tinyPngDataUrl.split(',')[1], width: 1024, height: 1024 }],
+    }), { status: 200 }));
+    const result = await tuziGPTImageAdapter.generateImage({
+      baseUrl: 'https://api.tu-zi.com/v1', fetcher, signal: controller.signal,
+    }, {
+      model: 'gpt-image-2', prompt: 'Edit', generationMode: 'image_edit',
+      referenceImages: ['https://example.com/source.png'],
+      maskImage: 'https://example.com/mask.png',
+      outputFormat: 'png', params: { response_format: 'b64_json' },
+    });
+    expect(fetcher).toHaveBeenNthCalledWith(1, 'https://example.com/source.png', { signal: controller.signal, referrerPolicy: 'no-referrer' });
+    expect(fetcher).toHaveBeenNthCalledWith(2, 'https://example.com/mask.png', { signal: controller.signal, referrerPolicy: 'no-referrer' });
+    const request = mocks.sendAdapterRequest.mock.calls[0]?.[1];
+    expect(request.path).toBe('/images/edits');
+    expect(request.baseUrlStrategy).toBe('ensure-v1');
+    expect(request.headers).toBeUndefined();
+    expect(request.body).toBeInstanceOf(FormData);
+    expect(request.body.get('mask')).toBeInstanceOf(Blob);
+    expect(result.url).toBe(tinyPngDataUrl);
+  });
+
+  it.each(['source', 'mask'])(
+    'does not submit or fall back to generations when reading the %s fails',
+    async (failedInput) => {
+      const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response('', { status: 404 }));
+      await expect(tuziGPTImageAdapter.generateImage({
+        baseUrl: 'https://api.tu-zi.com/v1', fetcher,
+      }, {
+        model: 'gpt-image-2', prompt: 'Edit',
+        referenceImages: [failedInput === 'source' ? 'https://example.com/source.png' : tinyPngDataUrl],
+        maskImage: failedInput === 'mask' ? 'https://example.com/mask.png' : tinyPngDataUrl,
+      })).rejects.toThrow('编辑图片读取失败: 引用图读取失败: 404');
+      expect(mocks.sendAdapterRequest).not.toHaveBeenCalled();
+    }
+  );
+
+  it('does not read images or submit an already cancelled masked edit', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const fetcher = vi.fn<typeof fetch>();
+    await expect(tuziGPTImageAdapter.generateImage({
+      baseUrl: 'https://api.tu-zi.com/v1', fetcher, signal: controller.signal,
+    }, {
+      model: 'gpt-image-2', prompt: 'Edit',
+      referenceImages: ['https://example.com/source.png'], maskImage: tinyPngDataUrl,
+    })).rejects.toMatchObject({ name: 'AbortError' });
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(mocks.sendAdapterRequest).not.toHaveBeenCalled();
+  });
+
+  it('does not submit when cancelled while reading the source image', async () => {
+    const controller = new AbortController();
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async () => {
+      controller.abort();
+      return {
+        ok: true,
+        blob: async () => new Blob([new Uint8Array([1])], { type: 'image/png' }),
+      } as Response;
+    });
+    await expect(tuziGPTImageAdapter.generateImage({
+      baseUrl: 'https://api.tu-zi.com/v1', fetcher, signal: controller.signal,
+    }, {
+      model: 'gpt-image-2', prompt: 'Edit',
+      referenceImages: ['https://example.com/source.png'], maskImage: tinyPngDataUrl,
+    })).rejects.toMatchObject({ name: 'AbortError' });
+    expect(mocks.sendAdapterRequest).not.toHaveBeenCalled();
+  });
+
+  it('surfaces provider edit failures without submitting a generations fallback', async () => {
+    mocks.sendAdapterRequest.mockResolvedValue(new Response(JSON.stringify({
+      error: { message: 'Mask dimensions must match the source image' },
+    }), { status: 400 }));
+    await expect(tuziGPTImageAdapter.generateImage({
+      baseUrl: 'https://api.tu-zi.com/v1',
+    }, {
+      model: 'gpt-image-2', prompt: 'Edit',
+      referenceImages: [tinyPngDataUrl], maskImage: tinyPngDataUrl,
+    })).rejects.toMatchObject({
+      message: 'Mask dimensions must match the source image', httpStatus: 400,
+    });
+    expect(mocks.sendAdapterRequest).toHaveBeenCalledOnce();
+    expect(mocks.sendAdapterRequest.mock.calls[0]?.[1].path).toBe('/images/edits');
+  });
+
+  it('retains image and mask files during the existing legacy model alias retry', async () => {
+    mocks.sendAdapterRequest
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: { code: 'model_not_found' } }), { status: 503 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ data: [{ url: 'https://example.com/edit.png', width: 1024, height: 1024 }] }), { status: 200 }));
+    await tuziGPTImageAdapter.generateImage({ baseUrl: 'https://api.tu-zi.com/v1' }, {
+      model: 'image2', prompt: 'Edit', referenceImages: [tinyPngDataUrl], maskImage: tinyPngDataUrl,
+    });
+    expect(mocks.sendAdapterRequest).toHaveBeenCalledTimes(2);
+    const first = mocks.sendAdapterRequest.mock.calls[0]?.[1];
+    const retry = mocks.sendAdapterRequest.mock.calls[1]?.[1];
+    expect(first.body.get('model')).toBe('image2');
+    expect(retry.body.get('model')).toBe('gpt-image-2');
+    for (const request of [first, retry]) {
+      expect(request.path).toBe('/images/edits');
+      expect(request.body.get('image[]')).toBeInstanceOf(Blob);
+      expect(request.body.get('mask')).toBeInstanceOf(Blob);
+    }
+  });
+
   it('converts saved compression quality and rejects incompatible transparent JPEG', () => {
     const request = { model: 'gpt-image-2.5', prompt: 'Test' };
     expect(
@@ -179,6 +407,7 @@ describe('tuzi GPT image adapter', () => {
 
   afterEach(() => {
     mocks.sendAdapterRequest.mockReset();
+    mocks.getCachedBlob.mockReset();
     vi.unstubAllGlobals();
   });
 
@@ -379,10 +608,14 @@ describe('tuzi GPT image adapter', () => {
         ).toEqual({
           model,
           prompt: 'Draw a clean product photo',
-          size: model.startsWith('gpt-image-2.5') ? { '1k': '1024x1024', '2k': '1920x1920', '4k': '2880x2880', auto: '1024x1024' }[resolution] : 'auto',
+          size: model.startsWith('gpt-image-2.5')
+            ? { '1k': '1024x1024', '2k': '1920x1920', '4k': '2880x2880', auto: '1024x1024' }[resolution]
+            : 'auto',
           quality: 'medium',
           ...(referenceImages ? { image: referenceImages } : {}),
-          ...(model.startsWith('gpt-image-2.5') && resolution !== 'auto' ? { resolution: resolution.toUpperCase() } : {}),
+          ...(model.startsWith('gpt-image-2.5') && resolution !== 'auto'
+            ? { resolution: resolution.toUpperCase() }
+            : {}),
           ...(resolution === 'auto'
             ? {}
             : {
@@ -414,6 +647,92 @@ describe('tuzi GPT image adapter', () => {
       resolution: '4K',
       generationConfig: { imageConfig: { imageSize: '4K' } },
     });
+  });
+
+  it.each([
+    'gpt-image-2.5',
+    'gpt-image-2.5-vip',
+    'gpt-image-2.5-sunburst',
+    'gpt-image-2.5-flare',
+  ])('resolves %s auto size from the prompt and keeps manual ratio precedence', (model) => {
+    for (const [resolution, landscape, portrait, square] of [
+      ['1k', '1360x768', '880x1184', '1024x1024'],
+      ['2k', '2560x1440', '1632x2176', '1920x1920'],
+      ['4k', '3840x2160', '2480x3312', '2880x2880'],
+    ]) {
+      for (const [prompt, expected] of [
+        ['A poster 16:9', landscape],
+        ['A poster 3：4', portrait],
+        ['A poster', square],
+      ]) {
+        const request = { model, prompt, size: 'auto', params: { resolution, quality: 'high' } };
+        const body = buildTuziGPTImageRequestBody(request);
+        expect(body).toMatchObject({ model, prompt, size: expected, quality: 'high' });
+        expect(buildTuziGPTImageRequestBody({ ...request, size: '1x1' }).size).toBe(square);
+        expect(buildTuziGPTImageRequestBody({
+          ...request, size: '1x1', params: { ...request.params, size: 'auto' },
+        }).size).toBe(expected);
+      }
+    }
+  });
+
+  it.each([
+    'gpt-image-2.5',
+    'gpt-image-2.5-vip',
+    'gpt-image-2.5-sunburst',
+    'gpt-image-2.5-flare',
+  ])(
+    'sends %s concrete size and resolution through JSON generation and multipart edits',
+    async (model) => {
+      mocks.sendAdapterRequest.mockImplementation(async () => new Response(
+        JSON.stringify({
+          data: [{ url: 'https://example.com/result.png', width: 1024, height: 1024 }],
+        }),
+        { status: 200 }
+      ));
+      for (const resolution of ['2k', '4K']) {
+        for (const maskImage of [undefined, tinyPngDataUrl]) {
+          await tuziGPTImageAdapter.generateImage(
+            { baseUrl: 'https://api.tu-zi.com/v1' },
+            {
+              model,
+              prompt: 'Test 16:9',
+              size: 'auto',
+              referenceImages: [tinyPngDataUrl],
+              maskImage,
+              params: { resolution, quality: 'high' },
+            }
+          );
+          const sent = mocks.sendAdapterRequest.mock.calls.at(-1)?.[1];
+          expect(sent.path).toBe(maskImage ? '/images/edits' : '/images/generations');
+          const body = maskImage
+            ? Object.fromEntries((sent.body as FormData).entries())
+            : JSON.parse(sent.body);
+          expect(body).toMatchObject({
+            model,
+            size: resolution.toLowerCase() === '2k' ? '2560x1440' : '3840x2160',
+            resolution: resolution.toUpperCase(),
+            quality: 'high',
+          });
+        }
+      }
+    }
+  );
+
+  it.each([
+    'gpt-image-2.5',
+    'gpt-image-2.5-vip',
+    'gpt-image-2.5-sunburst',
+    'gpt-image-2.5-flare',
+  ])('omits an unspecified or invalid resolution for %s', (model) => {
+    for (const resolution of [undefined, 'auto', 'billing-1k', '8k', '']) {
+      const body = buildTuziGPTImageRequestBody({
+        model, prompt: 'Test', size: 'auto', params: { resolution },
+      });
+      expect(body).not.toHaveProperty('resolution');
+      expect(body).not.toHaveProperty('generationConfig');
+      expect(body.size).toBe('1024x1024');
+    }
   });
 
   it.each(['gpt-image-2-1k', 'gpt-image-2.5-1k'])(

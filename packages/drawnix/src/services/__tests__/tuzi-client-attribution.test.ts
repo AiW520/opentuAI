@@ -49,6 +49,9 @@ describe('per-request channel attribution', () => {
   );
   it.each([
     'https://api.tu-zi.com/api/status',
+    'https://api.tu-zi.com/suno/api/v1/generate/credit',
+    'https://api.tu-zi.com/suno/v2/unknown',
+    'https://api.tu-zi.com/suno/media/audio.mp3?signature=a%2Fb',
     'https://api.tu-zi.com/v1/models',
     'https://api.tu-zi.com/assets/result.png?signature=a%2Fb&expires=7',
     'https://api.tu-zi.com/assets/opaque?X-Amz-Signature=abc',
@@ -60,6 +63,15 @@ describe('per-request channel attribution', () => {
     expect(withTuziClientChannel(url, 3)).toBe(url);
   });
   it.each([
+    '/suno/api/v1/generate',
+    '/suno/api/v1/generate/record-info',
+    '/suno/api/v1/voice/validate-info',
+    '/suno/api/file-stream-upload',
+    '/suno/uploads/audio-url',
+    '/suno/submit/concat',
+    '/suno/fetch/legacy-task',
+    '/suno/v2/add-instrumental',
+    '/suno/v2/fetch/task-id',
     '/v1/chat/completions',
     '/responses',
     '/v1/images/generations/result',

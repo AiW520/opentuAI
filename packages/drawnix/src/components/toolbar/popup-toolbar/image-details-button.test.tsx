@@ -13,6 +13,11 @@ import { TaskStatus, TaskType, type Task } from '../../../types/task.types';
 import { PopupImageDetailsButton } from './image-details-button';
 import { persistImageDetailsOnClickEnabled } from './image-details-settings';
 
+const dimensionMocks = vi.hoisted(() => ({ resolve: vi.fn() }));
+vi.mock('../../../utils/canvas-image-details-dimensions', () => ({
+  resolveCanvasImageDetailsDimensions: dimensionMocks.resolve,
+}));
+
 vi.mock('../../../services/task-queue', () => ({
   taskQueueService: {
     getCompleteTask: vi.fn(),
@@ -50,11 +55,115 @@ const task: Task = {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  dimensionMocks.resolve.mockImplementation(async (source) => source);
   persistImageDetailsOnClickEnabled(true);
 });
 afterEach(cleanup);
 
 describe('image details popover', () => {
+  it('shows decoded Gemini pixels when the task has no recorded result dimensions', async () => {
+    vi.mocked(taskQueueService.getCompleteTask).mockResolvedValue({
+      ...task,
+      params: { ...task.params, model: 'gemini-image', size: '2048x1152' },
+    });
+    dimensionMocks.resolve.mockResolvedValue({
+      id: 'gemini',
+      url: '/gemini.png',
+      width: 2752,
+      height: 1536,
+    });
+    render(
+      <PopupImageDetailsButton
+        language="zh"
+        autoOpenRequest={1}
+        image={{ id: 'gemini', url: '/gemini.png', generationTaskId: 'task' }}
+      />
+    );
+    expect(await screen.findByText('2752 × 1536 px')).toBeTruthy();
+    expect(screen.queryByText('2048 × 1152 px')).toBeNull();
+    expect(await screen.findByText('gemini-image')).toBeTruthy();
+  });
+
+  it('shows downscaled output and a scale below one without calling it enlargement', async () => {
+    render(
+      <PopupImageDetailsButton
+        language="zh"
+        autoOpenRequest={1}
+        image={{
+          ...image,
+          width: 2000,
+          height: 1500,
+          localOperation: {
+            type: 'resize',
+            sourceWidth: 4000,
+            sourceHeight: 3000,
+            outputWidth: 2000,
+            outputHeight: 1500,
+            algorithm: 'high',
+            createdAt: 1700000000000,
+          },
+        }}
+      />
+    );
+    expect(await screen.findByText('本地缩放（非 AI）')).toBeTruthy();
+    expect(screen.getByText('2000 × 1500 px')).toBeTruthy();
+    expect(screen.getByText('4000 × 3000 px')).toBeTruthy();
+    expect(screen.getByText('0.5×')).toBeTruthy();
+    expect(screen.getByText('缩放倍数（长边）')).toBeTruthy();
+    expect(screen.queryByText('本地放大（非 AI）')).toBeNull();
+  });
+
+  it.each(['zh', 'en'] as const)(
+    'shows saved local resize details in %s without querying generation history',
+    async (language) => {
+      render(
+        <PopupImageDetailsButton
+          language={language}
+          autoOpenRequest={1}
+          image={{
+            ...image,
+            width: 3840,
+            height: 2160,
+            localOperation: {
+              type: 'resize',
+              sourceWidth: 1920,
+              sourceHeight: 1080,
+              outputWidth: 3840,
+              outputHeight: 2160,
+              algorithm: 'nearest',
+              createdAt: 1700000000000,
+              sourcePrompt: 'A mountain lake',
+            },
+          }}
+        />
+      );
+      expect(
+        await screen.findByText(
+          language === 'zh' ? '本地缩放（非 AI）' : 'Local resize (non-AI)'
+        )
+      ).toBeTruthy();
+      expect(screen.getByText('3840 × 2160 px')).toBeTruthy();
+      expect(screen.getByText('1920 × 1080 px')).toBeTruthy();
+      expect(screen.getByText('2×')).toBeTruthy();
+      expect(screen.getByText('A mountain lake')).toBeTruthy();
+      expect(
+        screen.getByText(
+          language === 'zh'
+            ? '最近邻（像素画）'
+            : 'Nearest neighbor (pixel art)'
+        )
+      ).toBeTruthy();
+      expect(
+        screen.queryByText(
+          language === 'zh'
+            ? '未找到该图片的生成记录'
+            : 'No generation record found for this image'
+        )
+      ).toBeNull();
+      expect(taskQueueService.findImageTaskByResultUrl).not.toHaveBeenCalled();
+      expect(taskQueueService.getCompleteTask).not.toHaveBeenCalled();
+    }
+  );
   it.each([
     ['video', TaskType.VIDEO, '视频'],
     ['audio', TaskType.AUDIO, '音频'],
